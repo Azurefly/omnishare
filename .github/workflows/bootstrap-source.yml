@@ -38,6 +38,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mkdir -p /tmp/omnishare-feature
+          cp .github/workflows/bootstrap-source.yml /tmp/bootstrap-source.yml
           cat bootstrap/feature/*.b64 | base64 -d > /tmp/feature.tar.xz
           wc -c /tmp/feature.tar.xz
           sha256sum /tmp/feature.tar.xz
@@ -50,12 +51,15 @@ jobs:
           git switch -C agent/security-reliability-v1.3.0
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a /tmp/omnishare-feature/. .
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp /tmp/bootstrap-source.yml .github/workflows/bootstrap-source.yml
           git add -A
           git commit -m "harden security and reliability for v1.3.0-rc1"
           git push --force origin agent/security-reliability-v1.3.0
 
           git switch main
-          rm -rf bootstrap .github/workflows/bootstrap-source.yml
+          rm -rf bootstrap
           git add -A
           git commit -m "remove repository bootstrap payload"
           git push origin main
