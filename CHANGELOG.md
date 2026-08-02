@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0-rc2
+
+### Windows launcher
+
+- 修复 `start-omnishare.cmd` 在双引号 `PowerShell -Command` 中错误保留 `^|`，导致 `Get-CimInstance` 收到非法位置参数的问题。
+- 将复杂启动逻辑迁移到独立 `start-omnishare.ps1`，CMD 仅负责调用，避免 CMD 与 PowerShell 双层转义。
+- 启动器按可执行文件完整路径判断同一实例，保留用户级 `%APPDATA%\OmniShare` 数据目录。
+- 增加启动器源码与 Windows ZIP 包回归契约，校验 BOM、调用方式、脚本包含关系和禁用 `^|`。
+
+### Packaging
+
+- Windows AMD64/ARM64 安装包均包含新的 PowerShell 启动器。
+- 发布说明改为依据 `VERSION` 动态选择，避免修正版安装包继续携带 RC1 说明。
+
 ## 1.3.0-rc1
 
 ### Security
