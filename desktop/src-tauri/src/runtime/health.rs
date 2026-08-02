@@ -1,16 +1,20 @@
-use std::time::Duration;
+use std::{
+    net::{SocketAddr, TcpStream},
+    time::{Duration, Instant},
+};
 
-pub async fn wait_backend(url: &str, timeout_seconds: u64) -> bool {
-    let client = reqwest::Client::new();
-    let mut attempts = timeout_seconds * 2;
+pub fn wait_backend(host: &str, port: u16, timeout: Duration) -> bool {
+    let address = match format!("{}:{}", host, port).parse::<SocketAddr>() {
+        Ok(address) => address,
+        Err(_) => return false,
+    };
 
-    while attempts > 0 {
-        if client.get(url).timeout(Duration::from_secs(2)).send().await.is_ok() {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_ok() {
             return true;
         }
-
-        attempts -= 1;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::thread::sleep(Duration::from_millis(300));
     }
 
     false
