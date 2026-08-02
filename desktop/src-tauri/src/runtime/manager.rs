@@ -2,27 +2,58 @@
 //!
 //! Coordinates desktop startup lifecycle and backend readiness.
 
-use std::time::Duration;
+use std::{path::Path, sync::Mutex};
 
-pub struct RuntimeManager {
-    backend_url: String,
+use serde::Serialize;
+
+use crate::process::backend::{BackendProcess, DEFAULT_BACKEND_PORT};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendStatus {
+    pub running: bool,
+    pub url: String,
+    pub port: u16,
 }
 
-impl RuntimeManager {
-    pub fn new(backend_url: impl Into<String>) -> Self {
+pub struct BackendState {
+    process: Mutex<BackendProcess>,
+}
+
+impl Default for BackendState {
+    fn default() -> Self {
         Self {
-            backend_url: backend_url.into(),
+            process: Mutex::new(BackendProcess::new(DEFAULT_BACKEND_PORT)),
+        }
+    }
+}
+
+impl BackendState {
+    pub fn status(&self) -> BackendStatus {
+        let mut process = self.process.lock().expect("backend process state poisoned");
+        BackendStatus {
+            running: process.is_running(),
+            url: process.url(),
+            port: process.port(),
         }
     }
 
-    pub fn backend_url(&self) -> &str {
-        &self.backend_url
+    pub fn start(&self, executable: &Path) -> Result<BackendStatus, String> {
+        let mut process = self.process.lock().map_err(|err| err.to_string())?;
+        process.start(executable).map_err(|err| err.to_string())?;
+        Ok(BackendStatus {
+            running: process.is_running(),
+            url: process.url(),
+            port: process.port(),
+        })
     }
 
-    pub async fn wait_until_ready(&self) -> bool {
-        // Placeholder for health probing implementation.
-        // Production implementation will call backend health endpoint.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        true
+    pub fn stop(&self) -> BackendStatus {
+        let mut process = self.process.lock().expect("backend process state poisoned");
+        process.stop();
+        BackendStatus {
+            running: false,
+            url: process.url(),
+            port: process.port(),
+        }
     }
 }
