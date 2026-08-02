@@ -6,7 +6,7 @@ BIN="$OUT/binaries"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 for tool in go node npm zip unzip tar dpkg-deb file sha256sum python3; do command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 2; }; done
 "$ROOT/scripts/check-version.sh"
-"$ROOT/scripts/test-windows-launcher.sh"
+bash "$ROOT/scripts/test-windows-launcher.sh"
 rm -rf "$OUT"
 mkdir -p "$BIN"
 
@@ -25,5 +25,5 @@ wait
 test "$(find "$BIN" -maxdepth 1 -type f | wc -l)" -eq 6
 
 "$ROOT/scripts/package-release.sh" "$BIN" "$OUT"
-"$ROOT/scripts/test-windows-launcher.sh" "$OUT/packages/OmniShare-v${VERSION}-windows-amd64.zip"
+bash "$ROOT/scripts/test-windows-launcher.sh" "$OUT/packages/OmniShare-v${VERSION}-windows-amd64.zip"
 printf 'Release artifacts created in %s\n' "$OUT"
