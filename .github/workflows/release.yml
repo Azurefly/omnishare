@@ -3,16 +3,47 @@ name: Release
 on:
   push:
     tags: ['v*']
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
 
 concurrency:
-  group: omnishare-release-${{ github.ref_name }}
+  group: omnishare-release-${{ github.event_name }}-${{ github.ref_name || github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
+  create-tag:
+    if: github.event_name == 'issues' && github.actor == 'Azurefly' && github.event.issue.title == '[release] tag v1.3.0-rc2'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Create verified release tag
+        shell: bash
+        env:
+          TARGET_SHA: 59c2e388da30397b97d1ba0c19e236038d2e9847
+        run: |
+          set -euo pipefail
+          git fetch origin --tags --force
+          VERSION="$(git show "${TARGET_SHA}:VERSION" | tr -d '[:space:]')"
+          TAG="v${VERSION}"
+          test "${TAG}" = 'v1.3.0-rc2'
+          test "$(git show "${TARGET_SHA}:backend/internal/buildinfo/version.go" | sed -n 's/.*Version = "\([^"]*\)".*/\1/p')" = "${VERSION}"
+          git show "${TARGET_SHA}:docs/RELEASE_NOTES_${TAG}.md" >/dev/null
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists: ${TAG}" >&2
+            exit 2
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "${TAG}" "${TARGET_SHA}" -m "OmniShare ${TAG}"
+          git push origin "refs/tags/${TAG}"
+
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
