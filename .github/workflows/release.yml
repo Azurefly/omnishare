@@ -3,28 +3,117 @@ name: Release
 on:
   push:
     tags: ['v*']
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
+  issues: write
+
+concurrency:
+  group: omnishare-release
+  cancel-in-progress: false
 
 jobs:
   release:
+    if: github.event_name == 'push' || github.event.issue.title == '[release] publish current version'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.22.12'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.23.1'
-      - name: Verify tag matches product version
-        run: test "v$(tr -d '[:space:]' < VERSION)" = "$GITHUB_REF_NAME"
-      - name: Build and test release
-        run: ./scripts/build-release.sh
-      - name: Verify package checksums
-        run: cd dist/packages && sha256sum -c SHA256SUMS.txt
-      - name: Create draft GitHub release
+
+      - name: Resolve release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="v${VERSION}"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            test "${TAG}" = "${GITHUB_REF_NAME}"
+          fi
+          NOTES="docs/RELEASE_NOTES_${TAG}.md"
+          test -f "${NOTES}"
+          if [[ "${VERSION}" == *-* ]]; then
+            PRERELEASE=true
+          else
+            PRERELEASE=false
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "notes=${NOTES}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
+          echo "target=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Detect tag-trigger duplicate
+        id: duplicate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/packages/* --draft --generate-notes --verify-tag
+          TAG: ${{ steps.metadata.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build and test release
+        if: steps.duplicate.outputs.skip != 'true'
+        run: ./scripts/build-release.sh
+
+      - name: Verify package checksums
+        if: steps.duplicate.outputs.skip != 'true'
+        run: cd dist/packages && sha256sum -c SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        if: steps.duplicate.outputs.skip != 'true'
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          NOTES: ${{ steps.metadata.outputs.notes }}
+          TARGET: ${{ steps.metadata.outputs.target }}
+          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="OmniShare ${TAG}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/packages/* --clobber
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              gh release edit "${TAG}" --title "${TITLE}" --notes-file "${NOTES}" --draft=false --prerelease
+            else
+              gh release edit "${TAG}" --title "${TITLE}" --notes-file "${NOTES}" --draft=false --latest
+            fi
+          else
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              gh release create "${TAG}" dist/packages/* --target "${TARGET}" --title "${TITLE}" --notes-file "${NOTES}" --prerelease
+            else
+              gh release create "${TAG}" dist/packages/* --target "${TARGET}" --title "${TITLE}" --notes-file "${NOTES}" --latest
+            fi
+          fi
+          URL="$(gh release view "${TAG}" --json url --jq .url)"
+          echo "url=${URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record successful issue-triggered publication
+        if: github.event_name == 'issues' && steps.duplicate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          RELEASE_URL: ${{ steps.publish.outputs.url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "${ISSUE_NUMBER}" --body "Published ${TAG} successfully: ${RELEASE_URL}"
+          gh issue close "${ISSUE_NUMBER}" --reason completed
