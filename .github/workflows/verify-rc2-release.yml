@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   verify:
-    if: github.actor == 'Azurefly' && github.event.issue.title == '[verify] v1.3.0-rc2 release'
+    if: github.actor == 'Azurefly' && github.event.issue.title == '[verify-debug] v1.3.0-rc2 release'
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for and verify release
+      - name: Verify published release and downloaded Windows package
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -21,17 +21,30 @@ jobs:
           TAG: v1.3.0-rc2
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p /tmp/omnishare-release
-          found=0
-          for _ in $(seq 1 60); do
-            if gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,url,assets > /tmp/release.json 2>/dev/null; then
-              found=1
-              break
+          set -Eeuo pipefail
+          report_failure() {
+            rc=$?
+            set +e
+            assets='(release metadata unavailable)'
+            if [ -f /tmp/release.json ]; then
+              assets="$(python3 - <<'PY'
+          import json
+          try:
+              data=json.load(open('/tmp/release.json'))
+              print(', '.join(sorted(item['name'] for item in data.get('assets', []))))
+          except Exception as exc:
+              print(f'cannot parse metadata: {exc}')
+          PY
+              )"
             fi
-            sleep 10
-          done
-          test "$found" = 1
+            gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "RC2 verification failed (exit ${rc}) at line ${BASH_LINENO[0]} while running: \`${BASH_COMMAND}\`. Assets seen: ${assets}"
+            exit "$rc"
+          }
+          trap report_failure ERR
+
+          rm -rf /tmp/omnishare-release
+          mkdir -p /tmp/omnishare-release
+          gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,url,assets > /tmp/release.json
           python3 - <<'PY'
           import json
           data=json.load(open('/tmp/release.json'))
@@ -53,13 +66,20 @@ jobs:
           missing=required-names
           assert not missing, f'missing release assets: {sorted(missing)}'
           PY
-          gh release download "$TAG" --repo "$REPO" --dir /tmp/omnishare-release --pattern 'OmniShare-v1.3.0-rc2-windows-amd64.zip' --pattern 'SHA256SUMS.txt'
+
+          gh release download "$TAG" --repo "$REPO" --dir /tmp/omnishare-release --pattern 'OmniShare-v1.3.0-rc2-windows-amd64.zip'
           zip=/tmp/omnishare-release/OmniShare-v1.3.0-rc2-windows-amd64.zip
           unzip -t "$zip" >/dev/null
           unzip -Z1 "$zip" | grep -qx 'OmniShare/start-omnishare.cmd'
           unzip -Z1 "$zip" | grep -qx 'OmniShare/start-omnishare.ps1'
-          ! unzip -p "$zip" OmniShare/start-omnishare.cmd | grep -q '\^|'
+          if unzip -p "$zip" OmniShare/start-omnishare.cmd | grep -q '\^|'; then
+            echo 'escaped PowerShell pipe regression found' >&2
+            exit 20
+          fi
           unzip -p "$zip" OmniShare/start-omnishare.cmd | grep -q 'start-omnishare.ps1'
+          unzip -p "$zip" OmniShare/start-omnishare.ps1 | grep -q 'Get-CimInstance Win32_Process'
+
           url="$(python3 -c "import json; print(json.load(open('/tmp/release.json'))['url'])")"
-          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "Verified ${TAG}: prerelease published, required assets present, and Windows AMD64 launcher contract passed. ${url}"
+          assets="$(python3 -c "import json; print(', '.join(sorted(item['name'] for item in json.load(open('/tmp/release.json'))['assets'])))")"
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "Verified ${TAG}: prerelease state is correct, required assets are present, and the downloaded Windows AMD64 ZIP contains the corrected CMD/PowerShell launcher without \`^|\`. ${url}\n\nAssets: ${assets}"
           gh issue close "$ISSUE_NUMBER" --repo "$REPO" --reason completed
