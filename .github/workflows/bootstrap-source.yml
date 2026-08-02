@@ -6,12 +6,16 @@ on:
       - main
     paths:
       - .github/workflows/bootstrap-source.yml
+  issues:
+    types:
+      - opened
 
 permissions:
   contents: write
 
 jobs:
   bootstrap:
+    if: github.event_name == 'push' || github.event.issue.title == '[bootstrap] publish v1.3.0-rc1'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout bootstrap branch
