@@ -162,7 +162,30 @@ func TestPadConflictShareLifecycleAndAuditChain(t *testing.T) {
 	if _, err := s.GetShareByToken(link.Token); !errors.Is(err, ErrShareExhausted) {
 		t.Fatalf("not exhausted: %v", err)
 	}
+	autoRevoked := model.ShareLink{ID: NewID("shr"), Token: NewToken(), ObjectType: "pad", ObjectID: p.ID, Name: "Plan active", CreatedAt: now}
+	if err := s.CreateShare(autoRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePad(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PurgeTrash("pad", p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetShareByToken(autoRevoked.Token); !errors.Is(err, ErrShareRevoked) {
+		t.Fatalf("share not automatically revoked: %v", err)
+	}
 	audits := s.ListAudits(1000)
+	foundAutoRevoke := false
+	for _, event := range audits {
+		if event.Action == "revoke" && event.Object == "share" && event.ObjectID == autoRevoked.ID && event.Summary == "share automatically revoked" {
+			foundAutoRevoke = true
+			break
+		}
+	}
+	if !foundAutoRevoke {
+		t.Fatal("automatic share revocation was not audited")
+	}
 	if len(audits) == 0 {
 		t.Fatal("no audits")
 	}

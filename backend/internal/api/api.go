@@ -845,6 +845,9 @@ func (s *Server) deleteFiles(w http.ResponseWriter, ids []string) {
 
 func (s *Server) listPads(w http.ResponseWriter, r *http.Request) {
 	items := s.store.ListPads(r.URL.Query().Get("q"))
+	for i := range items {
+		items[i].Content = ""
+	}
 	respondPage(w, r, items)
 }
 

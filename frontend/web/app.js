@@ -49,22 +49,34 @@ async function verifyAuth() {
 }
 
 async function loadAll() {
-  const core = await Promise.allSettled([loadHealth(), loadConfig()])
-  if (core.some(result => result.status === 'rejected')) return
-  const rest = await Promise.allSettled([loadDashboard(), loadNotes(), loadFiles(), loadPads(), loadShares(), loadTrash(), loadDevices()])
+  const core = await Promise.allSettled([loadHealth(true), loadConfig(true)])
+  if (core.some(result => result.status === 'rejected')) {
+    toast('核心服务加载失败，请检查连接或访问密钥', true)
+    return false
+  }
+  const rest = await Promise.allSettled([loadDashboard(true), loadNotes(true), loadFiles(true), loadPads(true), loadShares(true), loadTrash(true), loadDevices(true)])
   const failed = rest.filter(result => result.status === 'rejected')
   if (failed.length) toast(`${failed.length} 个模块加载失败，请重试`, true)
+  return failed.length === 0
 }
 
-async function loadHealth() {
+function reportLoadError(err, strict=false) {
+  if (!String(err.message).includes('密钥')) toast(err.message,true)
+  if (strict) throw err
+}
+
+async function loadHealth(strict=false) {
   try {
     const data = await api('/api/v1/health')
     const badge=$('#healthBadge'); badge.className='badge'; const node=state.config?.node_name||'OmniShare'; badge.innerHTML=`<i></i>${escapeHTML(node)} · v${escapeHTML(data.version)}`
-  } catch { const badge=$('#healthBadge'); badge.className='badge muted'; badge.innerHTML='<i></i>连接失败' }
+  } catch (err) {
+    const badge=$('#healthBadge'); badge.className='badge muted'; badge.innerHTML='<i></i>连接失败'
+    reportLoadError(err, strict)
+  }
 }
 
-async function loadDashboard() {
-  try { state.stats = await api('/api/v1/dashboard'); renderStats() } catch (err) { if (!String(err.message).includes('密钥')) toast(err.message,true) }
+async function loadDashboard(strict=false) {
+  try { state.stats = await api('/api/v1/dashboard'); renderStats() } catch (err) { reportLoadError(err, strict) }
 }
 function renderStats() {
   const items=[['随手记',state.stats.notes_count||0],['文件',state.stats.files_count||0],['协同文档',state.stats.pads_count||0],['视频',state.stats.videos_count||0],['安全分享',state.stats.active_shares||0],['回收站',state.stats.trash_count||0],['已用存储',formatBytes(state.stats.storage_used||0)]]
@@ -73,14 +85,14 @@ function renderStats() {
   $('#storageBar').setAttribute('aria-label','未设置磁盘总容量配额')
 }
 
-async function loadConfig() {
+async function loadConfig(strict=false) {
   try {
     state.config=await api('/api/v1/config')
-    $('#dataDirText').textContent=state.config.data_dir
+    $('#dataDirText').textContent='本机私有存储（路径未通过 API 暴露）'
     $('#uploadLimit').textContent=`单文件上限 ${formatBytes(state.config.max_upload_mb*1024*1024)}`
     fillSettings()
     renderStats()
-  } catch (err) { if (!String(err.message).includes('密钥')) toast(err.message,true) }
+  } catch (err) { reportLoadError(err, strict) }
 }
 
 function fillSettings() {
@@ -122,10 +134,10 @@ async function saveSettings() {
   } catch(err){toast(err.message,true)}
 }
 
-async function loadNotes() {
+async function loadNotes(strict=false) {
   const seq=++state.requestSeq.notes
   const q=encodeURIComponent($('#noteSearch').value.trim()); const tag=encodeURIComponent($('#noteTagFilter').value)
-  try { const notes=await api(`/api/v1/notes?q=${q}&tag=${tag}`); if(seq!==state.requestSeq.notes)return; state.notes=notes; renderNotes() } catch(err){ if(seq===state.requestSeq.notes&&!String(err.message).includes('密钥')) toast(err.message,true) }
+  try { const notes=await api(`/api/v1/notes?q=${q}&tag=${tag}`); if(seq!==state.requestSeq.notes)return; state.notes=notes; renderNotes() } catch(err){ if(seq===state.requestSeq.notes) reportLoadError(err, strict) }
 }
 function renderNotes() {
   $('#noteCount').textContent=`${state.notes.length} 条`
@@ -146,10 +158,10 @@ async function deleteNote(id) { if(!confirm('将这条随手记移入回收站�
 async function openEditNote(id){try{const n=await getManagedNote(id);state.editingNote=n;$('#editNoteId').textContent=n.id;$('#editNoteContent').value=n.content;$('#editNoteTags').value=(n.tags||[]).join(', ');$('#editNotePinned').checked=!!n.pinned;$('#editNoteBurn').checked=!!n.is_burn_after_read;$('#editNoteMaxReads').value=n.max_read_count||0;$('#editNoteDialog').showModal()}catch(err){toast(err.message,true)}}
 async function saveEditNote(){if(!state.editingNote)return;const payload={content:$('#editNoteContent').value,tags:$('#editNoteTags').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),pinned:$('#editNotePinned').checked,is_burn_after_read:$('#editNoteBurn').checked,max_read_count:Number($('#editNoteMaxReads').value||0)};try{await api(`/api/v1/notes/${encodeURIComponent(state.editingNote.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});$('#editNoteDialog').close();toast('随手记已更新');await loadNotes()}catch(err){toast(err.message,true)}}
 
-async function loadFiles() {
+async function loadFiles(strict=false) {
   const seq=++state.requestSeq.files
   const q=encodeURIComponent($('#fileSearch').value.trim());const type=encodeURIComponent($('#fileType').value)
-  try{const files=await api(`/api/v1/files?q=${q}&type=${type}`);if(seq!==state.requestSeq.files)return;state.files=files;renderFiles()}catch(err){if(seq===state.requestSeq.files&&!String(err.message).includes('密钥'))toast(err.message,true)}
+  try{const files=await api(`/api/v1/files?q=${q}&type=${type}`);if(seq!==state.requestSeq.files)return;state.files=files;renderFiles()}catch(err){if(seq===state.requestSeq.files)reportLoadError(err,strict)}
 }
 function fileIcon(f){if(f.is_video)return'🎬';if((f.mime_type||'').startsWith('image/'))return'🖼';if((f.mime_type||'').includes('zip'))return'🗜';return'📄'}
 function renderFiles(){
@@ -177,7 +189,7 @@ function uploadOne({file,ttl}){return new Promise(resolve=>{
   const form=new FormData();form.append('file',file);form.append('ttl_seconds',ttl);xhr.send(form)
 })}
 
-async function loadPads(){const seq=++state.requestSeq.pads;try{const pads=await api(`/api/v1/pads?q=${encodeURIComponent($('#padSearch').value.trim())}`);if(seq!==state.requestSeq.pads)return;state.pads=pads;renderPads()}catch(err){if(seq===state.requestSeq.pads&&!String(err.message).includes('密钥'))toast(err.message,true)}}
+async function loadPads(strict=false){const seq=++state.requestSeq.pads;try{const pads=await api(`/api/v1/pads?q=${encodeURIComponent($('#padSearch').value.trim())}`);if(seq!==state.requestSeq.pads)return;state.pads=pads;renderPads()}catch(err){if(seq===state.requestSeq.pads)reportLoadError(err,strict)}}
 function renderPads(){
   $('#padsList').innerHTML=state.pads.length?state.pads.map(p=>`<button class="pad-item ${state.currentPad?.id===p.id?'active':''}" data-pad-id="${escapeHTML(p.id)}"><strong>${escapeHTML(p.title)}</strong><span>v${p.version} · ${formatDate(p.updated_at)}</span></button>`).join(''):'<div class="empty">暂无文档</div>'
 }
@@ -197,11 +209,11 @@ async function deletePad(){if(!state.currentPad||!confirm('将当前文档移入
 function copyText(value){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(value);const ta=document.createElement('textarea');ta.value=value;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();return Promise.resolve()}
 function openShare(type,id,name){$('#shareObjectType').value=type;$('#shareObjectId').value=id;$('#shareObjectName').textContent=name;$('#shareTTL').value='604800';$('#shareMaxAccess').value='0';$('#shareDialog').showModal()}
 async function createShare(){const payload={object_type:$('#shareObjectType').value,object_id:$('#shareObjectId').value,ttl_seconds:Number($('#shareTTL').value),max_access_count:Number($('#shareMaxAccess').value)};try{const link=await api('/api/v1/shares',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await copyText(link.url);$('#shareDialog').close();toast('分享链接已创建并复制');await Promise.all([loadShares(),loadDashboard()])}catch(err){toast(err.message,true)}}
-async function loadShares(){try{state.shares=await api('/api/v1/shares');renderShares()}catch(err){if(!String(err.message).includes('密钥'))toast(err.message,true)}}
+async function loadShares(strict=false){try{state.shares=await api('/api/v1/shares');renderShares()}catch(err){reportLoadError(err,strict)}}
 function shareStatus(link){const labels={active:'有效',revoked:'已撤销',expired:'已过期',exhausted:'次数用尽',target_missing:'目标不存在',target_deleted:'目标已删除',target_expired:'目标已过期'};const status=link.status||'active';return[labels[status]||status,status==='active'?'':'danger']}
 function renderShares(){const labels={note:'随手记',file:'文件',pad:'协同文档'};$('#sharesList').innerHTML=state.shares.length?state.shares.map(link=>{const [status,cls]=shareStatus(link);const limit=link.max_access_count>0?`${link.access_count}/${link.max_access_count}`:`${link.access_count}/不限`;return `<article class="card share-card" data-share-id="${escapeHTML(link.id)}"><div><div class="note-meta"><span class="tag">${labels[link.object_type]||escapeHTML(link.object_type)}</span><span class="badge ${cls==='danger'?'muted':''}">${status}</span></div><h3>${escapeHTML(link.name)}</h3><p class="muted-text">访问 ${limit} · 到期 ${link.expires_at?formatDate(link.expires_at):'长期有效'}</p><code class="share-url">${escapeHTML(link.url)}</code></div><div class="file-actions"><button class="button ghost small copy-share">复制</button><button class="button ghost small open-share">打开</button>${link.revoked_at?'':`<button class="button danger small revoke-share">撤销</button>`}</div></article>`}).join(''):'<div class="empty">尚未创建安全分享</div>'}
 async function revokeShare(id){if(!confirm('撤销后该链接将立即失效，是否继续？'))return;try{await api(`/api/v1/shares/${encodeURIComponent(id)}`,{method:'DELETE'});toast('分享已撤销');await Promise.all([loadShares(),loadDashboard()])}catch(err){toast(err.message,true)}}
-async function loadTrash(){try{state.trash=await api(`/api/v1/trash?type=${encodeURIComponent($('#trashType')?.value||'')}`);renderTrash()}catch(err){if(!String(err.message).includes('密钥'))toast(err.message,true)}}
+async function loadTrash(strict=false){try{state.trash=await api(`/api/v1/trash?type=${encodeURIComponent($('#trashType')?.value||'')}`);renderTrash()}catch(err){reportLoadError(err,strict)}}
 function renderTrash(){const labels={note:'随手记',file:'文件',pad:'协同文档'};$('#trashList').innerHTML=state.trash.length?state.trash.map(item=>`<article class="card trash-card" data-trash-type="${escapeHTML(item.object_type)}" data-trash-id="${escapeHTML(item.id)}"><div><div class="note-meta"><span class="tag">${labels[item.object_type]||escapeHTML(item.object_type)}</span><span>删除于 ${formatDate(item.deleted_at)}</span></div><h3>${escapeHTML(item.name)}</h3>${item.size?`<p class="muted-text">${formatBytes(item.size)}</p>`:''}</div><div class="file-actions"><button class="button ghost small restore-trash">恢复</button><button class="button danger small purge-trash">永久删除</button></div></article>`).join(''):'<div class="empty">回收站为空</div>'}
 async function restoreTrash(type,id){try{await api(`/api/v1/trash/${encodeURIComponent(type)}/${encodeURIComponent(id)}/restore`,{method:'POST'});toast('已恢复');await Promise.all([loadTrash(),loadDashboard(),loadNotes(),loadFiles(),loadPads()])}catch(err){toast(err.message,true)}}
 async function purgeTrash(type,id){if(!confirm('永久删除后无法恢复，是否继续？'))return;try{await api(`/api/v1/trash/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,{method:'DELETE'});toast('已永久删除');await Promise.all([loadTrash(),loadDashboard()])}catch(err){toast(err.message,true)}}
@@ -210,7 +222,7 @@ async function emptyTrash(){if(!state.trash.length)return;if(!confirm('永久清
 async function loadAudit(){try{state.audits=await api('/api/v1/audit?limit=100');renderAudit()}catch(err){toast(err.message,true)}}
 function renderAudit(){const labels={create:'创建',update:'更新',delete:'删除',trash:'移入回收站',restore:'恢复',purge:'永久删除',upload:'上传',rename:'重命名',share:'分享',revoke:'撤销',access:'访问',read:'读取',cleanup:'清理'};$('#auditList').innerHTML=state.audits.length?state.audits.map(e=>`<article class="timeline-item"><span class="timeline-action">${labels[e.action]||escapeHTML(e.action)} · ${escapeHTML(e.object)}</span><div class="timeline-summary">${escapeHTML(e.summary||e.object_id||'—')}</div><time class="timeline-time">${formatDate(e.created_at)}</time></article>`).join(''):'<div class="empty">暂无活动记录</div>'}
 
-async function loadDevices(){if(state.devicesLoading)return;state.devicesLoading=true;const seq=++state.requestSeq.devices;try{const devices=await api('/api/v1/devices');if(seq!==state.requestSeq.devices)return;state.devices=devices;renderDevices()}catch(err){if(seq===state.requestSeq.devices&&!String(err.message).includes('密钥'))toast(err.message,true)}finally{state.devicesLoading=false}}
+async function loadDevices(strict=false){if(state.devicesLoading)return;state.devicesLoading=true;const seq=++state.requestSeq.devices;try{const devices=await api('/api/v1/devices');if(seq!==state.requestSeq.devices)return;state.devices=devices;renderDevices()}catch(err){if(seq===state.requestSeq.devices)reportLoadError(err,strict)}finally{state.devicesLoading=false}}
 function safeDeviceURL(value){try{const u=new URL(value,location.origin);return ['http:','https:'].includes(u.protocol)?u.href:''}catch{return''}}
 function renderDevices(){$('#deviceList').innerHTML=state.devices.length?state.devices.map(d=>{const url=safeDeviceURL(d.url);return `<div class="device"><div class="device-main"><h3>${escapeHTML(d.hostname)}</h3>${url?`<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>`:'<span class="muted-text">无有效地址</span>'}</div><div><div class="device-state ${d.online?'':'offline'}">${d.online?'在线':'离线'}</div><div class="muted-text">${escapeHTML(d.network_type)}${d.latency_ms?` · ${d.latency_ms}ms`:''}</div></div></div>`}).join(''):'<div class="empty">未发现可用地址</div>'}
 

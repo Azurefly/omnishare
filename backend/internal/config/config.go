@@ -242,7 +242,6 @@ func cloneConfig(cfg model.AppConfig) model.AppConfig {
 func (m *Manager) Public() model.PublicConfig {
 	cfg := m.Get()
 	return model.PublicConfig{
-		DataDir:            cfg.DataDir,
 		NodeID:             cfg.NodeID,
 		NodeName:           cfg.NodeName,
 		Port:               cfg.Port,

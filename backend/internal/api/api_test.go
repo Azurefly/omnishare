@@ -352,6 +352,46 @@ func TestBackupRestoreIncludesConfigStateAndWorksWithoutFiles(t *testing.T) {
 	}
 }
 
+func TestConfigHidesDataDirAndPadListOmitsContent(t *testing.T) {
+	_, h, cfg := newTestServer(t)
+	configResp := request(t, h, http.MethodGet, "/api/v1/config", nil, "", "")
+	if configResp.Code != http.StatusOK {
+		t.Fatalf("config=%d %s", configResp.Code, configResp.Body.String())
+	}
+	configData := decodeData[map[string]interface{}](t, configResp)
+	if _, exists := configData["data_dir"]; exists {
+		t.Fatal("config API exposed data_dir")
+	}
+	if strings.Contains(configResp.Body.String(), cfg.Get().DataDir) {
+		t.Fatal("config API leaked the local data directory path")
+	}
+
+	padResp := request(t, h, http.MethodPost, "/api/v1/pads", strings.NewReader(`{"title":"Private plan","content":"secret document body"}`), "", "application/json")
+	if padResp.Code != http.StatusCreated {
+		t.Fatalf("pad=%d %s", padResp.Code, padResp.Body.String())
+	}
+	pad := decodeData[model.PadDocument](t, padResp)
+	listResp := request(t, h, http.MethodGet, "/api/v1/pads", nil, "", "")
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("pad list=%d %s", listResp.Code, listResp.Body.String())
+	}
+	pads := decodeData[[]model.PadDocument](t, listResp)
+	if len(pads) != 1 || pads[0].ID != pad.ID {
+		t.Fatalf("unexpected pad list: %+v", pads)
+	}
+	if pads[0].Content != "" || strings.Contains(listResp.Body.String(), "secret document body") {
+		t.Fatal("pad list exposed document content")
+	}
+	detailResp := request(t, h, http.MethodGet, "/api/v1/pads/"+pad.ID, nil, "", "")
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("pad detail=%d %s", detailResp.Code, detailResp.Body.String())
+	}
+	detail := decodeData[model.PadDocument](t, detailResp)
+	if detail.Content != "secret document body" {
+		t.Fatalf("pad detail content=%q", detail.Content)
+	}
+}
+
 func TestConfigAPIActuallySetsWriteOnlyAccessKey(t *testing.T) {
 	_, h, cfg := newTestServer(t)
 	secret := "0123456789abcdef-secure"

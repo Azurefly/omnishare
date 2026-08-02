@@ -10,6 +10,10 @@ for(const forbidden of ['localStorage','authorizedURL','?key=']) if(js.includes(
 if(!js.includes('sessionStorage'))throw new Error('access key is not session-scoped')
 if(!js.includes("'X-OmniShare-Confirm'='CLEAR-ACCESS-KEY'")&&!js.includes("requestHeaders['X-OmniShare-Confirm']='CLEAR-ACCESS-KEY'"))throw new Error('access-key clearing confirmation missing')
 if(!js.includes('state.activeUploads<3'))throw new Error('upload concurrency limit missing')
+
+if(!js.includes('loadHealth(true)')||!js.includes('loadConfig(true)')||!js.includes('reportLoadError(err, strict)'))throw new Error('strict initialization failure reporting missing')
+if(js.includes('state.config.data_dir')||js.includes('.data_dir'))throw new Error('private data directory is exposed in frontend')
+if(!html.includes('路径未通过 API 暴露'))throw new Error('private storage path disclosure text missing')
 if(!js.includes('omnishare.padDraft.'))throw new Error('conflict draft preservation missing')
 const parsed=JSON.parse(manifest);if(parsed.display!=='standalone'||!parsed.icons?.length)throw new Error('invalid PWA manifest')
 if(!sw.includes("omnishare-v1.3.0-rc1"))throw new Error('service worker cache version missing')

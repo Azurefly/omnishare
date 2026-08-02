@@ -83,7 +83,6 @@ type AppConfig struct {
 }
 
 type PublicConfig struct {
-	DataDir            string       `json:"data_dir"`
 	NodeID             string       `json:"node_id"`
 	NodeName           string       `json:"node_name"`
 	Port               int          `json:"port"`
