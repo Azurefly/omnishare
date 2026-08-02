@@ -1,0 +1,16 @@
+{
+  "name": "omnishare-desktop",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/ensure-icons.mjs",
+    "dev": "tauri dev",
+    "prebuild": "node scripts/ensure-icons.mjs",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
