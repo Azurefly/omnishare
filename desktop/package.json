@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/ensure-icons.mjs",
     "dev": "tauri dev",
+    "prebuild": "node scripts/ensure-icons.mjs",
     "build": "tauri build",
     "tauri": "tauri"
   },
