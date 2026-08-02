@@ -1,0 +1,65 @@
+name: Verify RC2 release
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    if: github.actor == 'Azurefly' && github.event.issue.title == '[verify] v1.3.0-rc2 release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for and verify release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          TAG: v1.3.0-rc2
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/omnishare-release
+          found=0
+          for _ in $(seq 1 60); do
+            if gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,url,assets > /tmp/release.json 2>/dev/null; then
+              found=1
+              break
+            fi
+            sleep 10
+          done
+          test "$found" = 1
+          python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/release.json'))
+          assert data['isDraft'] is False, data
+          assert data['isPrerelease'] is True, data
+          names={item['name'] for item in data['assets']}
+          required={
+            'OmniShare-v1.3.0-rc2-windows-amd64.zip',
+            'OmniShare-v1.3.0-rc2-windows-arm64.zip',
+            'OmniShare-v1.3.0-rc2-linux-amd64.tar.gz',
+            'OmniShare-v1.3.0-rc2-linux-arm64.tar.gz',
+            'OmniShare-v1.3.0-rc2-macos-amd64.zip',
+            'OmniShare-v1.3.0-rc2-macos-arm64.zip',
+            'omnishare_1.3.0~rc2_amd64.deb',
+            'omnishare_1.3.0~rc2_arm64.deb',
+            'SHA256SUMS.txt',
+            'RELEASE_NOTES_v1.3.0-rc2.md',
+          }
+          missing=required-names
+          assert not missing, f'missing release assets: {sorted(missing)}'
+          PY
+          gh release download "$TAG" --repo "$REPO" --dir /tmp/omnishare-release --pattern 'OmniShare-v1.3.0-rc2-windows-amd64.zip' --pattern 'SHA256SUMS.txt'
+          zip=/tmp/omnishare-release/OmniShare-v1.3.0-rc2-windows-amd64.zip
+          unzip -t "$zip" >/dev/null
+          unzip -Z1 "$zip" | grep -qx 'OmniShare/start-omnishare.cmd'
+          unzip -Z1 "$zip" | grep -qx 'OmniShare/start-omnishare.ps1'
+          ! unzip -p "$zip" OmniShare/start-omnishare.cmd | grep -q '\^|'
+          unzip -p "$zip" OmniShare/start-omnishare.cmd | grep -q 'start-omnishare.ps1'
+          url="$(python3 -c "import json; print(json.load(open('/tmp/release.json'))['url'])")"
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "Verified ${TAG}: prerelease published, required assets present, and Windows AMD64 launcher contract passed. ${url}"
+          gh issue close "$ISSUE_NUMBER" --repo "$REPO" --reason completed
