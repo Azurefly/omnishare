@@ -1,0 +1,66 @@
+
+ROUND 1/5 — SOURCE QUALITY
+
+> omnishare-frontend@1.2.0 check
+> node --check web/app.js && node --check web/service-worker.js
+
+
+ROUND 2/5 — UNIT + RACE TESTS
+=== RUN   TestStoreNoteTrashRestoreAndPurge
+--- PASS: TestStoreNoteTrashRestoreAndPurge (0.00s)
+=== RUN   TestBurnAfterReadAndMaxReadsHardDelete
+--- PASS: TestBurnAfterReadAndMaxReadsHardDelete (0.00s)
+=== RUN   TestFilesPadsStatsRenameHashAndTrash
+--- PASS: TestFilesPadsStatsRenameHashAndTrash (0.00s)
+=== RUN   TestShareLifecycleLimitsExpiryAndRevocation
+--- PASS: TestShareLifecycleLimitsExpiryAndRevocation (0.00s)
+=== RUN   TestCleanupMovesToTrashAndPurgesOldTrash
+--- PASS: TestCleanupMovesToTrashAndPurgesOldTrash (0.00s)
+PASS
+ok  	omnishare/internal/storage	1.032s
+=== RUN   TestConfigPersistenceAndPeerSanitization
+--- PASS: TestConfigPersistenceAndPeerSanitization (0.01s)
+PASS
+ok  	omnishare/internal/config	1.017s
+
+ROUND 3/5 — API INTEGRATION + RACE TESTS
+=== RUN   TestHealthStaticAndNoteCRUD
+--- PASS: TestHealthStaticAndNoteCRUD (0.01s)
+=== RUN   TestAuthProtection
+--- PASS: TestAuthProtection (0.00s)
+=== RUN   TestFileUploadRangeDownloadDeleteAndBackup
+--- PASS: TestFileUploadRangeDownloadDeleteAndBackup (0.01s)
+=== RUN   TestPadVersionConflictAndDevices
+--- PASS: TestPadVersionConflictAndDevices (0.00s)
+=== RUN   TestFileDedupRenameTrashRestoreAndPurge
+--- PASS: TestFileDedupRenameTrashRestoreAndPurge (0.01s)
+=== RUN   TestControlledShareLinkAccessLimitAndRevocation
+--- PASS: TestControlledShareLinkAccessLimitAndRevocation (0.00s)
+=== RUN   TestNoteAndPadTrashRestoreAndEmpty
+--- PASS: TestNoteAndPadTrashRestoreAndEmpty (0.00s)
+PASS
+ok  	omnishare/internal/api	1.045s
+
+ROUND 4/5 — FRONTEND + SIX TARGET BUILDS
+
+> omnishare-frontend@1.2.0 build
+> node scripts/build.mjs
+
+Frontend copied to /mnt/data/omnishare_v12_work/OmniShare-v1.2.0-source/backend/internal/frontend/dist
+
+> omnishare-frontend@1.2.0 test
+> node scripts/test.mjs
+
+Frontend contract checks passed
+../.test-build/omnishare-darwin-amd64:      Mach-O 64-bit x86_64 executable, flags:<|DYLDLINK|PIE>
+../.test-build/omnishare-darwin-arm64:      Mach-O 64-bit arm64 executable, flags:<|DYLDLINK|PIE>
+../.test-build/omnishare-linux-amd64:       ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go BuildID=XmCL0dQtksKl8mi6xT7Q/fG3auHE3em9LGqoZeQbN/OA1qlRMtiMuTxHlVLlN3/pdov4Uy5C1FrVYoa6Bo1, stripped
+../.test-build/omnishare-linux-arm64:       ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, Go BuildID=1u1yAq_4FLeBv4bPHbVT/tmLVcjGgtvs7floS2hT_/U5Q7hQwLmAyfgAF7igKe/_HNdGhwdCnjZqRPeueDO, stripped
+../.test-build/omnishare-windows-amd64.exe: PE32+ executable for MS Windows 6.01 (console), x86-64, 8 sections
+../.test-build/omnishare-windows-arm64.exe: PE32+ executable for MS Windows 6.01 (console), ARM64, 6 sections
+
+ROUND 5/5 — REAL E2E + RELEASE PACKAGE VALIDATION
+Packages created in /tmp/tmp.q84ZwA8gzl/release/packages
+End-to-end product flows and all package structures passed
+
+ALL 5 ROUNDS PASSED

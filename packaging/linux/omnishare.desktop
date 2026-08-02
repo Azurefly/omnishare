@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OmniShare
+Comment=Private multi-device notes, files and collaboration hub
+Exec=/usr/bin/omnishare
+Terminal=false
+Categories=Utility;Network;
+StartupNotify=true
