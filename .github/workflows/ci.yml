@@ -29,7 +29,7 @@ jobs:
           npm --prefix frontend run build
           git diff --exit-code -- backend/internal/frontend/dist
       - name: Windows launcher contract
-        run: ./scripts/test-windows-launcher.sh
+        run: bash scripts/test-windows-launcher.sh
       - name: Go format and vet
         run: |
           test -z "$(gofmt -l backend)"
