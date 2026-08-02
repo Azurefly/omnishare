@@ -82,6 +82,29 @@ This verifies that the Tauri bundle step and artifact upload step succeeded on W
 
 ## Publishing
 
+There are two supported publishing paths.
+
+### Option A: publish from GitHub Actions UI
+
+Use this when you want to publish without creating a tag locally.
+
+1. Open **Actions**.
+2. Select **Desktop Release**.
+3. Click **Run workflow**.
+4. Select the branch to build, usually `release/v1.4.0-desktop` or `main`.
+5. Enter a release tag, for example:
+
+```text
+v1.4.0-desktop
+```
+
+6. Choose whether the release should be a draft or prerelease.
+7. Run the workflow.
+
+When `release_tag` is provided, the workflow creates or updates the GitHub Release and attaches generated Windows, Linux and macOS bundle files.
+
+### Option B: publish from Git tag
+
 Create and push a tag that starts with `v`:
 
 ```bash
