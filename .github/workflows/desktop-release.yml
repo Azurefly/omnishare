@@ -78,10 +78,12 @@ jobs:
           Pop-Location
 
       - name: Install desktop dependencies
-        run: npm --prefix desktop install
+        working-directory: desktop
+        run: npm install
 
       - name: Build Tauri bundle
-        run: npm --prefix desktop run build
+        working-directory: desktop
+        run: npm run build
 
       - name: Upload desktop bundle artifact
         uses: actions/upload-artifact@v4
