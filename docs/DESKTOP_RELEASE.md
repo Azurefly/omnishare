@@ -58,16 +58,49 @@ omnishare-desktop-Windows
 omnishare-desktop-macOS
 ```
 
+## Verified release candidate
+
+The first desktop release candidate was validated by GitHub Actions on all three supported desktop platforms.
+
+```text
+workflow: Desktop Release
+run_id: 30740280360
+source_head: fae6e282226a595ea886e2504d3a94ea9c38c50c
+merged_to_main: 55e99b7fe0407c74c62451611ccd2c8f7e09fea6
+release_branch: release/v1.4.0-desktop
+```
+
+Generated artifacts:
+
+| Platform | Artifact | Size | Digest |
+| --- | --- | ---: | --- |
+| Windows | `omnishare-desktop-Windows` | 14,772,921 bytes | `sha256:cce0e377f0fb220dc229f230fe1f39243e8b0a1c8272eeba349bc5b6876b1315` |
+| Linux | `omnishare-desktop-Linux` | 217,009,463 bytes | `sha256:691fb920b0e3480ab406639dcf848e3e80eefdda40d27af6556d45cc2e67c91e` |
+| macOS | `omnishare-desktop-macOS` | 16,076,597 bytes | `sha256:ff29de5ddd0946578cfe0596d278095d0edc28260a57b9b4d06a1ef6b637f112` |
+
+This verifies that the Tauri bundle step and artifact upload step succeeded on Windows, Linux and macOS. It does not replace real-device smoke testing, code signing or notarization.
+
 ## Publishing
 
 Create and push a tag that starts with `v`:
 
 ```bash
-git tag v1.4.0-desktop-alpha.1
-git push origin v1.4.0-desktop-alpha.1
+git checkout main
+git pull origin main
+git tag v1.4.0-desktop
+git push origin v1.4.0-desktop
 ```
 
 GitHub Actions will build all desktop bundles and attach generated bundle files to the release.
+
+For a pre-release build, use:
+
+```bash
+git checkout release/v1.4.0-desktop
+git pull origin release/v1.4.0-desktop
+git tag v1.4.0-desktop-alpha.1
+git push origin v1.4.0-desktop-alpha.1
+```
 
 ## Release gate
 
