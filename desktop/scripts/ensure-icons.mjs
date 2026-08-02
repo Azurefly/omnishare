@@ -57,17 +57,17 @@ function buildPng(size) {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(size, 0);
   header.writeUInt32BE(size, 4);
-  header.writeUInt8(8, 8); // bit depth
-  header.writeUInt8(6, 9); // RGBA
-  header.writeUInt8(0, 10); // compression
-  header.writeUInt8(0, 11); // filter
-  header.writeUInt8(0, 12); // interlace
+  header.writeUInt8(8, 8);
+  header.writeUInt8(6, 9);
+  header.writeUInt8(0, 10);
+  header.writeUInt8(0, 11);
+  header.writeUInt8(0, 12);
 
   const stride = 1 + size * 4;
   const raw = Buffer.alloc(stride * size);
   let offset = 0;
   for (let y = 0; y < size; y++) {
-    raw.writeUInt8(0, offset++); // no filter
+    raw.writeUInt8(0, offset++);
     for (let x = 0; x < size; x++) {
       const [r, g, b, a] = pixel(x, y, size);
       raw.writeUInt8(r, offset++);
@@ -83,6 +83,27 @@ function buildPng(size) {
     pngChunk('IDAT', deflateSync(raw)),
     pngChunk('IEND')
   ]);
+}
+
+function icnsChunk(type, data) {
+  const chunk = Buffer.alloc(8 + data.length);
+  chunk.write(type, 0, 4, 'ascii');
+  chunk.writeUInt32BE(chunk.length, 4);
+  data.copy(chunk, 8);
+  return chunk;
+}
+
+function buildIcns() {
+  const chunks = [
+    icnsChunk('ic07', buildPng(128)),
+    icnsChunk('ic08', buildPng(256)),
+    icnsChunk('ic09', buildPng(512))
+  ];
+  const totalSize = 8 + chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const header = Buffer.alloc(8);
+  header.write('icns', 0, 4, 'ascii');
+  header.writeUInt32BE(totalSize, 4);
+  return Buffer.concat([header, ...chunks]);
 }
 
 function buildIco() {
@@ -143,6 +164,7 @@ const assets = [
   ['32x32.png', buildPng(32)],
   ['128x128.png', buildPng(128)],
   ['128x128@2x.png', buildPng(256)],
+  ['icon.icns', buildIcns()],
   ['icon.ico', buildIco()]
 ];
 
