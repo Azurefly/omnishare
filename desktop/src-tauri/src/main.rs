@@ -18,7 +18,7 @@ fn main() {
 
             let state = app.state::<BackendState>();
             let window = app.get_webview_window("main");
-            match runtime::startup::initialize(app.handle(), &state) {
+            match runtime::startup::initialize(app.handle(), state.inner()) {
                 Ok(url) => {
                     if let Some(window) = window {
                         let script = format!("window.location.replace({:?});", url);
