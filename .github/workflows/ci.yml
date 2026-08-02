@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'agent/**']
+    branches: [main, 'agent/**', 'fix/**']
   pull_request:
 
 permissions:
@@ -28,6 +28,8 @@ jobs:
           npm --prefix frontend run test
           npm --prefix frontend run build
           git diff --exit-code -- backend/internal/frontend/dist
+      - name: Windows launcher contract
+        run: bash scripts/test-windows-launcher.sh
       - name: Go format and vet
         run: |
           test -z "$(gofmt -l backend)"

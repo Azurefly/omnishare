@@ -8,12 +8,14 @@ DEB_VERSION="${VERSION/-rc/~rc}"
 BUNDLE_VERSION="$(printf '%s' "$VERSION" | sed -E 's/-rc([0-9]+)/.\1/; s/[^0-9.].*$//')"
 SHORT_VERSION="${VERSION%%-*}"
 PKG="$OUT/packages"
+RELEASE_NOTES="$ROOT/docs/RELEASE_NOTES_v${VERSION}.md"
 
 require() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required tool: $1" >&2; exit 2; }; }
 for tool in zip tar dpkg-deb sed sha256sum; do require "$tool"; done
 for target in windows-amd64.exe windows-arm64.exe linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
   test -s "$BIN/omnishare-$target" || { echo "Missing binary: $BIN/omnishare-$target" >&2; exit 2; }
 done
+test -f "$RELEASE_NOTES" || { echo "Missing release notes: $RELEASE_NOTES" >&2; exit 2; }
 
 rm -rf "$PKG" "$OUT/work"
 mkdir -p "$PKG" "$OUT/work"
@@ -22,7 +24,7 @@ for arch in amd64 arm64; do
   work="$OUT/work/windows-$arch/OmniShare"
   mkdir -p "$work"
   cp "$BIN/omnishare-windows-$arch.exe" "$work/omnishare.exe"
-  cp "$ROOT/packaging/windows/install.ps1" "$ROOT/packaging/windows/start-omnishare.cmd" "$ROOT/packaging/windows/uninstall.ps1" "$work/"
+  cp "$ROOT/packaging/windows/install.ps1" "$ROOT/packaging/windows/start-omnishare.cmd" "$ROOT/packaging/windows/start-omnishare.ps1" "$ROOT/packaging/windows/uninstall.ps1" "$work/"
   sed "s/__VERSION__/$VERSION/g" "$ROOT/packaging/windows/README.txt" > "$work/README.txt"
   (cd "$(dirname "$work")" && zip -qr "$PKG/OmniShare-v${VERSION}-windows-${arch}.zip" OmniShare)
 done
@@ -64,7 +66,7 @@ for arch in amd64 arm64; do
   (cd "$(dirname "$app")" && zip -qr "$PKG/OmniShare-v${VERSION}-macos-${arch}.zip" OmniShare.app)
 done
 
-for doc in "$ROOT/README.md" "$ROOT/docs/RELEASE_NOTES_v1.3.0-rc1.md" "$ROOT/docs/REMEDIATION_v1.3.0-rc1.md"; do
+for doc in "$ROOT/README.md" "$RELEASE_NOTES" "$ROOT/docs/REMEDIATION_v1.3.0-rc1.md"; do
   [ -f "$doc" ] && cp "$doc" "$PKG/"
 done
 (
