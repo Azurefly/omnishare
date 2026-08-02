@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   verify:
-    if: github.actor == 'Azurefly' && github.event.issue.title == '[verify-debug] v1.3.0-rc2 release'
+    if: github.actor == 'Azurefly' && github.event.issue.title == '[verify-final] v1.3.0-rc2 release'
     runs-on: ubuntu-latest
     steps:
       - name: Verify published release and downloaded Windows package
@@ -58,8 +58,8 @@ jobs:
             'OmniShare-v1.3.0-rc2-linux-arm64.tar.gz',
             'OmniShare-v1.3.0-rc2-macos-amd64.zip',
             'OmniShare-v1.3.0-rc2-macos-arm64.zip',
-            'omnishare_1.3.0~rc2_amd64.deb',
-            'omnishare_1.3.0~rc2_arm64.deb',
+            'omnishare_1.3.0.rc2_amd64.deb',
+            'omnishare_1.3.0.rc2_arm64.deb',
             'SHA256SUMS.txt',
             'RELEASE_NOTES_v1.3.0-rc2.md',
           }
