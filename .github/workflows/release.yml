@@ -3,20 +3,16 @@ name: Release
 on:
   push:
     tags: ['v*']
-  issues:
-    types: [opened]
 
 permissions:
   contents: write
-  issues: write
 
 concurrency:
-  group: omnishare-release
+  group: omnishare-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   release:
-    if: github.event_name == 'push' || github.event.issue.title == '[release] publish current version'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -36,9 +32,7 @@ jobs:
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < VERSION)"
           TAG="v${VERSION}"
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            test "${TAG}" = "${GITHUB_REF_NAME}"
-          fi
+          test "${TAG}" = "${GITHUB_REF_NAME}"
           NOTES="docs/RELEASE_NOTES_${TAG}.md"
           test -f "${NOTES}"
           if [[ "${VERSION}" == *-* ]]; then
@@ -50,39 +44,18 @@ jobs:
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "notes=${NOTES}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
-          echo "target=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-
-      - name: Detect tag-trigger duplicate
-        id: duplicate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.metadata.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "skip=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "skip=false" >> "${GITHUB_OUTPUT}"
-          fi
 
       - name: Build and test release
-        if: steps.duplicate.outputs.skip != 'true'
         run: ./scripts/build-release.sh
 
       - name: Verify package checksums
-        if: steps.duplicate.outputs.skip != 'true'
         run: cd dist/packages && sha256sum -c SHA256SUMS.txt
 
       - name: Publish GitHub release
-        if: steps.duplicate.outputs.skip != 'true'
-        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.metadata.outputs.tag }}
-          VERSION: ${{ steps.metadata.outputs.version }}
           NOTES: ${{ steps.metadata.outputs.notes }}
-          TARGET: ${{ steps.metadata.outputs.target }}
           PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
         shell: bash
         run: |
@@ -97,23 +70,8 @@ jobs:
             fi
           else
             if [[ "${PRERELEASE}" == "true" ]]; then
-              gh release create "${TAG}" dist/packages/* --target "${TARGET}" --title "${TITLE}" --notes-file "${NOTES}" --prerelease
+              gh release create "${TAG}" dist/packages/* --verify-tag --title "${TITLE}" --notes-file "${NOTES}" --prerelease
             else
-              gh release create "${TAG}" dist/packages/* --target "${TARGET}" --title "${TITLE}" --notes-file "${NOTES}" --latest
+              gh release create "${TAG}" dist/packages/* --verify-tag --title "${TITLE}" --notes-file "${NOTES}" --latest
             fi
           fi
-          URL="$(gh release view "${TAG}" --json url --jq .url)"
-          echo "url=${URL}" >> "${GITHUB_OUTPUT}"
-
-      - name: Record successful issue-triggered publication
-        if: github.event_name == 'issues' && steps.duplicate.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          TAG: ${{ steps.metadata.outputs.tag }}
-          RELEASE_URL: ${{ steps.publish.outputs.url }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh issue comment "${ISSUE_NUMBER}" --body "Published ${TAG} successfully: ${RELEASE_URL}"
-          gh issue close "${ISSUE_NUMBER}" --reason completed
