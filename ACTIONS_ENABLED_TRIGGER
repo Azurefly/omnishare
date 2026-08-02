@@ -2,3 +2,4 @@ Trigger source bootstrap after Actions was enabled on 2026-08-02.
 Retry after correcting the 64-character SHA-256 checksum.
 Diagnostic retry to print reconstructed archive size and SHA-256.
 Final retry after repairing corrupted source archive chunk 010.
+Retry after separating workflow-file writes from Actions token push.
