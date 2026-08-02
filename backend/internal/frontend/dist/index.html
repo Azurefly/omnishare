@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="description" content="OmniShare 私有化跨设备速记、文件与协同工作台" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/style.css" />
+  <title>OmniShare</title>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">OS</div>
+        <div><h1>OmniShare</h1><p>私有化多设备内容中枢</p></div>
+      </div>
+      <div class="top-actions">
+        <span id="healthBadge" class="badge muted"><i></i>连接中</span>
+        <button id="installBtn" class="button ghost hidden">安装到桌面</button>
+        <button id="backupBtn" class="button ghost">导出备份</button>
+        <button id="settingsBtn" class="button">系统设置</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section id="stats" class="stats-grid"></section>
+      <div class="workspace">
+        <section class="content-column">
+          <nav class="tabs" aria-label="主功能">
+            <button class="tab active" data-tab="notes">随手记</button>
+            <button class="tab" data-tab="files">文件与视频</button>
+            <button class="tab" data-tab="pads">协同文档</button>
+            <button class="tab" data-tab="shares">安全分享</button>
+            <button class="tab" data-tab="trash">回收站</button>
+            <button class="tab" data-tab="activity">活动记录</button>
+          </nav>
+
+          <section id="notesPanel" class="panel-view active">
+            <article class="card composer">
+              <div class="card-title"><div><h2>新建随手记</h2><p>文本、代码、Markdown 与剪贴板片段统一收集</p></div><button id="pasteBtn" class="button ghost small">读取剪贴板</button></div>
+              <textarea id="noteContent" rows="5" placeholder="输入内容，正文中的 #标签 会自动识别"></textarea>
+              <div class="form-row">
+                <input id="noteTags" placeholder="标签，使用逗号分隔" />
+                <select id="noteTTL"><option value="0">永久保存</option><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option></select><input id="noteMaxReads" type="number" min="0" max="1000000" value="0" placeholder="最大读取次数，0 不限" />
+              </div>
+              <div class="toolbar"><label><input id="notePinned" type="checkbox" /> 置顶</label><label><input id="noteBurn" type="checkbox" /> 阅后即焚</label><button id="createNoteBtn" class="button primary">发布速记</button></div>
+            </article>
+            <div class="list-toolbar"><input id="noteSearch" type="search" placeholder="搜索内容或标签" /><select id="noteTagFilter"><option value="">全部标签</option></select><span id="noteCount" class="muted-text"></span></div>
+            <div id="notesList" class="stack"></div>
+          </section>
+
+          <section id="filesPanel" class="panel-view">
+            <article id="dropZone" class="drop-zone" tabindex="0">
+              <input id="fileInput" type="file" multiple hidden />
+              <div class="drop-icon">⇧</div><h2>拖拽文件到这里</h2><p>支持多文件、流式大文件上传、视频在线播放与 HTTP Range 读取</p>
+              <div class="form-row compact"><select id="fileTTL"><option value="0">永久保存</option><option value="86400">保留 24 小时</option><option value="604800">保留 7 天</option><option value="2592000">保留 30 天</option></select><button id="chooseFilesBtn" class="button primary">选择文件</button></div>
+            </article>
+            <div id="uploadQueue" class="stack compact-stack"></div>
+            <div class="list-toolbar"><input id="fileSearch" type="search" placeholder="搜索文件名或类型" /><select id="fileType"><option value="">全部类型</option><option value="video">视频</option><option value="image">图片</option><option value="document">其他文件</option></select><span id="fileCount" class="muted-text"></span></div>
+            <div id="filesList" class="file-grid"></div>
+          </section>
+
+          <section id="padsPanel" class="panel-view">
+            <div class="pad-layout">
+              <aside class="card pad-sidebar"><div class="card-title"><div><h2>协同文档</h2><p>版本冲突保护与自动保存</p></div><button id="newPadBtn" class="button primary small">新建</button></div><input id="padSearch" type="search" placeholder="搜索文档" /><div id="padsList" class="pad-list"></div></aside>
+              <article class="card pad-editor"><div id="padEmpty" class="empty">选择或新建一个文档</div><div id="padForm" class="hidden"><div class="pad-editor-head"><input id="padTitle" class="title-input" /><div><span id="saveState" class="badge muted">未修改</span><button id="sharePadBtn" class="button ghost small">分享</button><button id="deletePadBtn" class="button danger small">删除</button></div></div><textarea id="padContent" rows="22" placeholder="开始编辑……"></textarea><div class="editor-footer"><span id="padMeta" class="muted-text"></span><button id="savePadBtn" class="button primary">立即保存</button></div></div></article>
+            </div>
+          </section>
+
+
+          <section id="sharesPanel" class="panel-view">
+            <div class="list-toolbar"><div><h2>安全分享</h2><p class="muted-text">按内容生成独立链接，可设置有效期和访问次数，无需暴露全局访问密钥</p></div><button id="refreshSharesBtn" class="button ghost small">刷新</button></div>
+            <div id="sharesList" class="stack"></div>
+          </section>
+
+          <section id="trashPanel" class="panel-view">
+            <div class="list-toolbar"><div><h2>回收站</h2><p class="muted-text">普通删除先进入回收站，超过保留期后自动永久清理</p></div><div class="inline-actions"><select id="trashType"><option value="">全部类型</option><option value="note">随手记</option><option value="file">文件</option><option value="pad">协同文档</option></select><button id="emptyTrashBtn" class="button danger small">清空回收站</button></div></div>
+            <div id="trashList" class="stack"></div>
+          </section>
+
+          <section id="activityPanel" class="panel-view"><div class="list-toolbar"><div><h2>活动记录</h2><p class="muted-text">最近 100 条关键操作，便于追溯</p></div><button id="refreshAuditBtn" class="button ghost small">刷新</button></div><div id="auditList" class="timeline"></div></section>
+        </section>
+
+        <aside class="sidebar">
+          <article class="card"><div class="card-title"><div><h2>设备与网络</h2><p>局域网、Tailscale 与手动节点</p></div><button id="refreshDevicesBtn" class="icon-button" title="刷新">↻</button></div><div id="deviceList" class="device-list"></div></article>
+          <article class="card storage-card"><div class="card-title"><div><h2>存储概览</h2><p id="dataDirText">—</p></div></div><div class="storage-meter" title="当前版本未设置磁盘总容量配额"><div id="storageBar"></div></div><div class="storage-footer"><span id="storageUsed">已用 0 B</span><span id="uploadLimit">单文件上限 —</span></div></article>
+          <article class="card tips"><h2>快速访问</h2><p>同一网络设备打开上方节点地址即可使用。Tailscale 场景可在设置中添加 MagicDNS 或 100.x 地址。</p></article>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="settingsDialog" class="modal">
+    <form method="dialog" class="modal-card" id="settingsForm">
+      <div class="modal-head"><div><h2>系统设置</h2><p>安全和网络设置保存后需重启应用生效</p></div><button value="cancel" class="icon-button">×</button></div>
+      <div class="settings-grid">
+        <label>节点名称<input id="cfgNodeName" required /></label>
+        <label>默认保留天数<input id="cfgRetention" type="number" min="0" max="36500" /><small>0 表示不自动清理</small></label>
+        <label>回收站保留天数<input id="cfgTrashRetention" type="number" min="1" max="36500" /><small>到期后永久删除，默认 30 天</small></label>
+        <label>单文件上传上限（MB）<input id="cfgMaxUpload" type="number" min="1" max="1048576" /></label>
+        <label class="switch-row"><span>启动时打开浏览器</span><input id="cfgAutoOpen" type="checkbox" /></label>
+        <label class="switch-row"><span>允许局域网访问</span><input id="cfgAllowLAN" type="checkbox" /><small>开启前必须设置至少 16 字节访问密钥。</small></label>
+        <label>监听地址<input id="cfgListenAddress" placeholder="127.0.0.1" /><small>本机使用 127.0.0.1；局域网通常使用 0.0.0.0。</small></label>
+        <label class="full">公开基础地址<input id="cfgPublicBaseURL" type="url" placeholder="https://share.example.com:8081" /><small>用于生成分享链接；留空时仅接受可信 Host。</small></label>
+        <label class="full">允许的跨域来源<input id="cfgAllowedOrigins" placeholder="https://app.example.com, https://admin.example.com" /><small>默认不允许跨域；仅填写完整可信 Origin。</small></label>
+        <label class="full">访问密钥<input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="留空保持不变；输入 CLEAR 清除" /><small>密钥只保存在当前浏览器会话，不写入 URL 或长期存储。</small></label>
+      </div>
+      <div class="peer-section"><div class="card-title"><div><h3>手动设备节点</h3><p>适用于 Tailscale / 跨网段，填写完整地址</p></div><button id="addPeerBtn" type="button" class="button ghost small">添加节点</button></div><div id="peerRows" class="peer-rows"></div></div>
+      <div class="modal-actions"><button value="cancel" class="button ghost">取消</button><button id="saveSettingsBtn" type="button" class="button primary">保存设置</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="authDialog" class="modal auth-modal"><form method="dialog" class="modal-card"><div class="modal-head"><div><h2>需要访问密钥</h2><p>该 OmniShare 节点已启用访问保护</p></div></div><label>访问密钥<input id="authKey" type="password" autocomplete="current-password" /></label><p id="authError" class="error-text"></p><div class="modal-actions"><button id="authSubmitBtn" type="button" class="button primary">验证并进入</button></div></form></dialog>
+
+  <dialog id="editNoteDialog" class="modal"><form method="dialog" class="modal-card"><div class="modal-head"><div><h2>编辑随手记</h2><p id="editNoteId"></p></div><button value="cancel" class="icon-button">×</button></div><textarea id="editNoteContent" rows="10"></textarea><label>标签<input id="editNoteTags" /></label><label class="switch-row"><span>置顶</span><input id="editNotePinned" type="checkbox" /></label><label class="switch-row"><span>阅后即焚</span><input id="editNoteBurn" type="checkbox" /></label><label>最大读取次数<input id="editNoteMaxReads" type="number" min="0" max="1000000" value="0" /></label><div class="modal-actions"><button value="cancel" class="button ghost">取消</button><button id="saveEditNoteBtn" type="button" class="button primary">保存</button></div></form></dialog>
+
+
+  <dialog id="shareDialog" class="modal auth-modal"><form method="dialog" class="modal-card"><div class="modal-head"><div><h2>创建安全分享</h2><p id="shareObjectName">—</p></div><button value="cancel" class="icon-button">×</button></div><input id="shareObjectType" type="hidden"><input id="shareObjectId" type="hidden"><label>有效期<select id="shareTTL"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option><option value="0">长期有效</option></select></label><label>最大访问次数<input id="shareMaxAccess" type="number" min="0" max="1000000" value="0"><small>0 表示不限制</small></label><div class="modal-actions"><button value="cancel" class="button ghost">取消</button><button id="createShareBtn" type="button" class="button primary">创建并复制链接</button></div></form></dialog>
+
+
+  <dialog id="viewNoteDialog" class="modal"><div class="modal-card"><div class="modal-head"><div><h2>查看受限随手记</h2><p id="viewNoteMeta">—</p></div><button id="closeViewNoteBtn" class="icon-button">×</button></div><pre id="viewNoteContent" class="view-note-content"></pre><div class="modal-actions"><button id="copyViewedNoteBtn" class="button ghost">复制内容</button><button id="closeViewedNoteBtn" class="button primary">关闭</button></div></div></dialog>
+  <dialog id="videoDialog" class="modal video-modal"><div class="video-card"><div class="modal-head"><h2 id="videoTitle">视频播放</h2><button id="closeVideoBtn" class="icon-button">×</button></div><video id="videoPlayer" controls playsinline></video></div></dialog>
+  <div id="toast" class="toast"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
