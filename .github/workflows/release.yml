@@ -11,21 +11,20 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22.x'
-      - uses: actions/setup-node@v4
+          go-version: '1.22.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22.x'
+          node-version: '22.23.1'
       - name: Verify tag matches product version
         run: test "v$(tr -d '[:space:]' < VERSION)" = "$GITHUB_REF_NAME"
       - name: Build and test release
         run: ./scripts/build-release.sh
       - name: Verify package checksums
         run: cd dist/packages && sha256sum -c SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/packages/*
-          generate_release_notes: true
-          draft: true
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/packages/* --draft --generate-notes --verify-tag
