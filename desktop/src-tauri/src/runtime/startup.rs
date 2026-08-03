@@ -36,7 +36,10 @@ pub fn initialize(
             .map(|path| format!("- {}", path.display()))
             .collect::<Vec<_>>()
             .join("\n");
-        format!("OmniShare backend binary was not found. Checked:\n{}", candidates)
+        format!(
+            "OmniShare backend binary was not found. Checked:\n{}",
+            candidates
+        )
     })?;
 
     let config_dir = app
@@ -46,11 +49,7 @@ pub fn initialize(
     let log_path = config_dir.join("logs").join("backend.log");
     let status = backend_state.start(&executable, &log_path)?;
 
-    if health::wait_backend(
-        DEFAULT_BACKEND_HOST,
-        status.port,
-        Duration::from_secs(20),
-    ) {
+    if health::wait_backend(DEFAULT_BACKEND_HOST, status.port, Duration::from_secs(20)) {
         Ok(status)
     } else {
         let diagnostics = backend_state.diagnostics();
