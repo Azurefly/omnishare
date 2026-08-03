@@ -12,6 +12,9 @@ use runtime::manager::BackendState;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
         .setup(|app| {
             let settings = config::settings::resolve(app.handle());
             app.manage(BackendState::new(settings.port));
