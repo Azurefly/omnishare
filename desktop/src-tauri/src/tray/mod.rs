@@ -10,7 +10,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit OmniShare", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
-    TrayIconBuilder::with_id("omnishare-tray")
+    let mut builder = TrayIconBuilder::with_id("omnishare-tray")
         .tooltip("OmniShare")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -29,15 +29,20 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
             {
                 show_main_window(tray.app_handle());
             }
-        })
-        .build(app)?;
+        });
 
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder.build(app)?;
     Ok(())
 }
 
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
     }
 }
