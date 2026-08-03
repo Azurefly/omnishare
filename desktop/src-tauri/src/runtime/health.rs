@@ -99,10 +99,6 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
         let port = listener.local_addr().expect("ephemeral address").port();
         drop(listener);
-        assert!(!wait_backend(
-            "127.0.0.1",
-            port,
-            Duration::from_millis(350)
-        ));
+        assert!(!wait_backend("127.0.0.1", port, Duration::from_millis(350)));
     }
 }
