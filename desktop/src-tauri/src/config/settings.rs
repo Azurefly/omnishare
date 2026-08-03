@@ -39,14 +39,14 @@ pub fn validate_port(port: u16) -> Result<u16, String> {
 
 pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
     if let Ok(raw) = env::var(PORT_ENV) {
-        if let Ok(port) = raw.parse::<u16>().and_then(|port| {
-            validate_port(port).map_err(|_| std::num::ParseIntError::from(std::num::IntErrorKind::InvalidDigit))
-        }) {
-            return DesktopSettingsView {
-                port,
-                configured: true,
-                source: PORT_ENV.to_string(),
-            };
+        if let Ok(parsed) = raw.parse::<u16>() {
+            if let Ok(port) = validate_port(parsed) {
+                return DesktopSettingsView {
+                    port,
+                    configured: true,
+                    source: PORT_ENV.to_string(),
+                };
+            }
         }
     }
 
