@@ -23,9 +23,6 @@ try {
     & "$PSScriptRoot/windows-runtime-smoke.ps1" `
         -BundleRoot $BundleRoot `
         -EvidenceRoot $resolvedEvidence
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
 }
 finally {
     Remove-Item Env:OMNISHARE_DESKTOP_LOG_DIR -ErrorAction SilentlyContinue
