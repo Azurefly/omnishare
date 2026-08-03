@@ -27,6 +27,14 @@ impl BackendProcess {
         self.port
     }
 
+    pub fn set_port(&mut self, port: u16) -> Result<(), String> {
+        if self.is_running() {
+            return Err("Stop the OmniShare backend before changing its port.".to_string());
+        }
+        self.port = port;
+        Ok(())
+    }
+
     pub fn url(&self) -> String {
         format!("http://{}:{}", DEFAULT_BACKEND_HOST, self.port)
     }
@@ -57,6 +65,7 @@ impl BackendProcess {
             .arg("--port")
             .arg(self.port.to_string())
             .env("OMNISHARE_DESKTOP", "1")
+            .env("OMNISHARE_PORT", self.port.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
