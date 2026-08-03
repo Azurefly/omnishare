@@ -29,11 +29,14 @@ const [cargo, main, tray, startup, health, config, packageJson] = await Promise.
 requireMatch('Cargo.toml', cargo, /tauri-plugin-single-instance\s*=\s*"2"/, 'single-instance plugin dependency is required');
 requireMatch('main.rs', main, /tauri_plugin_single_instance::init/, 'single-instance plugin must be registered before setup');
 requireMatch('main.rs', main, /tray::show_main_window/, 'second launch must restore the existing window');
+requireMatch('main.rs', main, /if\s+settings\.configured/, 'configured desktop startup must run natively instead of waiting for WebView JavaScript');
+requireMatch('main.rs', main, /startup::initialize\(app\.handle\(\)/, 'native setup must initialize the backend');
 requireMatch('tray/mod.rs', tray, /default_window_icon\(\)/, 'tray must use the packaged application icon');
 requireMatch('tray/mod.rs', tray, /builder\s*=\s*builder\.icon/, 'tray icon must be explicitly assigned');
 requireMatch('tray/mod.rs', tray, /window\.unminimize\(\)/, 'tray restore must unminimize the main window');
 requireMatch('runtime/startup.rs', startup, /is_omnishare_backend/, 'startup must attach to an existing OmniShare backend');
 requireMatch('runtime/startup.rs', startup, /diagnostics/, 'startup failures must include backend diagnostics');
+requireMatch('runtime/startup.rs', startup, /OMNISHARE_DESKTOP_LOG_DIR/, 'test and managed deployments must be able to capture backend logs deterministically');
 requireMatch('runtime/health.rs', health, /<title>OmniShare<\/title>/, 'health probe must identify OmniShare rather than any open TCP port');
 requireMatch('tauri.conf.json', config, /"resources"\s*:\s*\[/, 'backend resources must be bundled');
 requireMatch('tauri.conf.json', config, /"icons\/icon\.ico"/, 'Windows application icon must be bundled');
