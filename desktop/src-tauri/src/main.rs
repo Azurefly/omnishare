@@ -8,7 +8,7 @@ mod tray;
 
 use tauri::{Manager, WindowEvent};
 
-use runtime::manager::BackendState;
+use runtime::{manager::BackendState, startup};
 
 fn main() {
     tauri::Builder::default()
@@ -19,6 +19,20 @@ fn main() {
             let settings = config::settings::resolve(app.handle());
             app.manage(BackendState::new(settings.port));
             tray::setup(app.handle())?;
+
+            // Do not depend on WebView JavaScript to start the local service.
+            // Managed deployments and returning users already have a configured
+            // port, so the native runtime brings the backend up before the page
+            // asks for status. First launch remains interactive.
+            if settings.configured {
+                let backend_state = app.state::<BackendState>();
+                if let Err(error) =
+                    startup::initialize(app.handle(), backend_state.inner(), settings.port)
+                {
+                    eprintln!("OmniShare native backend startup failed: {error}");
+                }
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
