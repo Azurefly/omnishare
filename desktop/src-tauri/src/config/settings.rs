@@ -79,8 +79,9 @@ pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
 
 pub fn save_user_port(app: &AppHandle, port: u16) -> Result<PathBuf, String> {
     let port = validate_port(port)?;
-    let path = user_settings_path(app)
-        .ok_or_else(|| "Unable to resolve the OmniShare desktop configuration directory.".to_string())?;
+    let path = user_settings_path(app).ok_or_else(|| {
+        "Unable to resolve the OmniShare desktop configuration directory.".to_string()
+    })?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
