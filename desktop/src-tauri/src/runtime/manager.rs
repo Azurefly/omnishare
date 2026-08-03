@@ -21,13 +21,22 @@ pub struct BackendState {
 
 impl Default for BackendState {
     fn default() -> Self {
-        Self {
-            process: Mutex::new(BackendProcess::new(DEFAULT_BACKEND_PORT)),
-        }
+        Self::new(DEFAULT_BACKEND_PORT)
     }
 }
 
 impl BackendState {
+    pub fn new(port: u16) -> Self {
+        Self {
+            process: Mutex::new(BackendProcess::new(port)),
+        }
+    }
+
+    pub fn configure_port(&self, port: u16) -> Result<(), String> {
+        let mut process = self.process.lock().map_err(|err| err.to_string())?;
+        process.set_port(port)
+    }
+
     pub fn status(&self) -> BackendStatus {
         let mut process = self.process.lock().expect("backend process state poisoned");
         BackendStatus {
