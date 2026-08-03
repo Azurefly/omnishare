@@ -1,11 +1,14 @@
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::{
     config::{paths, settings},
     process::backend::DEFAULT_BACKEND_HOST,
-    runtime::{health, manager::{BackendState, BackendStatus}},
+    runtime::{
+        health,
+        manager::{BackendState, BackendStatus},
+    },
 };
 
 pub fn initialize(
@@ -31,7 +34,12 @@ pub fn initialize(
         format!("OmniShare backend binary was not found. Checked:\n{}", candidates)
     })?;
 
-    let status = backend_state.start(&executable)?;
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Unable to resolve desktop configuration directory: {error}"))?;
+    let log_path = config_dir.join("logs").join("backend.log");
+    let status = backend_state.start(&executable, &log_path)?;
 
     if health::wait_backend(
         DEFAULT_BACKEND_HOST,
@@ -40,12 +48,14 @@ pub fn initialize(
     ) {
         Ok(status)
     } else {
+        let diagnostics = backend_state.diagnostics();
         let _ = backend_state.stop();
         Err(format!(
-            "OmniShare backend started from '{}' but did not become ready on {}:{} within 20 seconds.",
+            "OmniShare backend started from '{}' but did not become ready on {}:{} within 20 seconds.\n\n{}",
             executable.display(),
             DEFAULT_BACKEND_HOST,
-            status.port
+            status.port,
+            diagnostics
         ))
     }
 }
