@@ -76,7 +76,15 @@ function Get-ProcessesByExecutable {
     param([string]$Executable)
     $normalized = [System.IO.Path]::GetFullPath($Executable)
     return @(Get-CimInstance Win32_Process | Where-Object {
-        $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath) -eq $normalized)
+        if (-not $_.ExecutablePath) {
+            return $false
+        }
+        try {
+            return ([System.IO.Path]::GetFullPath($_.ExecutablePath) -eq $normalized)
+        }
+        catch {
+            return $false
+        }
     })
 }
 
@@ -114,7 +122,8 @@ function Start-Backend {
         [string]$BackendExe,
         [int]$Port,
         [string]$DataDir,
-        [string]$LogPath
+        [string]$StdoutLogPath,
+        [string]$StderrLogPath
     )
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     $arguments = @(
@@ -123,7 +132,12 @@ function Start-Backend {
         '--port', [string]$Port,
         '--data-dir', $DataDir
     )
-    $process = Start-Process -FilePath $BackendExe -ArgumentList $arguments -RedirectStandardOutput $LogPath -RedirectStandardError $LogPath -PassThru
+    $process = Start-Process `
+        -FilePath $BackendExe `
+        -ArgumentList $arguments `
+        -RedirectStandardOutput $StdoutLogPath `
+        -RedirectStandardError $StderrLogPath `
+        -PassThru
     $script:startedProcesses.Add($process)
     return $process
 }
@@ -174,13 +188,22 @@ try {
     }
 
     $backendExe = Get-ChildItem -Path $extractRoot -Recurse -File -Filter 'omnishare.exe' | Select-Object -First 1
+    if (-not $backendExe) {
+        throw "Bundled backend executable omnishare.exe was not found in the extracted MSI layout."
+    }
+
+    $backendPath = [System.IO.Path]::GetFullPath($backendExe.FullName)
     $desktopExe = Get-ChildItem -Path $extractRoot -Recurse -File -Filter '*.exe' |
-        Where-Object { $_.FullName -ne $backendExe.FullName -and $_.Name -notmatch '(?i)uninstall' } |
+        Where-Object {
+            ([System.IO.Path]::GetFullPath($_.FullName) -ne $backendPath) -and
+            ($_.Name -notmatch '(?i)uninstall')
+        } |
         Sort-Object Length -Descending |
         Select-Object -First 1
 
-    if (-not $backendExe) { throw "Bundled backend executable omnishare.exe was not found in the extracted MSI layout." }
-    if (-not $desktopExe) { throw "Desktop executable was not found in the extracted MSI layout." }
+    if (-not $desktopExe) {
+        throw "Desktop executable was not found in the extracted MSI layout."
+    }
 
     Add-Type -AssemblyName System.Drawing
     $associatedIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($desktopExe.FullName)
@@ -189,7 +212,13 @@ try {
     }
     $iconEvidence = Join-Path $EvidenceRoot 'desktop-associated-icon.ico'
     $iconStream = [System.IO.File]::Create($iconEvidence)
-    try { $associatedIcon.Save($iconStream) } finally { $iconStream.Dispose(); $associatedIcon.Dispose() }
+    try {
+        $associatedIcon.Save($iconStream)
+    }
+    finally {
+        $iconStream.Dispose()
+        $associatedIcon.Dispose()
+    }
 
     Add-PhaseResult -Name 'installed-layout-and-icon' -Passed $true -Details @{
         msi = $msi.FullName
@@ -241,8 +270,12 @@ try {
 
     $desktopCount = (Get-ProcessesByExecutable -Executable $desktopExe.FullName).Count
     $backendCount = (Get-ProcessesByExecutable -Executable $backendExe.FullName).Count
-    if ($desktopCount -ne 1) { throw "Expected one desktop process during fallback test; found $desktopCount." }
-    if ($backendCount -ne 1) { throw "Expected one managed backend during fallback test; found $backendCount." }
+    if ($desktopCount -ne 1) {
+        throw "Expected one desktop process during fallback test; found $desktopCount."
+    }
+    if ($backendCount -ne 1) {
+        throw "Expected one managed backend during fallback test; found $backendCount."
+    }
 
     Add-PhaseResult -Name 'port-conflict-fallback' -Passed $true -Details @{
         preferredPort = $preferredPort
@@ -252,15 +285,22 @@ try {
     }
 
     Stop-Process -Id $desktopPhase1.Id -Force -ErrorAction SilentlyContinue
-    Get-ProcessesByExecutable -Executable $backendExe.FullName | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Get-ProcessesByExecutable -Executable $backendExe.FullName |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Stop-Job $dummyJob -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 
     # Phase 2: an existing OmniShare backend is already healthy. Desktop must attach, not create another backend.
     $attachPort = Get-FreePort
     $attachData = Join-Path $EvidenceRoot 'data-existing-backend'
-    $standaloneBackendLog = Join-Path $EvidenceRoot 'standalone-backend.log'
-    $standaloneBackend = Start-Backend -BackendExe $backendExe.FullName -Port $attachPort -DataDir $attachData -LogPath $standaloneBackendLog
+    $standaloneBackendStdout = Join-Path $EvidenceRoot 'standalone-backend.stdout.log'
+    $standaloneBackendStderr = Join-Path $EvidenceRoot 'standalone-backend.stderr.log'
+    $standaloneBackend = Start-Backend `
+        -BackendExe $backendExe.FullName `
+        -Port $attachPort `
+        -DataDir $attachData `
+        -StdoutLogPath $standaloneBackendStdout `
+        -StderrLogPath $standaloneBackendStderr
     if (-not (Wait-OmniSharePort -Ports @($attachPort) -TimeoutSeconds 25)) {
         throw "Standalone packaged backend failed to become healthy on port $attachPort."
     }
@@ -295,6 +335,8 @@ try {
         originalDesktopPid = $desktopPhase2.Id
         standaloneBackendPid = $standaloneBackend.Id
         secondLaunchExited = $secondLaunch.HasExited
+        backendStdout = $standaloneBackendStdout
+        backendStderr = $standaloneBackendStderr
     }
 
     $results.success = $true
