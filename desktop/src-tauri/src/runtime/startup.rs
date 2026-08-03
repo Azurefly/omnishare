@@ -3,19 +3,24 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::{
-    config::paths,
-    process::backend::{DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT},
-    runtime::{health, manager::BackendState},
+    config::{paths, settings},
+    process::backend::DEFAULT_BACKEND_HOST,
+    runtime::{health, manager::{BackendState, BackendStatus}},
 };
 
-pub fn initialize(app: &AppHandle, backend_state: &BackendState) -> Result<String, String> {
-    if health::wait_backend(
-        DEFAULT_BACKEND_HOST,
-        DEFAULT_BACKEND_PORT,
-        Duration::from_millis(750),
-    ) {
-        return Ok(format!("http://{}:{}", DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT));
+pub fn initialize(
+    app: &AppHandle,
+    backend_state: &BackendState,
+    preferred_port: u16,
+) -> Result<BackendStatus, String> {
+    let current = backend_state.status();
+    if current.running {
+        return Ok(current);
     }
+
+    let selected_port = settings::find_available_port(preferred_port)?;
+    backend_state.configure_port(selected_port)?;
+    settings::save_user_port(app, selected_port)?;
 
     let executable = paths::resolve_backend_executable(app).ok_or_else(|| {
         let candidates = paths::backend_executable_candidates(app)
@@ -30,16 +35,17 @@ pub fn initialize(app: &AppHandle, backend_state: &BackendState) -> Result<Strin
 
     if health::wait_backend(
         DEFAULT_BACKEND_HOST,
-        DEFAULT_BACKEND_PORT,
+        status.port,
         Duration::from_secs(20),
     ) {
-        Ok(status.url)
+        Ok(status)
     } else {
+        let _ = backend_state.stop();
         Err(format!(
             "OmniShare backend started from '{}' but did not become ready on {}:{} within 20 seconds.",
             executable.display(),
             DEFAULT_BACKEND_HOST,
-            DEFAULT_BACKEND_PORT
+            status.port
         ))
     }
 }
