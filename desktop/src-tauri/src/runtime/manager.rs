@@ -37,6 +37,16 @@ impl BackendState {
         process.set_port(port)
     }
 
+    pub fn attach(&self, port: u16) -> Result<BackendStatus, String> {
+        let mut process = self.process.lock().map_err(|err| err.to_string())?;
+        process.attach(port)?;
+        Ok(BackendStatus {
+            running: true,
+            url: process.url(),
+            port: process.port(),
+        })
+    }
+
     pub fn status(&self) -> BackendStatus {
         let mut process = self.process.lock().expect("backend process state poisoned");
         BackendStatus {
@@ -46,14 +56,21 @@ impl BackendState {
         }
     }
 
-    pub fn start(&self, executable: &Path) -> Result<BackendStatus, String> {
+    pub fn start(&self, executable: &Path, log_path: &Path) -> Result<BackendStatus, String> {
         let mut process = self.process.lock().map_err(|err| err.to_string())?;
-        process.start(executable).map_err(|err| err.to_string())?;
+        process
+            .start(executable, log_path)
+            .map_err(|err| err.to_string())?;
         Ok(BackendStatus {
             running: process.is_running(),
             url: process.url(),
             port: process.port(),
         })
+    }
+
+    pub fn diagnostics(&self) -> String {
+        let mut process = self.process.lock().expect("backend process state poisoned");
+        process.diagnostics()
     }
 
     pub fn stop(&self) -> BackendStatus {
