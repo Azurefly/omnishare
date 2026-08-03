@@ -238,7 +238,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./desktop/tests/windows-runtime-smoke.ps1 `
+          ./desktop/tests/windows-runtime-smoke-ci.ps1 `
             -BundleRoot "desktop/src-tauri/target/release/bundle" `
             -EvidenceRoot "$env:EVIDENCE_DIR"
 
