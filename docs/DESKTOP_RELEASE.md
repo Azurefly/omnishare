@@ -8,18 +8,25 @@ The desktop edition keeps the existing Go backend as the source of truth for sto
 
 1. Start the desktop WebView.
 2. Read the configured local service port.
-3. If the configured port is occupied, select and persist an available local port.
-4. Resolve the bundled OmniShare backend binary.
-5. Start the backend with `--no-browser --listen 127.0.0.1 --port <selected-port>`.
-6. Wait for the selected port to accept TCP connections.
-7. Navigate the WebView to the local OmniShare UI.
-8. Keep the app in the tray when the main window is closed.
-9. Stop the child backend process when the desktop runtime exits.
+3. Detect and attach to an existing healthy OmniShare backend on that port.
+4. If the configured port is occupied by another service, select and persist an available local port.
+5. Resolve the bundled OmniShare backend binary.
+6. Start the backend with `--no-browser --listen 127.0.0.1 --port <selected-port>`.
+7. Wait until the selected endpoint serves the OmniShare application.
+8. Navigate the WebView to the local OmniShare UI.
+9. Keep the app in the tray when the main window is closed.
+10. Stop the managed child backend process when the desktop runtime exits.
 
 Port configuration and managed-deployment options are documented in:
 
 ```text
 docs/DESKTOP_PORT_AND_MACOS.md
+```
+
+The complete automated and real-device test process is documented in:
+
+```text
+docs/DESKTOP_TEST_PLAN.md
 ```
 
 ## Local build
@@ -38,7 +45,33 @@ docs/DESKTOP_PORT_AND_MACOS.md
 
 On macOS, the script builds both the Go backend and Tauri application as Universal binaries containing `arm64` and `x86_64`.
 
-## CI build
+## Local validation
+
+Desktop source contracts:
+
+```bash
+npm --prefix desktop install
+npm --prefix desktop run test:contracts
+```
+
+Rust formatting, static analysis and unit tests:
+
+```bash
+npm --prefix desktop run prebuild
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check
+cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --all-features
+```
+
+Windows installed-layout runtime smoke test after building bundles:
+
+```powershell
+.\desktop\tests\windows-runtime-smoke.ps1 `
+  -BundleRoot .\desktop\src-tauri\target\release\bundle `
+  -EvidenceRoot .\desktop-test-evidence\Windows
+```
+
+## CI build and test
 
 The workflow is defined in:
 
@@ -46,19 +79,29 @@ The workflow is defined in:
 .github/workflows/desktop-release.yml
 ```
 
-It builds:
+It builds and validates:
 
 - Linux x86_64
 - Windows x86_64
 - macOS Universal (`arm64` + `x86_64`)
 
-Artifacts are uploaded as:
+Release packages are uploaded as:
 
 ```text
 omnishare-desktop-Linux
 omnishare-desktop-Windows
 omnishare-desktop-macOS-universal
 ```
+
+Independent test evidence is uploaded as:
+
+```text
+omnishare-test-evidence-Linux
+omnishare-test-evidence-Windows
+omnishare-test-evidence-macOS-universal
+```
+
+The Windows job extracts the MSI package and executes the desktop from the extracted installed layout. It validates port conflict fallback, existing-backend attachment, single-instance enforcement, process counts and Windows icon resources.
 
 ## macOS release requirement
 
@@ -103,7 +146,7 @@ There are two supported publishing paths.
 6. Choose whether the release is a draft or prerelease.
 7. Run the workflow.
 
-The workflow builds and validates all platforms first. Only after every build succeeds does a separate publishing job attach the verified assets to the GitHub Release.
+The workflow runs source checks, Rust tests, platform builds, installed-layout smoke tests, architecture checks and integrity hashing first. Only after every required job succeeds does a separate publishing job attach the verified release packages.
 
 ### Option B: publish from Git tag
 
@@ -116,24 +159,21 @@ git push origin v1.4.1-desktop
 
 ## Release gate
 
-Before marking a desktop release stable, verify the following on real machines:
+A stable release requires all automated gates in `docs/DESKTOP_TEST_PLAN.md` to pass and the real-device evidence below to be recorded:
 
-- First launch allows the local service port to be selected.
-- A collision on the preferred port selects another available port.
-- Windows opens without an external browser.
-- macOS Apple Silicon opens without a damaged-app warning.
-- macOS Intel opens from the same Universal package.
-- Linux opens without an external browser.
-- The Go backend starts automatically.
-- The WebView navigates to the selected local URL.
-- Closing the main window hides it instead of terminating the app.
-- The tray icon can reopen the main window.
-- Quit from tray terminates the desktop runtime and child backend.
-- Existing OmniShare file upload/download/share workflows still work.
+- Windows 10 or 11: tray icon visible and interactive.
+- Windows: repeated launch leaves one desktop shell and one backend.
+- Windows: close-to-tray, restore, hide and quit behavior verified.
+- macOS Apple Silicon, including M4: signed/notarized download opens without a damaged-app warning.
+- macOS Intel: the same Universal package opens.
+- Linux: application and tray/AppIndicator start correctly.
+- Existing file upload, download, delete and share workflows work.
+
+The GitHub Actions run must include SHA-256 evidence and platform test-evidence artifacts. A green package build without the runtime evidence is not sufficient for stable publication.
 
 ## Remaining release considerations
 
 - Windows Authenticode signing is still recommended for a polished public release.
-- Real-device smoke testing remains required even after CI packaging succeeds.
+- Physical notification-area interaction and Gatekeeper first-launch behavior require real-device validation.
 - The backend remains a child process rather than an in-process library.
 - Existing backend data-storage limitations remain unchanged.
