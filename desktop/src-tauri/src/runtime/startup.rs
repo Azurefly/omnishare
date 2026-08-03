@@ -21,6 +21,11 @@ pub fn initialize(
         return Ok(current);
     }
 
+    if health::is_omnishare_backend(DEFAULT_BACKEND_HOST, preferred_port) {
+        settings::save_user_port(app, preferred_port)?;
+        return backend_state.attach(preferred_port);
+    }
+
     let selected_port = settings::find_available_port(preferred_port)?;
     backend_state.configure_port(selected_port)?;
     settings::save_user_port(app, selected_port)?;
