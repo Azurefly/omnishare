@@ -1,7 +1,9 @@
 use std::{
-    io,
-    path::Path,
+    fs::{self, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    time::SystemTime,
 };
 
 pub const DEFAULT_BACKEND_PORT: u16 = 8081;
@@ -10,6 +12,8 @@ pub const DEFAULT_BACKEND_HOST: &str = "127.0.0.1";
 pub struct BackendProcess {
     child: Option<Child>,
     port: u16,
+    log_path: Option<PathBuf>,
+    last_exit: Option<String>,
 }
 
 impl Default for BackendProcess {
@@ -20,7 +24,12 @@ impl Default for BackendProcess {
 
 impl BackendProcess {
     pub fn new(port: u16) -> Self {
-        Self { child: None, port }
+        Self {
+            child: None,
+            port,
+            log_path: None,
+            last_exit: None,
+        }
     }
 
     pub fn port(&self) -> u16 {
@@ -42,23 +51,46 @@ impl BackendProcess {
     pub fn is_running(&mut self) -> bool {
         match self.child.as_mut() {
             Some(child) => match child.try_wait() {
-                Ok(Some(_status)) => {
+                Ok(Some(status)) => {
+                    self.last_exit = Some(format!("Backend process exited with status {status}."));
                     self.child = None;
                     false
                 }
                 Ok(None) => true,
-                Err(_) => false,
+                Err(error) => {
+                    self.last_exit = Some(format!("Unable to inspect backend process: {error}"));
+                    false
+                }
             },
             None => false,
         }
     }
 
-    pub fn start(&mut self, executable: &Path) -> io::Result<()> {
+    pub fn start(&mut self, executable: &Path, log_path: &Path) -> io::Result<()> {
         if self.is_running() {
             return Ok(());
         }
 
-        let child = Command::new(executable)
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut stdout_log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        writeln!(
+            stdout_log,
+            "\n=== OmniShare backend start {:?} | executable={} | port={} ===",
+            SystemTime::now(),
+            executable.display(),
+            self.port
+        )?;
+        stdout_log.flush()?;
+        let stderr_log = stdout_log.try_clone()?;
+
+        let mut command = Command::new(executable);
+        command
             .arg("--no-browser")
             .arg("--listen")
             .arg(DEFAULT_BACKEND_HOST)
@@ -67,12 +99,52 @@ impl BackendProcess {
             .env("OMNISHARE_DESKTOP", "1")
             .env("OMNISHARE_PORT", self.port.to_string())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stdout(Stdio::from(stdout_log))
+            .stderr(Stdio::from(stderr_log));
 
+        if let Some(parent) = executable.parent() {
+            command.current_dir(parent);
+        }
+
+        let child = command.spawn()?;
         self.child = Some(child);
+        self.log_path = Some(log_path.to_path_buf());
+        self.last_exit = None;
         Ok(())
+    }
+
+    pub fn diagnostics(&mut self) -> String {
+        let running = self.is_running();
+        let mut sections = Vec::new();
+        sections.push(format!("Backend process running: {running}"));
+        if let Some(last_exit) = &self.last_exit {
+            sections.push(last_exit.clone());
+        }
+
+        if let Some(log_path) = &self.log_path {
+            sections.push(format!("Backend log: {}", log_path.display()));
+            match fs::read_to_string(log_path) {
+                Ok(content) => {
+                    let tail = content
+                        .lines()
+                        .rev()
+                        .take(80)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !tail.trim().is_empty() {
+                        sections.push(format!("Recent backend output:\n{tail}"));
+                    }
+                }
+                Err(error) => sections.push(format!("Unable to read backend log: {error}")),
+            }
+        } else {
+            sections.push("Backend log was not initialized.".to_string());
+        }
+
+        sections.join("\n")
     }
 
     pub fn stop(&mut self) {
