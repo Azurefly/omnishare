@@ -134,3 +134,67 @@ fn installation_settings_path() -> Option<PathBuf> {
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join(SETTINGS_FILE_NAME)))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        net::TcpListener,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{find_available_port, read_port, validate_port};
+
+    fn unique_temp_file(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "omnishare-desktop-test-{}-{}-{}",
+            std::process::id(),
+            nonce,
+            name
+        ))
+    }
+
+    #[test]
+    fn rejects_reserved_ports() {
+        assert!(validate_port(0).is_err());
+        assert!(validate_port(1023).is_err());
+        assert_eq!(validate_port(1024), Ok(1024));
+        assert_eq!(validate_port(65535), Ok(65535));
+    }
+
+    #[test]
+    fn keeps_an_available_preferred_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        assert_eq!(find_available_port(port), Ok(port));
+    }
+
+    #[test]
+    fn skips_an_occupied_preferred_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind occupied port");
+        let occupied = listener.local_addr().expect("local addr").port();
+        let selected = find_available_port(occupied).expect("find fallback port");
+        assert_ne!(selected, occupied);
+        assert!(selected >= 1024);
+    }
+
+    #[test]
+    fn reads_only_valid_persisted_ports() {
+        let path = unique_temp_file("settings.json");
+        fs::write(&path, "{\"port\": 19081}\n").expect("write valid settings");
+        assert_eq!(read_port(&path), Some(19081));
+
+        fs::write(&path, "{\"port\": 80}\n").expect("write invalid settings");
+        assert_eq!(read_port(&path), None);
+
+        fs::write(&path, "not-json").expect("write malformed settings");
+        assert_eq!(read_port(&path), None);
+        let _ = fs::remove_file(path);
+    }
+}
