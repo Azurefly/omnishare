@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to create or update, for example v1.4.0-desktop"
+        description: "Release tag to create or update, for example v1.4.1-desktop"
         required: false
         default: ""
         type: string
@@ -34,12 +34,21 @@ permissions:
 
 jobs:
   build-desktop:
-    name: Build desktop ${{ matrix.os }}
+    name: Build desktop ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            artifact: omnishare-desktop-Linux
+          - name: Windows
+            os: windows-latest
+            artifact: omnishare-desktop-Windows
+          - name: macOS-universal
+            os: macos-latest
+            artifact: omnishare-desktop-macOS-universal
 
     steps:
       - name: Checkout
@@ -73,16 +82,55 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install macOS universal Rust targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Validate macOS release signing credentials
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required macOS release secret: ${name}"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Build frontend assets
         run: npm --prefix frontend run build
 
-      - name: Build backend resource (Unix)
-        if: runner.os != 'Windows'
+      - name: Build backend resource (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p desktop/src-tauri/resources
           cd backend
           go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare
+
+      - name: Build universal backend resource (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/resources
+          cd backend
+          GOOS=darwin GOARCH=arm64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-arm64 ./cmd/omnishare
+          GOOS=darwin GOARCH=amd64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-x86_64 ./cmd/omnishare
+          lipo -create \
+            ../desktop/src-tauri/resources/omnishare-arm64 \
+            ../desktop/src-tauri/resources/omnishare-x86_64 \
+            -output ../desktop/src-tauri/resources/omnishare
+          chmod +x ../desktop/src-tauri/resources/omnishare
+          rm ../desktop/src-tauri/resources/omnishare-arm64 ../desktop/src-tauri/resources/omnishare-x86_64
+          lipo -archs ../desktop/src-tauri/resources/omnishare
 
       - name: Build backend resource (Windows)
         if: runner.os == 'Windows'
@@ -98,24 +146,76 @@ jobs:
         run: npm install
 
       - name: Build Tauri bundle
+        if: runner.os != 'macOS'
         working-directory: desktop
         run: npm run build
+
+      - name: Build signed universal Tauri bundle (macOS)
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run build -- --target universal-apple-darwin
+
+      - name: Verify macOS universal architectures
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH="$(find desktop/src-tauri/target/universal-apple-darwin/release/bundle -type d -name '*.app' -maxdepth 3 | head -n 1)"
+          test -n "$APP_PATH"
+          APP_BINARY="$(find "$APP_PATH/Contents/MacOS" -type f -perm -111 | head -n 1)"
+          BACKEND_BINARY="$(find "$APP_PATH/Contents" -type f -name omnishare | head -n 1)"
+          test -n "$APP_BINARY"
+          test -n "$BACKEND_BINARY"
+          lipo -archs "$APP_BINARY" | tee /tmp/app-architectures.txt
+          lipo -archs "$BACKEND_BINARY" | tee /tmp/backend-architectures.txt
+          grep -q arm64 /tmp/app-architectures.txt
+          grep -q x86_64 /tmp/app-architectures.txt
+          grep -q arm64 /tmp/backend-architectures.txt
+          grep -q x86_64 /tmp/backend-architectures.txt
+
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
+        shell: bash
+        run: |
+          APP_PATH="$(find desktop/src-tauri/target/universal-apple-darwin/release/bundle -type d -name '*.app' -maxdepth 3 | head -n 1)"
+          test -n "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
 
       - name: Upload desktop bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: omnishare-desktop-${{ runner.os }}
+          name: ${{ matrix.artifact }}
           path: |
             desktop/src-tauri/target/release/bundle/**
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/**
           if-no-files-found: error
 
+  publish-release:
+    name: Publish desktop release
+    needs: build-desktop
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
       - name: Publish GitHub release assets
-        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          generate_release_notes: true
           files: |
-            desktop/src-tauri/target/release/bundle/**/*
+            release-assets/**/*
