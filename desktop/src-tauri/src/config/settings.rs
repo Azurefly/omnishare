@@ -97,7 +97,7 @@ pub fn find_available_port(preferred: u16) -> Result<u16, String> {
         return Ok(preferred);
     }
 
-    let upper = preferred.saturating_add(PREFERRED_SCAN_LIMIT).min(MAX_PORT);
+    let upper = preferred.saturating_add(PREFERRED_SCAN_LIMIT);
     for port in preferred.saturating_add(1)..=upper {
         if port_is_available(port) {
             return Ok(port);
