@@ -33,47 +33,102 @@ function Add-PhaseResult {
     }
 }
 
-function Get-FreePort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $listener.Start()
+function Get-FreePortBlock {
+    param([int]$Count = 12)
+
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        $start = Get-Random -Minimum 20000 -Maximum (65000 - $Count)
+        $listeners = [System.Collections.Generic.List[System.Net.Sockets.TcpListener]]::new()
+        $available = $true
+        try {
+            for ($offset = 0; $offset -lt $Count; $offset++) {
+                $listener = [System.Net.Sockets.TcpListener]::new(
+                    [System.Net.IPAddress]::Loopback,
+                    $start + $offset
+                )
+                try {
+                    $listener.Start()
+                    $listeners.Add($listener)
+                }
+                catch {
+                    $available = $false
+                    break
+                }
+            }
+        }
+        finally {
+            foreach ($listener in $listeners) {
+                $listener.Stop()
+            }
+        }
+        if ($available) {
+            return $start
+        }
+    }
+
+    throw "Unable to reserve a free local port block for the Windows runtime test."
+}
+
+function Get-HttpBody {
+    param(
+        [int]$Port,
+        [int]$TimeoutMilliseconds = 500
+    )
+
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromMilliseconds($TimeoutMilliseconds)
     try {
-        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+        return $client.GetStringAsync("http://127.0.0.1:$Port/").GetAwaiter().GetResult()
+    }
+    catch {
+        return $null
     }
     finally {
-        $listener.Stop()
+        $client.Dispose()
+        $handler.Dispose()
     }
+}
+
+function Test-PageMarker {
+    param(
+        [int]$Port,
+        [string]$Marker
+    )
+    $body = Get-HttpBody -Port $Port
+    return $null -ne $body -and $body.Contains($Marker)
 }
 
 function Test-OmniSharePort {
     param([int]$Port)
-    try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 2
-        return $response.Content -match '<title>OmniShare</title>'
-    }
-    catch {
-        return $false
-    }
+    return Test-PageMarker -Port $Port -Marker '<title>OmniShare</title>'
 }
 
-function Wait-OmniSharePort {
+function Wait-PageMarker {
     param(
         [int[]]$Ports,
-        [int]$TimeoutSeconds = 35
+        [string]$Marker,
+        [int]$TimeoutSeconds
     )
+
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         foreach ($port in $Ports) {
-            if (Test-OmniSharePort -Port $port) {
+            if (Test-PageMarker -Port $port -Marker $Marker) {
                 return $port
             }
+            if ((Get-Date) -ge $deadline) {
+                break
+            }
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 250
     }
     return $null
 }
 
 function Get-ProcessesByExecutable {
     param([string]$Executable)
+
     $normalized = [System.IO.Path]::GetFullPath($Executable)
     return @(Get-CimInstance Win32_Process | Where-Object {
         if (-not $_.ExecutablePath) {
@@ -91,6 +146,7 @@ function Get-ProcessesByExecutable {
 function Stop-TrackedProcesses {
     foreach ($process in @($script:startedProcesses)) {
         try {
+            $process.Refresh()
             if (-not $process.HasExited) {
                 Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
                 $process.WaitForExit(5000) | Out-Null
@@ -110,6 +166,7 @@ function Start-Desktop {
         [int]$Port,
         [string]$DataDir
     )
+
     $env:OMNISHARE_PORT = [string]$Port
     $env:OMNISHARE_DATA_DIR = $DataDir
     $process = Start-Process -FilePath $DesktopExe -PassThru
@@ -125,6 +182,7 @@ function Start-Backend {
         [string]$StdoutLogPath,
         [string]$StderrLogPath
     )
+
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     $arguments = @(
         '--no-browser',
@@ -147,14 +205,16 @@ function Write-JUnit {
         [bool]$Success,
         [string]$FailureMessage = ""
     )
+
     $escaped = [System.Security.SecurityElement]::Escape($FailureMessage)
     if ($Success) {
         $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
-<testsuite name="OmniShare.WindowsDesktopRuntime" tests="3" failures="0">
+<testsuite name="OmniShare.WindowsDesktopRuntime" tests="4" failures="0">
+  <testcase classname="desktop.runtime" name="installed-layout-and-icon" />
   <testcase classname="desktop.runtime" name="port-conflict-fallback" />
   <testcase classname="desktop.runtime" name="existing-backend-attach" />
-  <testcase classname="desktop.runtime" name="single-instance-and-icon" />
+  <testcase classname="desktop.runtime" name="single-instance" />
 </testsuite>
 "@
     }
@@ -181,8 +241,17 @@ try {
     $extractRoot = Join-Path $EvidenceRoot 'msi-layout'
     New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
     $msiLog = Join-Path $EvidenceRoot 'msi-administrative-extract.log'
-    $msiArgs = @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$extractRoot`"", '/L*V', "`"$msiLog`"")
-    $msiProcess = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru
+    $msiArgs = @(
+        '/a', "`"$($msi.FullName)`"",
+        '/qn',
+        "TARGETDIR=`"$extractRoot`"",
+        '/L*V', "`"$msiLog`""
+    )
+    $msiProcess = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -PassThru
+    if (-not $msiProcess.WaitForExit(60000)) {
+        Stop-Process -Id $msiProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "MSI administrative extraction exceeded 60 seconds. See $msiLog"
+    }
     if ($msiProcess.ExitCode -ne 0) {
         throw "MSI administrative extraction failed with exit code $($msiProcess.ExitCode). See $msiLog"
     }
@@ -200,7 +269,6 @@ try {
         } |
         Sort-Object Length -Descending |
         Select-Object -First 1
-
     if (-not $desktopExe) {
         throw "Desktop executable was not found in the extracted MSI layout."
     }
@@ -227,8 +295,8 @@ try {
         iconEvidence = $iconEvidence
     }
 
-    # Phase 1: a non-OmniShare process occupies the preferred port. The desktop must select a fallback.
-    $preferredPort = Get-FreePort
+    # Scenario 1: an unrelated HTTP service occupies the requested port.
+    $preferredPort = Get-FreePortBlock
     $dummyJob = Start-Job -ArgumentList $preferredPort -ScriptBlock {
         param($Port)
         $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
@@ -255,17 +323,16 @@ try {
         }
     }
     $backgroundJobs.Add($dummyJob)
-    Start-Sleep -Seconds 1
+    if (-not (Wait-PageMarker -Ports @($preferredPort) -Marker 'Occupied By Test' -TimeoutSeconds 10)) {
+        throw "The deterministic port-occupier did not become ready on port $preferredPort."
+    }
 
     $fallbackData = Join-Path $EvidenceRoot 'data-port-fallback'
     $desktopPhase1 = Start-Desktop -DesktopExe $desktopExe.FullName -Port $preferredPort -DataDir $fallbackData
-    $candidatePorts = (($preferredPort + 1)..([Math]::Min($preferredPort + 100, 65535)))
-    $selectedPort = Wait-OmniSharePort -Ports $candidatePorts
+    $candidatePorts = (($preferredPort + 1)..($preferredPort + 10))
+    $selectedPort = Wait-PageMarker -Ports $candidatePorts -Marker '<title>OmniShare</title>' -TimeoutSeconds 35
     if (-not $selectedPort) {
         throw "Desktop did not start OmniShare on a fallback port after preferred port $preferredPort was occupied."
-    }
-    if ($selectedPort -eq $preferredPort) {
-        throw "Desktop reused an occupied non-OmniShare port."
     }
 
     $desktopCount = (Get-ProcessesByExecutable -Executable $desktopExe.FullName).Count
@@ -290,8 +357,8 @@ try {
     Stop-Job $dummyJob -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 
-    # Phase 2: an existing OmniShare backend is already healthy. Desktop must attach, not create another backend.
-    $attachPort = Get-FreePort
+    # Scenario 2: an existing packaged OmniShare backend is already healthy.
+    $attachPort = Get-FreePortBlock
     $attachData = Join-Path $EvidenceRoot 'data-existing-backend'
     $standaloneBackendStdout = Join-Path $EvidenceRoot 'standalone-backend.stdout.log'
     $standaloneBackendStderr = Join-Path $EvidenceRoot 'standalone-backend.stderr.log'
@@ -301,7 +368,7 @@ try {
         -DataDir $attachData `
         -StdoutLogPath $standaloneBackendStdout `
         -StderrLogPath $standaloneBackendStderr
-    if (-not (Wait-OmniSharePort -Ports @($attachPort) -TimeoutSeconds 25)) {
+    if (-not (Wait-PageMarker -Ports @($attachPort) -Marker '<title>OmniShare</title>' -TimeoutSeconds 25)) {
         throw "Standalone packaged backend failed to become healthy on port $attachPort."
     }
 
@@ -316,32 +383,40 @@ try {
         throw "Desktop spawned a duplicate backend while attaching; expected 1 backend, found $backendCountAfterAttach."
     }
 
-    $secondLaunch = Start-Process -FilePath $desktopExe.FullName -PassThru
-    $startedProcesses.Add($secondLaunch)
-    Start-Sleep -Seconds 5
-    $secondLaunch.Refresh()
-    $desktopCountAfterSecondLaunch = (Get-ProcessesByExecutable -Executable $desktopExe.FullName).Count
-    if ($desktopCountAfterSecondLaunch -ne 1) {
-        throw "Single-instance enforcement failed; expected 1 desktop process, found $desktopCountAfterSecondLaunch."
-    }
-    if (-not $secondLaunch.HasExited -and $secondLaunch.Id -ne $desktopPhase2.Id) {
-        throw "Second desktop launch remained running instead of forwarding to the existing instance."
-    }
-
-    Add-PhaseResult -Name 'existing-backend-and-single-instance' -Passed $true -Details @{
+    Add-PhaseResult -Name 'existing-backend-attach' -Passed $true -Details @{
         port = $attachPort
-        desktopProcesses = $desktopCountAfterSecondLaunch
         backendProcesses = $backendCountAfterAttach
-        originalDesktopPid = $desktopPhase2.Id
         standaloneBackendPid = $standaloneBackend.Id
-        secondLaunchExited = $secondLaunch.HasExited
         backendStdout = $standaloneBackendStdout
         backendStderr = $standaloneBackendStderr
     }
 
+    # Scenario 3: repeated launch forwards activation to the existing desktop instance.
+    $secondLaunch = Start-Process -FilePath $desktopExe.FullName -PassThru
+    $startedProcesses.Add($secondLaunch)
+    if (-not $secondLaunch.WaitForExit(10000)) {
+        $secondLaunch.Refresh()
+    }
+    Start-Sleep -Seconds 2
+    $desktopCountAfterSecondLaunch = (Get-ProcessesByExecutable -Executable $desktopExe.FullName).Count
+    if ($desktopCountAfterSecondLaunch -ne 1) {
+        throw "Single-instance enforcement failed; expected 1 desktop process, found $desktopCountAfterSecondLaunch."
+    }
+    $secondLaunch.Refresh()
+    if (-not $secondLaunch.HasExited -and $secondLaunch.Id -ne $desktopPhase2.Id) {
+        throw "Second desktop launch remained running instead of forwarding to the existing instance."
+    }
+
+    Add-PhaseResult -Name 'single-instance' -Passed $true -Details @{
+        desktopProcesses = $desktopCountAfterSecondLaunch
+        originalDesktopPid = $desktopPhase2.Id
+        secondLaunchExited = $secondLaunch.HasExited
+    }
+
     $results.success = $true
     $results.finishedAt = (Get-Date).ToString("o")
-    $results | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $EvidenceRoot 'windows-runtime-smoke.json') -Encoding UTF8
+    $results | ConvertTo-Json -Depth 8 |
+        Set-Content -Path (Join-Path $EvidenceRoot 'windows-runtime-smoke.json') -Encoding UTF8
     Write-JUnit -Success $true
     Write-Host "Windows installed-layout runtime smoke test passed. Evidence: $EvidenceRoot"
 }
@@ -350,7 +425,8 @@ catch {
     $results.success = $false
     $results.finishedAt = (Get-Date).ToString("o")
     $results.failure = $message
-    $results | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $EvidenceRoot 'windows-runtime-smoke.json') -Encoding UTF8
+    $results | ConvertTo-Json -Depth 8 |
+        Set-Content -Path (Join-Path $EvidenceRoot 'windows-runtime-smoke.json') -Encoding UTF8
     Write-JUnit -Success $false -FailureMessage $message
     Write-Error $message
     exit 1
