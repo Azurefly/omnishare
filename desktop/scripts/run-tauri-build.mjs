@@ -33,7 +33,8 @@ for (const name of appleVariables) {
 const result = spawnSync(tauriExecutable, ['build', ...process.argv.slice(2)], {
   cwd: desktopRoot,
   env,
-  stdio: 'inherit'
+  stdio: 'inherit',
+  shell: process.platform === 'win32'
 });
 
 if (result.error) {
