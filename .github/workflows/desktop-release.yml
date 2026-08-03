@@ -34,8 +34,9 @@ permissions:
 
 jobs:
   build-desktop:
-    name: Build desktop ${{ matrix.name }}
+    name: Build and test desktop ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +50,9 @@ jobs:
           - name: macOS-universal
             os: macos-latest
             artifact: omnishare-desktop-macOS-universal
+
+    env:
+      EVIDENCE_DIR: desktop-test-evidence/${{ matrix.name }}
 
     steps:
       - name: Checkout
@@ -81,6 +85,12 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Initialize test evidence directory
+        shell: bash
+        run: mkdir -p "$EVIDENCE_DIR"
 
       - name: Install macOS universal Rust targets
         if: runner.os == 'macOS'
@@ -130,7 +140,7 @@ jobs:
             -output ../desktop/src-tauri/resources/omnishare
           chmod +x ../desktop/src-tauri/resources/omnishare
           rm ../desktop/src-tauri/resources/omnishare-arm64 ../desktop/src-tauri/resources/omnishare-x86_64
-          lipo -archs ../desktop/src-tauri/resources/omnishare
+          lipo -archs ../desktop/src-tauri/resources/omnishare | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/backend-architectures.txt"
 
       - name: Build backend resource (Windows)
         if: runner.os == 'Windows'
@@ -139,11 +149,42 @@ jobs:
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/resources | Out-Null
           Push-Location backend
           go build -trimpath -o ../desktop/src-tauri/resources/omnishare.exe ./cmd/omnishare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
 
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm install
+
+      - name: Run desktop release contract tests
+        run: npm --prefix desktop run test:contracts
+
+      - name: Generate build icons before Rust checks
+        run: npm --prefix desktop run prebuild
+
+      - name: Rust format check
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo fmt --check 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-fmt.log"
+
+      - name: Rust clippy
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-clippy.log"
+
+      - name: Rust unit tests
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --all-features 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-test.log"
 
       - name: Build Tauri bundle
         if: runner.os != 'macOS'
@@ -177,12 +218,12 @@ jobs:
           BACKEND_BINARY="$(find "$APP_PATH/Contents" -type f -name omnishare | head -n 1)"
           test -n "$APP_BINARY"
           test -n "$BACKEND_BINARY"
-          lipo -archs "$APP_BINARY" | tee /tmp/app-architectures.txt
-          lipo -archs "$BACKEND_BINARY" | tee /tmp/backend-architectures.txt
-          grep -q arm64 /tmp/app-architectures.txt
-          grep -q x86_64 /tmp/app-architectures.txt
-          grep -q arm64 /tmp/backend-architectures.txt
-          grep -q x86_64 /tmp/backend-architectures.txt
+          lipo -archs "$APP_BINARY" | tee "$EVIDENCE_DIR/app-architectures.txt"
+          lipo -archs "$BACKEND_BINARY" | tee "$EVIDENCE_DIR/bundled-backend-architectures.txt"
+          grep -q arm64 "$EVIDENCE_DIR/app-architectures.txt"
+          grep -q x86_64 "$EVIDENCE_DIR/app-architectures.txt"
+          grep -q arm64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
+          grep -q x86_64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
 
       - name: Verify macOS signature and notarization
         if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
@@ -190,8 +231,40 @@ jobs:
         run: |
           APP_PATH="$(find desktop/src-tauri/target/universal-apple-darwin/release/bundle -type d -name '*.app' | head -n 1)"
           test -n "$APP_PATH"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          spctl --assess --type execute --verbose=2 "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | tee "$EVIDENCE_DIR/codesign-verify.log"
+          spctl --assess --type execute --verbose=2 "$APP_PATH" 2>&1 | tee "$EVIDENCE_DIR/gatekeeper-assess.log"
+
+      - name: Windows installed-layout runtime smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-runtime-smoke-ci.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Generate bundle SHA256 evidence (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem desktop/src-tauri/target/release/bundle -Recurse -File |
+            ForEach-Object {
+              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+              [PSCustomObject]@{ Path = $_.FullName; Size = $_.Length; SHA256 = $hash.Hash }
+            } |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -Path "$env:EVIDENCE_DIR/bundle-sha256.json" -Encoding UTF8
+
+      - name: Generate bundle SHA256 evidence (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BUNDLE_ROOT="desktop/src-tauri/target/release/bundle"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            BUNDLE_ROOT="desktop/src-tauri/target/universal-apple-darwin/release/bundle"
+            find "$BUNDLE_ROOT" -type f -print0 | sort -z | xargs -0 shasum -a 256 > "$EVIDENCE_DIR/bundle-sha256.txt"
+          else
+            find "$BUNDLE_ROOT" -type f -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/bundle-sha256.txt"
+          fi
 
       - name: Upload desktop bundle artifact
         uses: actions/upload-artifact@v4
@@ -202,6 +275,14 @@ jobs:
             desktop/src-tauri/target/universal-apple-darwin/release/bundle/**
           if-no-files-found: error
 
+      - name: Upload desktop test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnishare-test-evidence-${{ matrix.name }}
+          path: ${{ env.EVIDENCE_DIR }}/**
+          if-no-files-found: warn
+
   publish-release:
     name: Publish desktop release
     needs: build-desktop
@@ -211,6 +292,7 @@ jobs:
       - name: Download verified desktop artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: omnishare-desktop-*
           path: release-assets
           merge-multiple: true
 

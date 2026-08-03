@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{env, path::PathBuf, time::Duration};
 
 use tauri::{AppHandle, Manager};
 
@@ -10,6 +10,8 @@ use crate::{
         manager::{BackendState, BackendStatus},
     },
 };
+
+const LOG_DIR_ENV: &str = "OMNISHARE_DESKTOP_LOG_DIR";
 
 pub fn initialize(
     app: &AppHandle,
@@ -36,21 +38,24 @@ pub fn initialize(
             .map(|path| format!("- {}", path.display()))
             .collect::<Vec<_>>()
             .join("\n");
-        format!("OmniShare backend binary was not found. Checked:\n{}", candidates)
+        format!(
+            "OmniShare backend binary was not found. Checked:\n{}",
+            candidates
+        )
     })?;
 
-    let config_dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| format!("Unable to resolve desktop configuration directory: {error}"))?;
-    let log_path = config_dir.join("logs").join("backend.log");
+    let log_dir = match env::var_os(LOG_DIR_ENV) {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => app
+            .path()
+            .app_config_dir()
+            .map_err(|error| format!("Unable to resolve desktop configuration directory: {error}"))?
+            .join("logs"),
+    };
+    let log_path = log_dir.join("backend.log");
     let status = backend_state.start(&executable, &log_path)?;
 
-    if health::wait_backend(
-        DEFAULT_BACKEND_HOST,
-        status.port,
-        Duration::from_secs(20),
-    ) {
+    if health::wait_backend(DEFAULT_BACKEND_HOST, status.port, Duration::from_secs(20)) {
         Ok(status)
     } else {
         let diagnostics = backend_state.diagnostics();

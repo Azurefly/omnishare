@@ -11,10 +11,7 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn desktop_settings(
-    app: AppHandle,
-    state: State<'_, BackendState>,
-) -> DesktopSettingsView {
+pub fn desktop_settings(app: AppHandle, state: State<'_, BackendState>) -> DesktopSettingsView {
     let mut settings = settings::resolve(&app);
     settings.port = state.inner().status().port;
     settings

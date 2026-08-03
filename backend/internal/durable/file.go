@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // WriteFile atomically replaces path and keeps the previous valid generation at
@@ -63,13 +64,20 @@ func WriteFile(path string, data []byte, mode fs.FileMode) error {
 }
 
 func syncDir(dir string) error {
+	// Windows does not provide a portable directory-handle equivalent of the
+	// Unix directory fsync used to persist rename metadata. os.File.Sync on a
+	// directory returns ERROR_ACCESS_DENIED even after the file itself was
+	// successfully flushed and atomically renamed. Treat this platform limit as
+	// best effort instead of reporting a false write failure.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	// Windows directory handles may not support Sync. The file itself has
-	// already been synced, so treat that platform limitation as best effort.
 	if err := f.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
 		return err
 	}

@@ -134,7 +134,10 @@ impl BackendProcess {
         let running = self.is_running();
         let mut sections = Vec::new();
         sections.push(format!("Backend process running: {running}"));
-        sections.push(format!("Attached to pre-existing backend: {}", self.attached));
+        sections.push(format!(
+            "Attached to pre-existing backend: {}",
+            self.attached
+        ));
         if let Some(last_exit) = &self.last_exit {
             sections.push(last_exit.clone());
         }

@@ -49,3 +49,56 @@ pub fn wait_backend(host: &str, port: u16, timeout: Duration) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    use super::{is_omnishare_backend, wait_backend};
+
+    fn serve_once(body: &'static str) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test server");
+        let port = listener.local_addr().expect("test server address").port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept health probe");
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write health response");
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn recognizes_the_omnishare_page() {
+        let (port, server) = serve_once("<!doctype html><title>OmniShare</title>");
+        assert!(is_omnishare_backend("127.0.0.1", port));
+        server.join().expect("join test server");
+    }
+
+    #[test]
+    fn rejects_an_unrelated_http_service() {
+        let (port, server) = serve_once("<!doctype html><title>Other Service</title>");
+        assert!(!is_omnishare_backend("127.0.0.1", port));
+        server.join().expect("join test server");
+    }
+
+    #[test]
+    fn wait_backend_times_out_for_a_closed_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("ephemeral address").port();
+        drop(listener);
+        assert!(!wait_backend("127.0.0.1", port, Duration::from_millis(350)));
+    }
+}
