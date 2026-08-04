@@ -1,0 +1,104 @@
+name: Verify Desktop Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'release/verify-desktop-release.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify GitHub Release assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read verification request
+        id: request
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const request = JSON.parse(fs.readFileSync('release/verify-desktop-release.json', 'utf8'));
+          if (!request.tag || typeof request.tag !== 'string') {
+            throw new Error('release/verify-desktop-release.json must contain a tag string');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${request.tag}\n`);
+          NODE
+
+      - name: Verify release and assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.request.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh release view "$RELEASE_TAG" \
+            --repo "$GH_REPO" \
+            --json name,tagName,isPrerelease,url,targetCommitish,publishedAt,assets \
+            > /tmp/release.json
+
+          node <<'NODE'
+          const fs = require('fs');
+          const release = JSON.parse(fs.readFileSync('/tmp/release.json', 'utf8'));
+          const names = (release.assets || []).map(asset => asset.name);
+          const requireMatch = (label, predicate) => {
+            if (!names.some(predicate)) {
+              throw new Error(`Missing release asset: ${label}. Present: ${names.join(', ')}`);
+            }
+          };
+
+          requireMatch('Windows MSI', name => name.endsWith('.msi'));
+          requireMatch('Windows NSIS installer', name => name.endsWith('setup.exe'));
+          requireMatch('Linux package', name => name.endsWith('.AppImage') || name.endsWith('.deb') || name.endsWith('.rpm'));
+          requireMatch('Windows SHA256', name => name === 'omnishare-windows-sha256.json');
+          requireMatch('Linux SHA256', name => name === 'omnishare-linux-sha256.txt');
+          requireMatch('Windows runtime JUnit', name => name === 'omnishare-windows-runtime.junit.xml');
+
+          if (!release.isPrerelease) {
+            throw new Error('Desktop v1.0.0 must remain a prerelease until macOS signing/notarization and real-device acceptance are complete');
+          }
+
+          const evidence = {
+            verified: true,
+            tag: release.tagName,
+            name: release.name,
+            prerelease: release.isPrerelease,
+            release_url: release.url,
+            target_commitish: release.targetCommitish,
+            published_at: release.publishedAt,
+            verified_at: new Date().toISOString(),
+            asset_count: names.length,
+            assets: (release.assets || []).map(asset => ({
+              name: asset.name,
+              size: asset.size,
+              url: asset.url
+            }))
+          };
+
+          fs.writeFileSync('release/v1.0.0-desktop-published.json', JSON.stringify(evidence, null, 2) + '\n');
+          NODE
+
+      - name: Commit release verification evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release/v1.0.0-desktop-published.json
+          if git diff --cached --quiet; then
+            echo "Release verification evidence is already current."
+            exit 0
+          fi
+          git commit -m "release: verify desktop v1.0.0 assets"
+          git push origin HEAD:main
