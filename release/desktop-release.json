@@ -1,0 +1,15 @@
+{
+  "tag": "v1.0.0-desktop",
+  "name": "OmniShare Desktop v1.0.0",
+  "notes": "docs/RELEASE_NOTES_v1.0.0-desktop.md",
+  "prerelease": true,
+  "platforms": [
+    "windows-x86_64",
+    "linux-x86_64"
+  ],
+  "macos": {
+    "published": false,
+    "reason": "Apple Developer ID signing and notarization credentials are not configured"
+  },
+  "published_at": "2026-08-04"
+}
