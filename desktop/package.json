@@ -8,7 +8,7 @@
     "dev": "tauri dev",
     "prebuild": "node scripts/ensure-icons.mjs",
     "build": "node scripts/run-tauri-build.mjs",
-    "test:contracts": "node tests/contracts.mjs",
+    "test:contracts": "node tests/contracts.mjs && node tests/version-contract.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {
