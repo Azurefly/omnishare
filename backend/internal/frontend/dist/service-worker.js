@@ -1,5 +1,5 @@
-const CACHE='omnishare-v1.3.0-rc2'
-const STATIC_ASSETS=new Set(['/','/index.html','/style.css','/runtime-bridge.js','/app.js','/manifest.webmanifest','/icon.svg'])
+const CACHE='omnishare-v1.3.0-rc2-theme1'
+const STATIC_ASSETS=new Set(['/','/index.html','/style.css','/theme.css','/theme.js','/runtime-bridge.js','/app.js','/manifest.webmanifest','/icon.svg'])
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll([...STATIC_ASSETS])).then(()=>self.skipWaiting())))
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())))
 self.addEventListener('fetch',event=>{
