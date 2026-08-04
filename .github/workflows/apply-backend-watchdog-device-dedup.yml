@@ -1,0 +1,61 @@
+name: Apply backend watchdog and device dedup wiring
+
+on:
+  push:
+    branches:
+      - fix/backend-watchdog-device-dedup
+    paths:
+      - release/apply-backend-watchdog-device-dedup.json
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/backend-watchdog-device-dedup
+          fetch-depth: 0
+
+      - name: Apply exact source wiring
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          api = Path('backend/internal/api/api.go')
+          text = api.read_text(encoding='utf-8')
+          old = 'devices := localDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "")'
+          new = 'devices := summarizedLocalDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "", cfg.ListenAddress)'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one localDevices call, found {text.count(old)}')
+          text = text.replace(old, new)
+          old = '\tdevices = append(devices, manual...)\n\tsort.SliceStable(devices, func(i, j int) bool {'
+          new = '\tdevices = append(devices, manual...)\n\tdevices = dedupeDeviceNodes(devices)\n\tsort.SliceStable(devices, func(i, j int) bool {'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one device append block, found {text.count(old)}')
+          api.write_text(text.replace(old, new), encoding='utf-8')
+
+          index = Path('frontend/web/index.html')
+          text = index.read_text(encoding='utf-8')
+          old = '  <script type="module" src="/app.js"></script>'
+          new = '  <script src="/runtime-bridge.js"></script>\n  <script type="module" src="/app.js"></script>'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one app script tag, found {text.count(old)}')
+          index.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+
+      - name: Remove one-time applicator
+        run: |
+          rm -f release/apply-backend-watchdog-device-dedup.json
+          rm -f .github/workflows/apply-backend-watchdog-device-dedup.yml
+
+      - name: Commit applied wiring
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add backend/internal/api/api.go frontend/web/index.html release/apply-backend-watchdog-device-dedup.json .github/workflows/apply-backend-watchdog-device-dedup.yml
+          git commit -m "fix: wire backend recovery and device aggregation"
+          git push origin HEAD:fix/backend-watchdog-device-dedup
