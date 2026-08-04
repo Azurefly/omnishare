@@ -6,9 +6,56 @@ mod process;
 mod runtime;
 mod tray;
 
-use tauri::{Manager, WindowEvent};
+use std::{thread, time::Duration};
 
-use runtime::{manager::BackendState, startup};
+use tauri::{AppHandle, Manager, WindowEvent};
+
+use process::backend::DEFAULT_BACKEND_HOST;
+use runtime::{health, manager::BackendState, startup};
+
+fn start_backend_watchdog(app: AppHandle) {
+    let _ = thread::Builder::new()
+        .name("omnishare-backend-watchdog".to_string())
+        .spawn(move || {
+            let mut consecutive_failures = 0u32;
+
+            loop {
+                thread::sleep(Duration::from_secs(5));
+
+                let backend_state = app.state::<BackendState>();
+                if !backend_state.should_run() {
+                    consecutive_failures = 0;
+                    continue;
+                }
+
+                let status = backend_state.status();
+                if health::is_omnishare_backend(DEFAULT_BACKEND_HOST, status.port) {
+                    consecutive_failures = 0;
+                    continue;
+                }
+
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                if consecutive_failures < 2 {
+                    continue;
+                }
+
+                eprintln!(
+                    "OmniShare backend watchdog detected an unhealthy service on port {}; restarting.",
+                    status.port
+                );
+
+                if let Err(error) = startup::initialize(&app, backend_state.inner(), status.port) {
+                    eprintln!("OmniShare backend watchdog restart failed: {error}");
+                } else {
+                    consecutive_failures = 0;
+                }
+
+                let exponent = consecutive_failures.saturating_sub(2).min(5);
+                let backoff_seconds = 1u64 << exponent;
+                thread::sleep(Duration::from_secs(backoff_seconds));
+            }
+        });
+}
 
 fn main() {
     tauri::Builder::default()
@@ -33,6 +80,7 @@ fn main() {
                 }
             }
 
+            start_backend_watchdog(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
