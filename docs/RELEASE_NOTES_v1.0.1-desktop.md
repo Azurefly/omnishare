@@ -47,6 +47,10 @@ Linux release checks include frontend and desktop contracts, Rust formatting, Cl
 
 macOS validation builds a Universal application and verifies both the Tauri executable and bundled backend contain `arm64` and `x86_64` architectures. Public macOS distribution still requires Apple Developer ID signing and notarization credentials.
 
+## Package identity
+
+The npm package, Cargo crate and Tauri bundle all declare `1.0.1`. A release contract compares the three sources and blocks packaging when they differ.
+
 ## Upgrade
 
 Install `v1.0.1-desktop` over `v1.0.0-desktop`. User data is kept outside the installation directory and is not removed by the upgrade.
