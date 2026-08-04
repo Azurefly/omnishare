@@ -18,9 +18,14 @@ pub fn initialize(
     backend_state: &BackendState,
     preferred_port: u16,
 ) -> Result<BackendStatus, String> {
+    backend_state.request_start();
+
     let current = backend_state.status();
     if current.running {
-        return Ok(current);
+        if health::is_omnishare_backend(DEFAULT_BACKEND_HOST, current.port) {
+            return Ok(current);
+        }
+        backend_state.reset_unhealthy()?;
     }
 
     if health::is_omnishare_backend(DEFAULT_BACKEND_HOST, preferred_port) {
@@ -59,7 +64,7 @@ pub fn initialize(
         Ok(status)
     } else {
         let diagnostics = backend_state.diagnostics();
-        let _ = backend_state.stop();
+        backend_state.reset_unhealthy()?;
         Err(format!(
             "OmniShare backend started from '{}' but did not become ready on {}:{} within 20 seconds.\n\n{}",
             executable.display(),

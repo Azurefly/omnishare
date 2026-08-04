@@ -23,6 +23,9 @@ try {
     & "$PSScriptRoot/windows-runtime-smoke.ps1" `
         -BundleRoot $BundleRoot `
         -EvidenceRoot $resolvedEvidence
+
+    & "$PSScriptRoot/windows-watchdog-recovery-smoke.ps1" `
+        -EvidenceRoot $resolvedEvidence
 }
 finally {
     Remove-Item Env:OMNISHARE_DESKTOP_LOG_DIR -ErrorAction SilentlyContinue
