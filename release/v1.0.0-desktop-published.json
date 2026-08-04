@@ -1,0 +1,53 @@
+{
+  "verified": true,
+  "tag": "v1.0.0-desktop",
+  "name": "OmniShare Desktop v1.0.0",
+  "prerelease": true,
+  "release_url": "https://github.com/Azurefly/omnishare/releases/tag/v1.0.0-desktop",
+  "target_commitish": "94b9f0f5b2711ee9167b78e4b8009ffcb40ce499",
+  "published_at": "2026-08-04T00:47:23Z",
+  "verified_at": "2026-08-04T00:49:09.568Z",
+  "asset_count": 8,
+  "assets": [
+    {
+      "name": "OmniShare-1.0.0-1.x86_64.rpm",
+      "size": 9528589,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/OmniShare-1.0.0-1.x86_64.rpm"
+    },
+    {
+      "name": "omnishare-linux-sha256.txt",
+      "size": 41894,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/omnishare-linux-sha256.txt"
+    },
+    {
+      "name": "omnishare-windows-runtime.junit.xml",
+      "size": 422,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/omnishare-windows-runtime.junit.xml"
+    },
+    {
+      "name": "omnishare-windows-sha256.json",
+      "size": 486,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/omnishare-windows-sha256.json"
+    },
+    {
+      "name": "OmniShare_1.0.0_amd64.AppImage",
+      "size": 83827192,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/OmniShare_1.0.0_amd64.AppImage"
+    },
+    {
+      "name": "OmniShare_1.0.0_amd64.deb",
+      "size": 9528598,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/OmniShare_1.0.0_amd64.deb"
+    },
+    {
+      "name": "OmniShare_1.0.0_x64-setup.exe",
+      "size": 6740008,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/OmniShare_1.0.0_x64-setup.exe"
+    },
+    {
+      "name": "OmniShare_1.0.0_x64_en-US.msi",
+      "size": 8355840,
+      "url": "https://github.com/Azurefly/omnishare/releases/download/v1.0.0-desktop/OmniShare_1.0.0_x64_en-US.msi"
+    }
+  ]
+}
