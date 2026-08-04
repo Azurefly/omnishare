@@ -1,0 +1,47 @@
+{
+  "verified": true,
+  "repository": "Azurefly/omnishare",
+  "keep_tag": "v1.0.1-desktop",
+  "delete_release_tags": true,
+  "requested_at": "2026-08-04T07:49:00Z",
+  "completed_at": "2026-08-04T07:52:49.619979+00:00",
+  "deleted_count": 3,
+  "deleted": [
+    {
+      "id": 364562373,
+      "tag": "v1.0.0-desktop",
+      "name": "OmniShare Desktop v1.0.0",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-08-04T00:47:23Z",
+      "release_deleted": true,
+      "tag_deleted": true,
+      "tag_delete_status": 204
+    },
+    {
+      "id": 363729727,
+      "tag": "v1.3.0-rc2",
+      "name": "OmniShare v1.3.0-rc2",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-08-02T07:46:43Z",
+      "release_deleted": true,
+      "tag_deleted": true,
+      "tag_delete_status": 204
+    },
+    {
+      "id": 363725737,
+      "tag": "v1.3.0-rc1",
+      "name": "OmniShare v1.3.0-rc1",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-08-02T07:23:24Z",
+      "release_deleted": true,
+      "tag_deleted": true,
+      "tag_delete_status": 204
+    }
+  ],
+  "remaining_releases": [
+    "v1.0.1-desktop"
+  ]
+}
