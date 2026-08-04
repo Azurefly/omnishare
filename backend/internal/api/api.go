@@ -1329,7 +1329,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Get()
-	devices := localDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "")
+	devices := summarizedLocalDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "", cfg.ListenAddress)
 	if s.registry != nil {
 		devices = append(devices, s.registry.List()...)
 	}
@@ -1369,6 +1369,7 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 		manual[item.index] = item.node
 	}
 	devices = append(devices, manual...)
+	devices = dedupeDeviceNodes(devices)
 	sort.SliceStable(devices, func(i, j int) bool {
 		if devices[i].IsLocal != devices[j].IsLocal {
 			return devices[i].IsLocal

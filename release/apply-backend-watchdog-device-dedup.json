@@ -1,4 +1,0 @@
-{
-  "purpose": "Wire backend watchdog recovery and local device aggregation",
-  "branch": "fix/backend-watchdog-device-dedup"
-}
