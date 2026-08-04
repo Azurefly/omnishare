@@ -1,11 +1,14 @@
 {
-  "tag": "v1.0.0-desktop",
+  "tag": "v1.0.1-desktop",
+  "evidence_file": "release/v1.0.1-desktop-published.json",
   "required_assets": [
-    "*.msi",
-    "*setup.exe",
+    "OmniShare_1.0.1_x64_en-US.msi",
+    "OmniShare_1.0.1_x64-setup.exe",
     "*.AppImage|*.deb|*.rpm",
     "omnishare-windows-sha256.json",
     "omnishare-linux-sha256.txt",
-    "omnishare-windows-runtime.junit.xml"
+    "omnishare-windows-runtime.junit.xml",
+    "omnishare-windows-watchdog.junit.xml",
+    "omnishare-windows-watchdog.json"
   ]
 }
