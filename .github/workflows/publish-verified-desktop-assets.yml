@@ -32,9 +32,25 @@ jobs:
               throw new Error(`Missing string field: ${key}`);
             }
           }
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${manifest.tag}\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `name=${manifest.name}\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${manifest.notes}\n`);
+          const requiredArtifacts = ['windows_bundle', 'linux_bundle', 'windows_evidence', 'linux_evidence'];
+          for (const key of requiredArtifacts) {
+            const value = manifest.artifacts?.[key];
+            if (!Number.isInteger(value) || value <= 0) {
+              throw new Error(`Missing positive integer artifact id: artifacts.${key}`);
+            }
+          }
+          const outputs = {
+            tag: manifest.tag,
+            name: manifest.name,
+            notes: manifest.notes,
+            windows_bundle: manifest.artifacts.windows_bundle,
+            linux_bundle: manifest.artifacts.linux_bundle,
+            windows_evidence: manifest.artifacts.windows_evidence,
+            linux_evidence: manifest.artifacts.linux_evidence
+          };
+          for (const [key, value] of Object.entries(outputs)) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          }
           NODE
 
       - name: Download verified workflow artifacts
@@ -42,19 +58,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          WINDOWS_BUNDLE_ID: ${{ steps.metadata.outputs.windows_bundle }}
+          LINUX_BUNDLE_ID: ${{ steps.metadata.outputs.linux_bundle }}
+          WINDOWS_EVIDENCE_ID: ${{ steps.metadata.outputs.windows_evidence }}
+          LINUX_EVIDENCE_ID: ${{ steps.metadata.outputs.linux_evidence }}
         run: |
           set -euo pipefail
           mkdir -p downloads extracted release-assets
-          gh api "repos/${GH_REPO}/actions/artifacts/8843469828/zip" > downloads/windows-bundle.zip
-          gh api "repos/${GH_REPO}/actions/artifacts/8843470424/zip" > downloads/linux-bundle.zip
-          gh api "repos/${GH_REPO}/actions/artifacts/8843470329/zip" > downloads/windows-evidence.zip
-          gh api "repos/${GH_REPO}/actions/artifacts/8843470542/zip" > downloads/linux-evidence.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/${WINDOWS_BUNDLE_ID}/zip" > downloads/windows-bundle.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/${LINUX_BUNDLE_ID}/zip" > downloads/linux-bundle.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/${WINDOWS_EVIDENCE_ID}/zip" > downloads/windows-evidence.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/${LINUX_EVIDENCE_ID}/zip" > downloads/linux-evidence.zip
           unzip -q downloads/windows-bundle.zip -d extracted/windows-bundle
           unzip -q downloads/linux-bundle.zip -d extracted/linux-bundle
           unzip -q downloads/windows-evidence.zip -d extracted/windows-evidence
           unzip -q downloads/linux-evidence.zip -d extracted/linux-evidence
 
-      - name: Stage release assets
+      - name: Stage release assets and evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -62,15 +82,21 @@ jobs:
           find extracted/linux-bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp '{}' release-assets/ \;
 
           WINDOWS_SHA="$(find extracted/windows-evidence -type f -name 'bundle-sha256.json' | head -n 1)"
-          WINDOWS_JUNIT="$(find extracted/windows-evidence -type f -name 'windows-runtime-smoke.junit.xml' | head -n 1)"
+          WINDOWS_RUNTIME_JUNIT="$(find extracted/windows-evidence -type f -name 'windows-runtime-smoke.junit.xml' | head -n 1)"
+          WINDOWS_WATCHDOG_JUNIT="$(find extracted/windows-evidence -type f -name 'windows-watchdog-recovery.junit.xml' | head -n 1)"
+          WINDOWS_WATCHDOG_JSON="$(find extracted/windows-evidence -type f -name 'windows-watchdog-recovery.json' | head -n 1)"
           LINUX_SHA="$(find extracted/linux-evidence -type f -name 'bundle-sha256.txt' | head -n 1)"
 
           test -n "$WINDOWS_SHA"
-          test -n "$WINDOWS_JUNIT"
+          test -n "$WINDOWS_RUNTIME_JUNIT"
+          test -n "$WINDOWS_WATCHDOG_JUNIT"
+          test -n "$WINDOWS_WATCHDOG_JSON"
           test -n "$LINUX_SHA"
 
           cp "$WINDOWS_SHA" release-assets/omnishare-windows-sha256.json
-          cp "$WINDOWS_JUNIT" release-assets/omnishare-windows-runtime.junit.xml
+          cp "$WINDOWS_RUNTIME_JUNIT" release-assets/omnishare-windows-runtime.junit.xml
+          cp "$WINDOWS_WATCHDOG_JUNIT" release-assets/omnishare-windows-watchdog.junit.xml
+          cp "$WINDOWS_WATCHDOG_JSON" release-assets/omnishare-windows-watchdog.json
           cp "$LINUX_SHA" release-assets/omnishare-linux-sha256.txt
 
           test -n "$(find release-assets -type f -name '*.msi' -print -quit)"
