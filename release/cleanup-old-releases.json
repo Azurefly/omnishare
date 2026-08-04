@@ -1,6 +1,0 @@
-{
-  "keep_tag": "v1.0.1-desktop",
-  "delete_release_tags": true,
-  "requested_at": "2026-08-04T08:00:00Z",
-  "reason": "Keep only the current latest published release."
-}
