@@ -1,0 +1,12 @@
+{
+  "tag": "v1.0.0-desktop",
+  "name": "OmniShare Desktop v1.0.0",
+  "notes": "docs/RELEASE_NOTES_v1.0.0-desktop.md",
+  "source_workflow_run": 30780201236,
+  "artifacts": {
+    "windows_bundle": 8843469828,
+    "linux_bundle": 8843470424,
+    "windows_evidence": 8843470329,
+    "linux_evidence": 8843470542
+  }
+}
