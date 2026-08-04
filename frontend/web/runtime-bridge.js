@@ -8,6 +8,7 @@
   let recoveryTimer = 0
   let recoveryAttempt = 0
   let lastConnectionToast = 0
+  let normalizingToast = false
 
   const sleep = delay => new Promise(resolve => setTimeout(resolve, delay))
 
@@ -186,6 +187,10 @@
     const toast = document.querySelector('#toast')
     if (!toast) return
     const observer = new MutationObserver(() => {
+      if (normalizingToast) {
+        normalizingToast = false
+        return
+      }
       if (!toast.classList.contains('show') || !connectionMessages.test(toast.textContent || '')) return
       const now = Date.now()
       if (now - lastConnectionToast < 60000) {
@@ -193,7 +198,10 @@
         return
       }
       lastConnectionToast = now
-      toast.textContent = '后端连接中断，桌面端正在自动恢复'
+      if (toast.textContent !== '后端连接中断，桌面端正在自动恢复') {
+        normalizingToast = true
+        toast.textContent = '后端连接中断，桌面端正在自动恢复'
+      }
     })
     observer.observe(toast, { attributes: true, childList: true, subtree: true })
   }
