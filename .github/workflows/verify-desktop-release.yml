@@ -31,7 +31,12 @@ jobs:
           if (!request.tag || typeof request.tag !== 'string') {
             throw new Error('release/verify-desktop-release.json must contain a tag string');
           }
+          const evidenceFile = request.evidence_file || `release/${request.tag}-published.json`;
+          if (!/^release\/[A-Za-z0-9._-]+\.json$/.test(evidenceFile)) {
+            throw new Error(`Unsafe evidence_file: ${evidenceFile}`);
+          }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${request.tag}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `evidence_file=${evidenceFile}\n`);
           NODE
 
       - name: Verify release and assets
@@ -40,6 +45,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.request.outputs.tag }}
+          EVIDENCE_FILE: ${{ steps.request.outputs.evidence_file }}
         run: |
           set -euo pipefail
           mkdir -p release
@@ -58,15 +64,23 @@ jobs:
             }
           };
 
-          requireMatch('Windows MSI', name => name.endsWith('.msi'));
-          requireMatch('Windows NSIS installer', name => name.endsWith('setup.exe'));
+          const tag = process.env.RELEASE_TAG;
+          const match = tag.match(/^v(.+)-desktop$/);
+          if (!match) {
+            throw new Error(`Unexpected desktop release tag: ${tag}`);
+          }
+          const version = match[1];
+          requireMatch('versioned Windows MSI', name => name === `OmniShare_${version}_x64_en-US.msi`);
+          requireMatch('versioned Windows NSIS installer', name => name === `OmniShare_${version}_x64-setup.exe`);
           requireMatch('Linux package', name => name.endsWith('.AppImage') || name.endsWith('.deb') || name.endsWith('.rpm'));
           requireMatch('Windows SHA256', name => name === 'omnishare-windows-sha256.json');
           requireMatch('Linux SHA256', name => name === 'omnishare-linux-sha256.txt');
           requireMatch('Windows runtime JUnit', name => name === 'omnishare-windows-runtime.junit.xml');
+          requireMatch('Windows watchdog JUnit', name => name === 'omnishare-windows-watchdog.junit.xml');
+          requireMatch('Windows watchdog JSON', name => name === 'omnishare-windows-watchdog.json');
 
           if (!release.isPrerelease) {
-            throw new Error('Desktop v1.0.0 must remain a prerelease until macOS signing/notarization and real-device acceptance are complete');
+            throw new Error('Desktop release must remain a prerelease until macOS signing/notarization and real-device acceptance are complete');
           }
 
           const evidence = {
@@ -86,19 +100,22 @@ jobs:
             }))
           };
 
-          fs.writeFileSync('release/v1.0.0-desktop-published.json', JSON.stringify(evidence, null, 2) + '\n');
+          fs.writeFileSync(process.env.EVIDENCE_FILE, JSON.stringify(evidence, null, 2) + '\n');
           NODE
 
       - name: Commit release verification evidence
         shell: bash
+        env:
+          EVIDENCE_FILE: ${{ steps.request.outputs.evidence_file }}
+          RELEASE_TAG: ${{ steps.request.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add release/v1.0.0-desktop-published.json
+          git add "$EVIDENCE_FILE"
           if git diff --cached --quiet; then
             echo "Release verification evidence is already current."
             exit 0
           fi
-          git commit -m "release: verify desktop v1.0.0 assets"
+          git commit -m "release: verify ${RELEASE_TAG} assets"
           git push origin HEAD:main
