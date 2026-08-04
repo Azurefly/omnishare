@@ -2,7 +2,13 @@
 //!
 //! Coordinates desktop startup lifecycle and backend readiness.
 
-use std::{path::Path, sync::Mutex};
+use std::{
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 
 use serde::Serialize;
 
@@ -17,6 +23,7 @@ pub struct BackendStatus {
 
 pub struct BackendState {
     process: Mutex<BackendProcess>,
+    desired_running: AtomicBool,
 }
 
 impl Default for BackendState {
@@ -29,7 +36,16 @@ impl BackendState {
     pub fn new(port: u16) -> Self {
         Self {
             process: Mutex::new(BackendProcess::new(port)),
+            desired_running: AtomicBool::new(false),
         }
+    }
+
+    pub fn request_start(&self) {
+        self.desired_running.store(true, Ordering::SeqCst);
+    }
+
+    pub fn should_run(&self) -> bool {
+        self.desired_running.load(Ordering::SeqCst)
     }
 
     pub fn configure_port(&self, port: u16) -> Result<(), String> {
@@ -40,6 +56,7 @@ impl BackendState {
     pub fn attach(&self, port: u16) -> Result<BackendStatus, String> {
         let mut process = self.process.lock().map_err(|err| err.to_string())?;
         process.attach(port)?;
+        self.desired_running.store(true, Ordering::SeqCst);
         Ok(BackendStatus {
             running: true,
             url: process.url(),
@@ -61,11 +78,18 @@ impl BackendState {
         process
             .start(executable, log_path)
             .map_err(|err| err.to_string())?;
+        self.desired_running.store(true, Ordering::SeqCst);
         Ok(BackendStatus {
             running: process.is_running(),
             url: process.url(),
             port: process.port(),
         })
+    }
+
+    pub fn reset_unhealthy(&self) -> Result<(), String> {
+        let mut process = self.process.lock().map_err(|err| err.to_string())?;
+        process.stop();
+        Ok(())
     }
 
     pub fn diagnostics(&self) -> String {
@@ -74,6 +98,7 @@ impl BackendState {
     }
 
     pub fn stop(&self) -> BackendStatus {
+        self.desired_running.store(false, Ordering::SeqCst);
         let mut process = self.process.lock().expect("backend process state poisoned");
         process.stop();
         BackendStatus {
