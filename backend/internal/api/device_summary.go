@@ -11,6 +11,8 @@ import (
 	"omnishare/internal/model"
 )
 
+// summarizedLocalDevices returns one product device, not one card per network
+// interface. The selected address is only the preferred route to this device.
 func summarizedLocalDevices(name string, port int, tls bool, listenAddress string) []model.DeviceNode {
 	scheme := "http"
 	if tls {
