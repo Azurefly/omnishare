@@ -48,7 +48,7 @@ func summarizedLocalDevices(name string, port int, tls bool, listenAddress strin
 		value := "127.0.0.1"
 		return []model.DeviceNode{{
 			ID: "local-primary", Hostname: name, IP: value, Port: port,
-			URL: scheme + "://" + net.JoinHostPort(value, strconv.Itoa(port)),
+			URL:         scheme + "://" + net.JoinHostPort(value, strconv.Itoa(port)),
 			NetworkType: "loopback", IsLocal: true, Online: true, LastSeen: time.Now(),
 		}}
 	}
