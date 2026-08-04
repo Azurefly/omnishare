@@ -1,0 +1,90 @@
+name: Publish Verified Desktop Assets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'release/publish-verified-assets.json'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    name: Publish previously verified desktop artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read publish manifest
+        id: metadata
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const manifest = JSON.parse(fs.readFileSync('release/publish-verified-assets.json', 'utf8'));
+          for (const key of ['tag', 'name', 'notes']) {
+            if (!manifest[key] || typeof manifest[key] !== 'string') {
+              throw new Error(`Missing string field: ${key}`);
+            }
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${manifest.tag}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `name=${manifest.name}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${manifest.notes}\n`);
+          NODE
+
+      - name: Download verified workflow artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloads extracted release-assets
+          gh api "repos/${GH_REPO}/actions/artifacts/8843469828/zip" > downloads/windows-bundle.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/8843470424/zip" > downloads/linux-bundle.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/8843470329/zip" > downloads/windows-evidence.zip
+          gh api "repos/${GH_REPO}/actions/artifacts/8843470542/zip" > downloads/linux-evidence.zip
+          unzip -q downloads/windows-bundle.zip -d extracted/windows-bundle
+          unzip -q downloads/linux-bundle.zip -d extracted/linux-bundle
+          unzip -q downloads/windows-evidence.zip -d extracted/windows-evidence
+          unzip -q downloads/linux-evidence.zip -d extracted/linux-evidence
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          find extracted/windows-bundle -type f \( -name '*.msi' -o -name '*setup.exe' \) -exec cp '{}' release-assets/ \;
+          find extracted/linux-bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp '{}' release-assets/ \;
+
+          WINDOWS_SHA="$(find extracted/windows-evidence -type f -name 'bundle-sha256.json' | head -n 1)"
+          WINDOWS_JUNIT="$(find extracted/windows-evidence -type f -name 'windows-runtime-smoke.junit.xml' | head -n 1)"
+          LINUX_SHA="$(find extracted/linux-evidence -type f -name 'bundle-sha256.txt' | head -n 1)"
+
+          test -n "$WINDOWS_SHA"
+          test -n "$WINDOWS_JUNIT"
+          test -n "$LINUX_SHA"
+
+          cp "$WINDOWS_SHA" release-assets/omnishare-windows-sha256.json
+          cp "$WINDOWS_JUNIT" release-assets/omnishare-windows-runtime.junit.xml
+          cp "$LINUX_SHA" release-assets/omnishare-linux-sha256.txt
+
+          test -n "$(find release-assets -type f -name '*.msi' -print -quit)"
+          test -n "$(find release-assets -type f -name '*setup.exe' -print -quit)"
+          test -n "$(find release-assets -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -print -quit)"
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          name: ${{ steps.metadata.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          draft: false
+          body_path: ${{ steps.metadata.outputs.notes }}
+          files: release-assets/*
