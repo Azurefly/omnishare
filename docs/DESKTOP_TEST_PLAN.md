@@ -129,6 +129,17 @@ Automated scenarios:
 - Exactly one desktop shell remains.
 - The backend remains healthy.
 
+
+#### Scenario E: managed backend recovery and local-device summary
+
+- Start the desktop application from the MSI installed layout.
+- Confirm `/api/v1/devices` contains exactly one local product device.
+- Reject APIPA/IPv6 link-local addresses as the selected local endpoint.
+- Force-terminate the managed backend process.
+- Confirm the endpoint becomes unavailable, then is restored by the desktop watchdog.
+- Confirm the replacement backend has a different process ID.
+- Confirm exactly one desktop shell and one backend process remain after recovery.
+
 ### 2.7 macOS Universal validation
 
 Both the Tauri application executable and bundled Go backend are inspected using `lipo`.
@@ -168,6 +179,8 @@ Expected Windows evidence:
 ```text
 windows-runtime-smoke.json
 windows-runtime-smoke.junit.xml
+windows-watchdog-recovery.json
+windows-watchdog-recovery.junit.xml
 msi-administrative-extract.log
 desktop-associated-icon.ico
 standalone-backend.log

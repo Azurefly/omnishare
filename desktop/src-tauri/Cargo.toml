@@ -1,6 +1,6 @@
 [package]
 name = "omnishare-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "OmniShare cross-platform desktop application"
 authors = ["Azurefly"]
 edition = "2021"

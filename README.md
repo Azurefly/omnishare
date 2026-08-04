@@ -7,28 +7,36 @@ OmniShare 是面向个人、家庭、小团队和内网环境的私有化多设�
 | 组成 | 版本 | 状态 |
 |---|---:|---|
 | 后端与 Web | `v1.3.0-rc2` | Release Candidate |
-| Tauri 桌面端 | `v1.0.0-desktop` | Prerelease |
+| Tauri 桌面端 | `v1.0.1-desktop` | Prerelease |
 
 ### 桌面端下载
 
-- [OmniShare Desktop v1.0.0 GitHub Release](https://github.com/Azurefly/omnishare/releases/tag/v1.0.0-desktop)
+- [OmniShare Desktop v1.0.1 GitHub Release](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-desktop)
 - [全部 Releases](https://github.com/Azurefly/omnishare/releases)
 
 Windows 普通用户优先选择：
 
 ```text
-OmniShare_1.0.0_x64-setup.exe
+OmniShare_1.0.1_x64-setup.exe
 ```
 
 需要 MSI 部署时选择：
 
 ```text
-OmniShare_1.0.0_x64_en-US.msi
+OmniShare_1.0.1_x64_en-US.msi
 ```
 
 Linux 根据发行版选择 AppImage、DEB 或 RPM。Release 同时提供 Windows/Linux SHA-256 清单和 Windows 安装布局运行测试 JUnit 报告。
 
 > **macOS 说明：** macOS Universal 构建和双架构检查已经通过，但当前仓库尚未配置 Apple Developer ID 签名和公证凭据。为了避免用户下载后被 Gatekeeper 判定为“不受信任”或“应用已损坏”，本次预发布不提供未签名的 macOS 正式下载包。
+
+### v1.0.1 桌面热修复
+
+- 后端进程异常退出时由桌面 watchdog 自动恢复，不再持续停留在 `Failed to fetch`。
+- 前端对短暂断线进行有限重试、错误节流和恢复后刷新。
+- 本机按一台产品设备展示，不再按 loopback、Tailscale、虚拟网卡和 APIPA 地址重复生成设备卡。
+- Windows MSI 安装布局测试会强制终止后端并验证新进程恢复，同时校验本机设备条目恰好为 1。
+- npm、Cargo 与 Tauri bundle 版本必须一致，否则发布契约失败。
 
 ## 桌面端能力
 
