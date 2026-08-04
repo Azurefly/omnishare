@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 const root=resolve(import.meta.dirname,'..')
-const [html,js,runtimeBridge,manifest,sw,packageText]=await Promise.all(['web/index.html','web/app.js','web/runtime-bridge.js','web/manifest.webmanifest','web/service-worker.js','package.json'].map(p=>readFile(resolve(root,p),'utf8')))
-const requiredIds=['notesPanel','filesPanel','padsPanel','sharesPanel','trashPanel','activityPanel','settingsDialog','authDialog','shareDialog','videoDialog','cfgAllowLAN','cfgListenAddress','cfgPublicBaseURL','cfgAllowedOrigins','noteMaxReads','editNoteBurn','editNoteMaxReads']
+const [html,js,runtimeBridge,themeJS,themeCSS,manifest,sw,packageText]=await Promise.all(['web/index.html','web/app.js','web/runtime-bridge.js','web/theme.js','web/theme.css','web/manifest.webmanifest','web/service-worker.js','package.json'].map(p=>readFile(resolve(root,p),'utf8')))
+const requiredIds=['notesPanel','filesPanel','padsPanel','sharesPanel','trashPanel','activityPanel','settingsDialog','authDialog','shareDialog','videoDialog','cfgAllowLAN','cfgListenAddress','cfgPublicBaseURL','cfgAllowedOrigins','noteMaxReads','editNoteBurn','editNoteMaxReads','themeToggle','cfgTheme']
 for(const id of requiredIds) if(!html.includes(`id="${id}"`)) throw new Error(`missing UI id ${id}`)
 const routes=['/api/v1/dashboard','/api/v1/notes','/api/v1/files','/api/v1/pads','/api/v1/devices','/api/v1/shares','/api/v1/trash','/api/v1/audit','/api/v1/backup','/ticket']
 for(const route of routes) if(!js.includes(route)) throw new Error(`missing route ${route}`)
@@ -20,9 +20,14 @@ if(html.indexOf('/runtime-bridge.js')>html.indexOf('/app.js'))throw new Error('r
 for(const required of ['retryDelays','scheduleRecovery','collapseDevices','local-primary','后端服务暂不可用'])if(!runtimeBridge.includes(required))throw new Error(`runtime bridge contract missing ${required}`)
 if(!runtimeBridge.includes("url.pathname.startsWith('/api/')"))throw new Error('runtime bridge must guard same-origin API requests')
 if(!runtimeBridge.includes("info.url?.pathname !== '/api/v1/devices'"))throw new Error('runtime bridge must aggregate device responses')
+if(!html.includes('<script src="/theme.js"></script>')||!html.includes('<link rel="stylesheet" href="/theme.css" />'))throw new Error('theme assets are not wired into the page')
+if(html.indexOf('/theme.js')>html.indexOf('/style.css'))throw new Error('theme preference must be restored before visual styles load')
+for(const required of ['omnishare.theme','prefers-color-scheme','dataset.theme','themeToggle','cfgTheme'])if(!themeJS.includes(required))throw new Error(`theme controller contract missing ${required}`)
+for(const required of [':root[data-theme="light"]','color-scheme:light','--bg:#f4f7fb'])if(!themeCSS.includes(required))throw new Error(`light theme contract missing ${required}`)
+for(const asset of ['/theme.css','/theme.js'])if(!sw.includes(asset))throw new Error(`service worker does not cache ${asset}`)
 const parsed=JSON.parse(manifest);if(parsed.display!=='standalone'||!parsed.icons?.length)throw new Error('invalid PWA manifest')
 const packageJSON=JSON.parse(packageText)
 if(!sw.includes(`omnishare-v${packageJSON.version}`))throw new Error(`service worker cache version missing for ${packageJSON.version}`)
 for(const sensitive of ["'/s/'","'/media/'","'/api/'","'/n/'"])if(sw.includes(sensitive))throw new Error(`service worker mentions sensitive route ${sensitive}`)
 if(!sw.includes('STATIC_ASSETS.has(url.pathname)'))throw new Error('service worker is not static-allowlist based')
-console.log('Frontend security, recovery and contract checks passed')
+console.log('Frontend security, recovery and theme contract checks passed')

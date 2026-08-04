@@ -7,7 +7,9 @@
   <meta name="description" content="OmniShare 私有化跨设备速记、文件与协同工作台" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/theme.css" />
   <title>OmniShare</title>
 </head>
 <body>
@@ -20,6 +22,7 @@
       <div class="top-actions">
         <span id="healthBadge" class="badge muted"><i></i>连接中</span>
         <button id="installBtn" class="button ghost hidden">安装到桌面</button>
+        <button id="themeToggle" type="button" class="button ghost theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题">☀ 白天</button>
         <button id="backupBtn" class="button ghost">导出备份</button>
         <button id="settingsBtn" class="button">系统设置</button>
       </div>
@@ -98,6 +101,7 @@
       <div class="modal-head"><div><h2>系统设置</h2><p>安全和网络设置保存后需重启应用生效</p></div><button value="cancel" class="icon-button">×</button></div>
       <div class="settings-grid">
         <label>节点名称<input id="cfgNodeName" required /></label>
+        <label>界面主题<select id="cfgTheme"><option value="system">跟随系统</option><option value="light">浅色（白天）</option><option value="dark">深色（黑夜）</option></select><small>立即生效，并保存在当前浏览器或桌面端。</small></label>
         <label>默认保留天数<input id="cfgRetention" type="number" min="0" max="36500" /><small>0 表示不自动清理</small></label>
         <label>回收站保留天数<input id="cfgTrashRetention" type="number" min="1" max="36500" /><small>到期后永久删除，默认 30 天</small></label>
         <label>单文件上传上限（MB）<input id="cfgMaxUpload" type="number" min="1" max="1048576" /></label>
