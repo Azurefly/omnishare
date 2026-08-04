@@ -1,12 +1,12 @@
 {
-  "tag": "v1.0.0-desktop",
-  "name": "OmniShare Desktop v1.0.0",
-  "notes": "docs/RELEASE_NOTES_v1.0.0-desktop.md",
-  "source_workflow_run": 30780201236,
+  "tag": "v1.0.1-desktop",
+  "name": "OmniShare Desktop v1.0.1",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-desktop.md",
+  "source_workflow_run": 30870071516,
   "artifacts": {
-    "windows_bundle": 8843469828,
-    "linux_bundle": 8843470424,
-    "windows_evidence": 8843470329,
-    "linux_evidence": 8843470542
+    "windows_bundle": 8877726369,
+    "linux_bundle": 8877702356,
+    "windows_evidence": 8877726852,
+    "linux_evidence": 8877702522
   }
 }
