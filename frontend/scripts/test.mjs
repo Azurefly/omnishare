@@ -19,7 +19,7 @@ if(!html.includes('<script src="/runtime-bridge.js"></script>'))throw new Error(
 if(html.indexOf('/runtime-bridge.js')>html.indexOf('/app.js'))throw new Error('runtime bridge must load before app.js')
 for(const required of ['retryDelays','scheduleRecovery','collapseDevices','local-primary','后端服务暂不可用'])if(!runtimeBridge.includes(required))throw new Error(`runtime bridge contract missing ${required}`)
 if(!runtimeBridge.includes("url.pathname.startsWith('/api/')"))throw new Error('runtime bridge must guard same-origin API requests')
-if(!runtimeBridge.includes("url.pathname !== '/api/v1/devices'"))throw new Error('runtime bridge must aggregate device responses')
+if(!runtimeBridge.includes("info.url?.pathname !== '/api/v1/devices'"))throw new Error('runtime bridge must aggregate device responses')
 const parsed=JSON.parse(manifest);if(parsed.display!=='standalone'||!parsed.icons?.length)throw new Error('invalid PWA manifest')
 const packageJSON=JSON.parse(packageText)
 if(!sw.includes(`omnishare-v${packageJSON.version}`))throw new Error(`service worker cache version missing for ${packageJSON.version}`)
