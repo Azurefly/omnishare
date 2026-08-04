@@ -1,0 +1,11 @@
+{
+  "tag": "v1.0.0-desktop",
+  "required_assets": [
+    "*.msi",
+    "*setup.exe",
+    "*.AppImage|*.deb|*.rpm",
+    "omnishare-windows-sha256.json",
+    "omnishare-linux-sha256.txt",
+    "omnishare-windows-runtime.junit.xml"
+  ]
+}
