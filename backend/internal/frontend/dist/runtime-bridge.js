@@ -52,7 +52,6 @@
     recoveryTimer = 0
     updateBadge('连接已恢复')
     document.dispatchEvent(new CustomEvent('omnishare:backend-online'))
-    setTimeout(() => location.reload(), 350)
   }
 
   function scheduleRecovery() {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"omnishare/internal/model"
 )
@@ -149,6 +150,32 @@ func TestLegacyPlaintextMigrationAndRestoreJSON(t *testing.T) {
 	}
 	if m.Get().NodeName != "restored-node" || m.Get().DataDir != dir {
 		t.Fatalf("restore=%+v", m.Get())
+	}
+}
+
+func TestAuthCacheCleanupAndCapacity(t *testing.T) {
+	m, err := New(t.TempDir(), 0, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cacheMu.Lock()
+	now := time.Now()
+	m.authCache = map[[32]byte]time.Time{}
+	for i := 0; i < 130; i++ {
+		var key [32]byte
+		key[0] = byte(i)
+		m.authCache[key] = now.Add(time.Duration(i+1) * time.Minute)
+	}
+	m.authCache[[32]byte{31: 1}] = now.Add(-time.Minute)
+	m.cacheMu.Unlock()
+	m.CleanupAuthCache()
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if len(m.authCache) > 128 {
+		t.Fatalf("cache size=%d", len(m.authCache))
+	}
+	if _, ok := m.authCache[[32]byte{31: 1}]; ok {
+		t.Fatal("expired cache entry was not removed")
 	}
 }
 

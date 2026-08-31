@@ -265,6 +265,13 @@ func (m *Manager) HasAccessKey() bool {
 	return m.cfg.AccessKeyHash != ""
 }
 
+func (m *Manager) CleanupAuthCache() {
+	now := time.Now()
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	m.cleanupAuthCacheLocked(now)
+}
+
 func (m *Manager) VerifyAccessKey(got string) bool {
 	m.mu.RLock()
 	cfg := m.cfg
@@ -292,13 +299,7 @@ func (m *Manager) VerifyAccessKey(got string) bool {
 		return false
 	}
 	m.cacheMu.Lock()
-	if len(m.authCache) > 128 {
-		for key, expires := range m.authCache {
-			if now.After(expires) {
-				delete(m.authCache, key)
-			}
-		}
-	}
+	m.cleanupAuthCacheLocked(now)
 	m.authCache[cacheKey] = now.Add(2 * time.Minute)
 	m.cacheMu.Unlock()
 	return true
@@ -310,6 +311,27 @@ func (m *Manager) accessCacheKey(secret string) [32]byte {
 	var key [32]byte
 	copy(key[:], mac.Sum(nil))
 	return key
+}
+
+func (m *Manager) cleanupAuthCacheLocked(now time.Time) {
+	for key, expires := range m.authCache {
+		if !now.Before(expires) {
+			delete(m.authCache, key)
+		}
+	}
+	for len(m.authCache) > 128 {
+		var oldestKey [32]byte
+		var oldest time.Time
+		for key, expires := range m.authCache {
+			if oldest.IsZero() || expires.Before(oldest) {
+				oldestKey, oldest = key, expires
+			}
+		}
+		if oldest.IsZero() {
+			break
+		}
+		delete(m.authCache, oldestKey)
+	}
 }
 
 func (m *Manager) clearAuthCache() {

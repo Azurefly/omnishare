@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,6 +172,36 @@ func TestNoteExpiryHeadAndCRUD(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 	if w := request(t, h, "GET", "/api/v1/notes/"+expired.ID, nil, "", ""); w.Code != 404 {
 		t.Fatalf("expired readable=%d", w.Code)
+	}
+}
+
+func TestConcurrentSameHashUploadsReuseBlob(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	content := []byte("concurrent-upload-content")
+	const count = 8
+	responses := make([]*httptest.ResponseRecorder, count)
+	var wg sync.WaitGroup
+	for i := range responses {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			responses[i] = upload(t, h, "concurrent.txt", content, "")
+		}(i)
+	}
+	wg.Wait()
+	for i, response := range responses {
+		if response.Code != http.StatusCreated {
+			t.Fatalf("upload %d=%d %s", i, response.Code, response.Body.String())
+		}
+	}
+	files := s.store.AllFiles()
+	if len(files) != count {
+		t.Fatalf("files=%d", len(files))
+	}
+	for _, file := range files {
+		if file.StoragePath != files[0].StoragePath {
+			t.Fatalf("storage paths differ: %+v", files)
+		}
 	}
 }
 

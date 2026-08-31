@@ -43,6 +43,31 @@ async function api(path, options={}) {
   return payload.data
 }
 
+async function apiBlob(path, options={}) {
+  const res = await fetch(path, {...options, headers: headers(options.headers || {})})
+  if (res.status === 401) {
+    showAuth()
+    throw new Error('需要访问密钥')
+  }
+  if (!res.ok) {
+    const type = res.headers.get('content-type') || ''
+    let message = `HTTP ${res.status}`
+    let data
+    if (type.includes('application/json')) {
+      const payload = await res.json()
+      message = payload.message || message
+      data = payload.data
+    } else {
+      message = await res.text() || message
+    }
+    const err = new Error(message)
+    err.status = res.status
+    err.data = data
+    throw err
+  }
+  return res.blob()
+}
+
 function showAuth() {
   if (!$('#authDialog').open) $('#authDialog').showModal()
   $('#authKey').focus()
@@ -539,47 +564,81 @@ function uploadOne({file, ttl}) {
         <span class="pct badge muted">排队中</span>
       </div>
       <progress class="progress-track" max="100" value="0"></progress>
+      <div class="file-actions upload-actions"></div>
     `
     $('#uploadQueue').appendChild(row)
+    const pct = row.querySelector('.pct')
+    const progress = row.querySelector('.progress-track')
+    const actions = row.querySelector('.upload-actions')
+    let xhr = null
+    let settled = false
+    let attempt = 0
 
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', '/api/v1/files/upload')
-    if (state.accessKey) xhr.setRequestHeader('X-OmniShare-Key', state.accessKey)
-    row.querySelector('.pct').textContent = '0%'
-
-    xhr.upload.onprogress = e => {
-      if (e.lengthComputable) {
-        const p = Math.round(e.loaded / e.total * 100)
-        row.querySelector('.pct').textContent = `${p}%`
-        row.querySelector('.progress-track').value = p
-      }
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
     }
-    xhr.onload = async () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        toast(`${file.name} 上传完成`)
-        row.remove()
-        await Promise.all([loadFiles(), loadDashboard()])
-      } else {
+
+    const setActions = (retryable=false) => {
+      actions.innerHTML = retryable ? '<button type="button" class="button ghost small retry-upload">重试</button>' : '<button type="button" class="button ghost small cancel-upload">取消</button>'
+      const retry = actions.querySelector('.retry-upload')
+      if (retry) retry.addEventListener('click', () => { actions.innerHTML = ''; attempt = 0; send() })
+      const cancel = actions.querySelector('.cancel-upload')
+      if (cancel) cancel.addEventListener('click', () => xhr?.abort())
+    }
+
+    const fail = message => {
+      pct.textContent = '失败'
+      setActions(true)
+      toast(`${file.name}：${message}`, true)
+      finish()
+    }
+
+    const send = () => {
+      attempt++
+      xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/v1/files/upload')
+      xhr.timeout = 120000
+      if (state.accessKey) xhr.setRequestHeader('X-OmniShare-Key', state.accessKey)
+      pct.textContent = attempt > 1 ? `重试 ${attempt - 1}` : '0%'
+      progress.value = 0
+      setActions()
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) {
+          const p = Math.round(e.loaded / e.total * 100)
+          pct.textContent = `${p}%`
+          progress.value = p
+        }
+      }
+      xhr.onload = async () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          toast(`${file.name} 上传完成`)
+          row.remove()
+          await Promise.all([loadFiles(), loadDashboard()])
+          finish()
+          return
+        }
         let message = `HTTP ${xhr.status}`
         try { message = JSON.parse(xhr.responseText).message || message } catch {}
-        row.querySelector('.pct').textContent = '失败'
-        toast(`${file.name}：${message}`, true)
+        fail(message)
       }
-      resolve()
+      xhr.onerror = () => fail('网络连接错误')
+      xhr.ontimeout = () => fail('上传超时')
+      xhr.onabort = () => {
+        pct.textContent = '已取消'
+        actions.innerHTML = '<button type="button" class="button ghost small retry-upload">重试</button>'
+        actions.querySelector('.retry-upload').addEventListener('click', () => { actions.innerHTML = ''; attempt = 0; send() })
+        toast(`${file.name}：上传已取消`, true)
+        finish()
+      }
+      const form = new FormData()
+      form.append('file', file)
+      form.append('ttl_seconds', ttl)
+      xhr.send(form)
     }
-    xhr.onerror = () => {
-      row.querySelector('.pct').textContent = '失败'
-      toast(`${file.name}：网络连接错误`, true)
-      resolve()
-    }
-    xhr.onabort = () => {
-      row.querySelector('.pct').textContent = '已取消'
-      resolve()
-    }
-    const form = new FormData()
-    form.append('file', file)
-    form.append('ttl_seconds', ttl)
-    xhr.send(form)
+
+    send()
   })
 }
 
@@ -706,7 +765,7 @@ async function performPadSave(snapshot, showToast=true) {
     if (showToast) toast('文档已保存')
     return true
   } catch (err) {
-    sessionStorage.setItem(`omnishare.padDraft.${snapshot.id}`, JSON.stringify({ ...snapshot, saved_at: new Date().toISOString() }))
+    preservePadDraft(snapshot)
     if (state.currentPad?.id === snapshot.id) {
       $('#saveState').textContent = err.status === 409 ? '版本冲突' : '保存失败'
       $('#saveState').className = 'badge muted'
@@ -997,13 +1056,7 @@ function switchTab(tab) {
 
 async function exportBackup() {
   try {
-    const res = await fetch('/api/v1/backup', {headers: headers()})
-    if (res.status === 401) {
-      showAuth()
-      return
-    }
-    if (!res.ok) throw new Error(await res.text())
-    const blob = await res.blob()
+    const blob = await apiBlob('/api/v1/backup')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `omnishare-backup-${new Date().toISOString().slice(0, 10)}.zip`
@@ -1170,7 +1223,8 @@ function bindEvents() {
 async function start() {
   bindEvents()
   window.addEventListener('beforeunload', event => {
-    if (state.currentPadDirty) {
+    if (state.currentPadDirty) preservePadDraft()
+    if (state.currentPadDirty || state.activeUploads > 0 || state.uploadQueue.length > 0) {
       event.preventDefault()
       event.returnValue = ''
     }

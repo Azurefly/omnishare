@@ -36,10 +36,16 @@ import (
 )
 
 const (
-	Version              = buildinfo.Version
-	maxJSONBody          = 1 << 20
-	maxTTLSeconds        = 10 * 365 * 24 * 60 * 60
-	shareSessionDuration = 30 * time.Minute
+	Version                  = buildinfo.Version
+	maxJSONBody              = 1 << 20
+	maxTTLSeconds            = 10 * 365 * 24 * 60 * 60
+	shareSessionDuration     = 30 * time.Minute
+	maxAuthEntries           = 4096
+	maxRestoreZIPEntries     = 10000
+	maxRestoreManifestFiles  = 5000
+	maxRestoreSingleFileSize = 4 << 30
+	maxRestoreTotalSize      = 16 << 30
+	maxRestoreCompressedSize = 8 << 30
 )
 
 type Server struct {
@@ -299,9 +305,45 @@ func (s *Server) verifyAuth(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusUnauthorized, 401, "invalid access key", nil)
 }
 
+func (s *Server) CleanupAuth() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupAuth(time.Now())
+}
+
+func (s *Server) cleanupAuth(now time.Time) {
+	for ip, st := range s.auth {
+		if st == nil || (now.After(st.BlockedTill) && now.Sub(st.WindowStart) > 10*time.Minute) {
+			delete(s.auth, ip)
+		}
+	}
+	for len(s.auth) > maxAuthEntries {
+		var oldestIP string
+		var oldest time.Time
+		for ip, st := range s.auth {
+			if st == nil {
+				oldestIP = ip
+				break
+			}
+			candidate := st.WindowStart
+			if !st.BlockedTill.IsZero() && st.BlockedTill.Before(candidate) {
+				candidate = st.BlockedTill
+			}
+			if oldestIP == "" || candidate.Before(oldest) {
+				oldestIP, oldest = ip, candidate
+			}
+		}
+		if oldestIP == "" {
+			break
+		}
+		delete(s.auth, oldestIP)
+	}
+}
+
 func (s *Server) authRetryAfter(ip string) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cleanupAuth(time.Now())
 	st := s.auth[ip]
 	if st == nil || time.Now().After(st.BlockedTill) {
 		return 0
@@ -313,6 +355,7 @@ func (s *Server) recordAuthFailure(ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	s.cleanupAuth(now)
 	st := s.auth[ip]
 	if st == nil || now.Sub(st.WindowStart) > 10*time.Minute {
 		st = &authState{WindowStart: now}
@@ -668,26 +711,35 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		respond(w, http.StatusInternalServerError, 500, statErr.Error(), nil)
 		return
-	} else if err := os.Rename(stagingPath, blobPath); err != nil {
+	} else if err := os.Link(stagingPath, blobPath); err != nil {
+		if info, statErr := os.Stat(blobPath); statErr == nil && info.Size() == size && fileHashMatches(blobPath, digest) {
+			_ = s.createUploadedAsset(w, filename, mimeType, size, digest, exp, blobRelative)
+			return
+		}
 		respond(w, http.StatusInternalServerError, 500, err.Error(), nil)
 		return
 	} else {
 		newBlob = true
 	}
-	now := time.Now()
+	_ = os.Remove(stagingPath)
+	_ = s.createUploadedAsset(w, filename, mimeType, size, digest, exp, blobRelative, newBlob)
+}
+
+func (s *Server) createUploadedAsset(w http.ResponseWriter, filename, mimeType string, size int64, digest string, exp *time.Time, blobRelative string, newBlob ...bool) error {
 	id := storage.NewID("f")
-	asset := model.FileAsset{ID: id, FileName: filename, FileSize: size, MIMEType: mimeType, StoragePath: blobRelative, FileHash: digest, IsVideo: strings.HasPrefix(mimeType, "video/"), DownloadURL: "/api/v1/files/" + id + "/download", ExpiresAt: exp, CreatedAt: now}
+	asset := model.FileAsset{ID: id, FileName: filename, FileSize: size, MIMEType: mimeType, StoragePath: blobRelative, FileHash: digest, IsVideo: strings.HasPrefix(mimeType, "video/"), DownloadURL: "/api/v1/files/" + id + "/download", ExpiresAt: exp, CreatedAt: time.Now()}
 	if asset.IsVideo {
 		asset.StreamURL = "/api/v1/files/" + id + "/stream"
 	}
 	if err := s.store.CreateFile(asset); err != nil {
-		if newBlob {
-			_ = os.Remove(blobPath)
+		if len(newBlob) > 0 && newBlob[0] {
+			_ = os.Remove(filepath.Join(s.dataDir, blobRelative))
 		}
 		respond(w, http.StatusInternalServerError, 500, err.Error(), nil)
-		return
+		return err
 	}
 	respond(w, http.StatusCreated, 0, "uploaded", asset)
+	return nil
 }
 
 func (s *Server) renameFile(w http.ResponseWriter, r *http.Request) {
@@ -1559,13 +1611,31 @@ func (s *Server) applyRestore(archive string) error {
 		return err
 	}
 	defer zr.Close()
+	if len(zr.File) > maxRestoreZIPEntries {
+		return errors.New("backup contains too many ZIP entries")
+	}
 	entries := map[string]*zip.File{}
+	var compressedTotal, uncompressedTotal uint64
 	for _, f := range zr.File {
 		clean := filepath.ToSlash(filepath.Clean(f.Name))
-		if strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+		if strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || clean == "." {
 			return errors.New("backup contains unsafe path")
 		}
+		if _, exists := entries[clean]; exists {
+			return fmt.Errorf("backup contains duplicate path: %s", clean)
+		}
 		entries[clean] = f
+		compressedTotal += uint64(f.CompressedSize64)
+		uncompressedTotal += f.UncompressedSize64
+		if uncompressedTotal > maxRestoreTotalSize {
+			return errors.New("backup uncompressed size exceeds limit")
+		}
+		if f.UncompressedSize64 > maxRestoreSingleFileSize {
+			return fmt.Errorf("backup file exceeds size limit: %s", clean)
+		}
+		if compressedTotal > maxRestoreCompressedSize {
+			return errors.New("backup compressed size exceeds limit")
+		}
 	}
 	manifestFile, stateFile, configFile := entries["backup-manifest.json"], entries["omnishare.json"], entries["config.json"]
 	if manifestFile == nil || stateFile == nil || configFile == nil {
@@ -1589,6 +1659,31 @@ func (s *Server) applyRestore(archive string) error {
 	}
 	if manifest.FormatVersion != 1 {
 		return errors.New("unsupported backup format")
+	}
+	if len(manifest.Files) > maxRestoreManifestFiles {
+		return errors.New("backup manifest contains too many files")
+	}
+	manifestPaths := map[string]struct{}{}
+	var manifestTotal uint64
+	for _, item := range manifest.Files {
+		clean := filepath.ToSlash(filepath.Clean(item.ArchivePath))
+		if clean != item.ArchivePath || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || clean == "." {
+			return fmt.Errorf("backup contains unsafe manifest path: %s", item.ArchivePath)
+		}
+		if _, exists := manifestPaths[clean]; exists {
+			return fmt.Errorf("backup manifest contains duplicate path: %s", clean)
+		}
+		manifestPaths[clean] = struct{}{}
+		if item.Size < 0 || uint64(item.Size) > maxRestoreSingleFileSize {
+			return fmt.Errorf("backup file exceeds size limit: %s", clean)
+		}
+		manifestTotal += uint64(item.Size)
+		if manifestTotal > maxRestoreTotalSize {
+			return errors.New("backup manifest size exceeds limit")
+		}
+		if entries[clean] == nil {
+			return fmt.Errorf("backup file missing: %s", item.ArchivePath)
+		}
 	}
 	stateJSON, err := readZip(stateFile, 256*1024*1024)
 	if err != nil {

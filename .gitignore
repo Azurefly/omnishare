@@ -19,5 +19,7 @@ config.json
 test_run_data/
 test_e2e_data/
 test_*data/
+temp_*data/
+backend/temp_*data/
 
 !docs/test-evidence/*.log
