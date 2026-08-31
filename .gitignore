@@ -16,5 +16,8 @@ uploads/
 omnishare.json
 config.json
 *.tmp
+test_run_data/
+test_e2e_data/
+test_*data/
 
 !docs/test-evidence/*.log
