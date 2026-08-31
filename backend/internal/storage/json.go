@@ -797,8 +797,11 @@ func (s *Store) ListAudits(limit int) []model.AuditEvent {
 	if start < 0 {
 		start = 0
 	}
-	out := append([]model.AuditEvent(nil), s.state.Audits[start:]...)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	slice := s.state.Audits[start:]
+	out := make([]model.AuditEvent, len(slice))
+	for i, e := range slice {
+		out[len(slice)-1-i] = e
+	}
 	return out
 }
 

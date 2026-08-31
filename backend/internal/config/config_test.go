@@ -101,8 +101,21 @@ func TestCorruptPrimaryRecoversFromBackup(t *testing.T) {
 
 func TestLegacyPlaintextMigrationAndRestoreJSON(t *testing.T) {
 	dir := t.TempDir()
-	legacy := `{"schema_version":1,"data_dir":"` + dir + `","node_name":"legacy","port":8081,"listen_address":"127.0.0.1","max_upload_mb":64,"trash_retention_days":7,"access_key":"0123456789abcdef-legacy"}`
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(legacy), 0o600); err != nil {
+	legacyMap := map[string]interface{}{
+		"schema_version":       1,
+		"data_dir":             dir,
+		"node_name":            "legacy",
+		"port":                 8081,
+		"listen_address":       "127.0.0.1",
+		"max_upload_mb":        64,
+		"trash_retention_days": 7,
+		"access_key":           "0123456789abcdef-legacy",
+	}
+	legacyBytes, err := json.Marshal(legacyMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), legacyBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	m, err := New(dir, 0, "")
