@@ -38,21 +38,50 @@
     </header>
 
     <main class="shell">
-      <section id="stats" class="stats-grid" aria-label="系统统计"></section>
-      
       <div class="workspace">
         <section class="content-column">
           <nav class="tabs" aria-label="主功能导航">
-            <button class="tab active" data-tab="notes">随手记</button>
-            <button class="tab" data-tab="files">文件与视频</button>
-            <button class="tab" data-tab="pads">协同文档</button>
-            <button class="tab" data-tab="shares">安全分享</button>
-            <button class="tab" data-tab="trash">回收站</button>
-            <button class="tab" data-tab="activity">活动记录</button>
+            <button class="tab active" data-tab="dashboard"><span class="tab-icon">⌂</span><span>工作台</span></button>
+            <button class="tab" data-tab="notes"><span class="tab-icon">✎</span><span>随手记</span></button>
+            <button class="tab" data-tab="files"><span class="tab-icon">⇧</span><span>文件与视频</span></button>
+            <button class="tab" data-tab="pads"><span class="tab-icon">▤</span><span>协同文档</span></button>
+            <button class="tab" data-tab="shares"><span class="tab-icon">↗</span><span>安全分享</span></button>
+            <button class="tab" data-tab="trash"><span class="tab-icon">♲</span><span>回收站</span></button>
+            <button class="tab" data-tab="activity"><span class="tab-icon">◷</span><span>活动记录</span></button>
           </nav>
 
-          <!-- 随手记 Panel -->
-          <section id="notesPanel" class="panel-view active">
+          <section id="dashboardPanel" class="panel-view active">
+            <div class="module-hero">
+              <span class="module-kicker">OVERVIEW</span>
+              <h2>工作台概览</h2>
+              <p>集中查看节点状态、内容统计、存储使用和已连接设备。通过导航进入各个独立功能模块。</p>
+            </div>
+            <section id="stats" class="stats-grid" aria-label="系统统计"></section>
+            <div class="dashboard-grid">
+              <article class="card dashboard-card">
+                <span class="dashboard-card-icon">✎</span>
+                <div><h3>随手记</h3><p>快速记录文本、代码和剪贴板内容。</p></div>
+                <button class="button ghost small dashboard-link" data-target-tab="notes">进入模块</button>
+              </article>
+              <article class="card dashboard-card">
+                <span class="dashboard-card-icon">⇧</span>
+                <div><h3>文件与视频</h3><p>独立管理上传、下载、播放和文件分享。</p></div>
+                <button class="button ghost small dashboard-link" data-target-tab="files">进入模块</button>
+              </article>
+              <article class="card dashboard-card">
+                <span class="dashboard-card-icon">▤</span>
+                <div><h3>协同文档</h3><p>编辑支持版本保护和自动保存的文档。</p></div>
+                <button class="button ghost small dashboard-link" data-target-tab="pads">进入模块</button>
+              </article>
+              <article class="card dashboard-card">
+                <span class="dashboard-card-icon">↗</span>
+                <div><h3>分享与审计</h3><p>管理匿名外链、回收站和操作记录。</p></div>
+                <button class="button ghost small dashboard-link" data-target-tab="shares">进入模块</button>
+              </article>
+            </div>
+          </section>
+
+          <section id="notesPanel" class="panel-view">
             <article class="card composer">
               <div class="card-title">
                 <div>

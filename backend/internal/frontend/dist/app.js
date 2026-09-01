@@ -1040,18 +1040,25 @@ function renderDevices() {
   `
 }
 
+const TAB_CONFIG = {
+  dashboard: { panel: '#dashboardPanel' },
+  notes: { panel: '#notesPanel', load: loadNotes },
+  files: { panel: '#filesPanel', load: loadFiles },
+  pads: { panel: '#padsPanel', load: loadPads },
+  shares: { panel: '#sharesPanel', load: loadShares },
+  trash: { panel: '#trashPanel', load: loadTrash },
+  activity: { panel: '#activityPanel', load: loadAudit }
+}
+
 function switchTab(tab) {
+  const config = TAB_CONFIG[tab]
+  if (!config) return
   if (state.activeTab === 'pads' && tab !== 'pads' && state.currentPadDirty) savePad(false)
   state.activeTab = tab
   $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab))
   $$('.panel-view').forEach(p => p.classList.remove('active'))
-  $(`#${tab}Panel`).classList.add('active')
-  if (tab === 'activity') loadAudit()
-  if (tab === 'shares') loadShares()
-  if (tab === 'trash') loadTrash()
-  if (tab === 'pads') loadPads()
-  if (tab === 'files') loadFiles()
-  if (tab === 'notes') loadNotes()
+  $(config.panel).classList.add('active')
+  if (config.load) config.load()
 }
 
 async function exportBackup() {
@@ -1069,6 +1076,7 @@ async function exportBackup() {
 
 function bindEvents() {
   $$('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)))
+  $$('.dashboard-link').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.targetTab)))
   $('#createNoteBtn').addEventListener('click', createNote)
   $('#noteContent').addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {

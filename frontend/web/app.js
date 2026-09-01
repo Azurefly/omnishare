@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 const state = {
-  activeTab: 'notes', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
+  activeTab: 'dashboard', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
   currentPad: null, currentPadDirty: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
   accessKey: sessionStorage.getItem('omnishare.accessKey') || '', deferredInstall: null, editingNote: null,
   uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, padSaveChain: Promise.resolve()
@@ -89,18 +89,12 @@ async function verifyAuth() {
 }
 
 async function loadAll() {
-  const core = await Promise.allSettled([loadHealth(true), loadConfig(true)])
+  const core = await Promise.allSettled([loadHealth(true), loadConfig(true), loadDashboard(true), loadNotes(true), loadDevices(true)])
   if (core.some(result => result.status === 'rejected')) {
     toast('核心服务加载失败，请检查网络连接或访问密钥', true)
     return false
   }
-  const rest = await Promise.allSettled([
-    loadDashboard(true), loadNotes(true), loadFiles(true),
-    loadPads(true), loadShares(true), loadTrash(true), loadDevices(true)
-  ])
-  const failed = rest.filter(result => result.status === 'rejected')
-  if (failed.length) toast(`${failed.length} 个模块加载失败，请重试`, true)
-  return failed.length === 0
+  return true
 }
 
 function reportLoadError(err, strict=false) {
@@ -1040,18 +1034,25 @@ function renderDevices() {
   `
 }
 
+const TAB_CONFIG = {
+  dashboard: { panel: '#dashboardPanel' },
+  notes: { panel: '#notesPanel', load: loadNotes },
+  files: { panel: '#filesPanel', load: loadFiles },
+  pads: { panel: '#padsPanel', load: loadPads },
+  shares: { panel: '#sharesPanel', load: loadShares },
+  trash: { panel: '#trashPanel', load: loadTrash },
+  activity: { panel: '#activityPanel', load: loadAudit }
+}
+
 function switchTab(tab) {
+  const config = TAB_CONFIG[tab]
+  if (!config) return
   if (state.activeTab === 'pads' && tab !== 'pads' && state.currentPadDirty) savePad(false)
   state.activeTab = tab
   $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab))
   $$('.panel-view').forEach(p => p.classList.remove('active'))
-  $(`#${tab}Panel`).classList.add('active')
-  if (tab === 'activity') loadAudit()
-  if (tab === 'shares') loadShares()
-  if (tab === 'trash') loadTrash()
-  if (tab === 'pads') loadPads()
-  if (tab === 'files') loadFiles()
-  if (tab === 'notes') loadNotes()
+  $(config.panel).classList.add('active')
+  if (config.load) config.load()
 }
 
 async function exportBackup() {
@@ -1069,6 +1070,7 @@ async function exportBackup() {
 
 function bindEvents() {
   $$('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)))
+  $$('.dashboard-link').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.targetTab)))
   $('#createNoteBtn').addEventListener('click', createNote)
   $('#noteContent').addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -1231,6 +1233,7 @@ async function start() {
   })
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {})
   await loadAll()
+  switchTab(state.activeTab)
   setInterval(loadHealth, 15000)
   setInterval(() => {
     if (!document.hidden) loadDevices()

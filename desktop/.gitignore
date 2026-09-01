@@ -2,3 +2,4 @@ node_modules/
 src-tauri/target/
 src-tauri/resources/omnishare
 src-tauri/resources/omnishare.exe
+src-tauri/icons/
