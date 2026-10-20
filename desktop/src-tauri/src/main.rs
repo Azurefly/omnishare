@@ -46,6 +46,10 @@ fn start_backend_watchdog(app: AppHandle) {
 
                 if let Err(error) = startup::initialize(&app, backend_state.inner(), status.port) {
                     eprintln!("OmniShare backend watchdog restart failed: {error}");
+                    // Keep escalating the backoff after a failed restart;
+                    // otherwise the exponent stays at zero and the watchdog
+                    // retries (and logs) every few seconds forever.
+                    consecutive_failures = consecutive_failures.saturating_add(1);
                 } else {
                     consecutive_failures = 0;
                 }

@@ -122,23 +122,100 @@ func (s *Store) initializeState() {
 
 func (s *Store) persistCandidate(candidate state) error {
 	candidate.SchemaVersion = currentStateSchema
-	data, err := json.MarshalIndent(candidate, "", "  ")
-	if err != nil {
-		return err
-	}
-	return durable.WriteFile(s.path, data, 0o600)
+	return durable.WriteFileFunc(s.path, 0o600, func(w io.Writer) error {
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(candidate)
+	})
 }
 
-func cloneState(src state) (state, error) {
-	data, err := json.Marshal(src)
-	if err != nil {
-		return state{}, err
+func cloneTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
 	}
-	var out state
-	if err := json.Unmarshal(data, &out); err != nil {
-		return state{}, err
+	value := *t
+	return &value
+}
+
+func cloneMetadataValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneMetadata(typed)
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for i, item := range typed {
+			out[i] = cloneMetadataValue(item)
+		}
+		return out
+	case []string:
+		if typed == nil {
+			return nil
+		}
+		return append([]string(nil), typed...)
+	default:
+		return value
 	}
-	return out, nil
+}
+
+func cloneMetadata(metadata map[string]interface{}) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		out[key] = cloneMetadataValue(value)
+	}
+	return out
+}
+
+// cloneState performs a structural deep copy instead of a JSON round-trip. The
+// previous marshal/unmarshal implementation serialized the entire dataset twice
+// for every mutation (once to clone, once to persist), which dominated write
+// latency for large states. Every reference type reachable from state must be
+// copied here so rollback semantics stay intact.
+func cloneState(src state) state {
+	out := state{SchemaVersion: src.SchemaVersion}
+	if src.Notes != nil {
+		out.Notes = make([]model.QuickNote, len(src.Notes))
+		for i, n := range src.Notes {
+			n.Tags = append([]string(nil), n.Tags...)
+			n.ExpiresAt = cloneTime(n.ExpiresAt)
+			n.DeletedAt = cloneTime(n.DeletedAt)
+			out.Notes[i] = n
+		}
+	}
+	if src.Files != nil {
+		out.Files = make([]model.FileAsset, len(src.Files))
+		for i, f := range src.Files {
+			f.ExpiresAt = cloneTime(f.ExpiresAt)
+			f.DeletedAt = cloneTime(f.DeletedAt)
+			out.Files[i] = f
+		}
+	}
+	if src.Pads != nil {
+		out.Pads = make([]model.PadDocument, len(src.Pads))
+		for i, p := range src.Pads {
+			p.DeletedAt = cloneTime(p.DeletedAt)
+			out.Pads[i] = p
+		}
+	}
+	if src.Shares != nil {
+		out.Shares = make([]model.ShareLink, len(src.Shares))
+		for i, link := range src.Shares {
+			link.ExpiresAt = cloneTime(link.ExpiresAt)
+			link.RevokedAt = cloneTime(link.RevokedAt)
+			link.LastAccessedAt = cloneTime(link.LastAccessedAt)
+			out.Shares[i] = link
+		}
+	}
+	if src.Audits != nil {
+		out.Audits = make([]model.AuditEvent, len(src.Audits))
+		for i, event := range src.Audits {
+			event.Metadata = cloneMetadata(event.Metadata)
+			out.Audits[i] = event
+		}
+	}
+	return out
 }
 
 // mutate provides rollback semantics: changes are applied to a copy, persisted,
@@ -146,10 +223,7 @@ func cloneState(src state) (state, error) {
 func (s *Store) mutate(apply func(*state) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	candidate, err := cloneState(s.state)
-	if err != nil {
-		return err
-	}
+	candidate := cloneState(s.state)
 	if err := apply(&candidate); err != nil {
 		return err
 	}
@@ -209,7 +283,7 @@ func (s *Store) ListNotes(query, tag string) []model.QuickNote {
 		if n.DeletedAt != nil || expired(n.ExpiresAt, now) {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(n.Content), query) && !containsTag(n.Tags, query) {
+		if query != "" && !containsFold(n.Content, query) && !containsTag(n.Tags, query) {
 			continue
 		}
 		if tag != "" && !containsTag(n.Tags, tag) {
@@ -321,7 +395,7 @@ func (s *Store) ListFiles(query, kind string) []model.FileAsset {
 		if f.DeletedAt != nil || expired(f.ExpiresAt, now) {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(f.FileName), query) && !strings.Contains(strings.ToLower(f.MIMEType), query) {
+		if query != "" && !containsFold(f.FileName, query) && !containsFold(f.MIMEType, query) {
 			continue
 		}
 		if kind == "video" && !f.IsVideo {
@@ -474,7 +548,7 @@ func (s *Store) ListPads(query string) []model.PadDocument {
 		if p.DeletedAt != nil {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(p.Title), query) && !strings.Contains(strings.ToLower(p.Content), query) {
+		if query != "" && !containsFold(p.Title, query) && !containsFold(p.Content, query) {
 			continue
 		}
 		out = append(out, p)
@@ -554,8 +628,9 @@ func (s *Store) ListShares() []model.ShareLink {
 	defer s.mu.RUnlock()
 	now := time.Now()
 	out := append([]model.ShareLink(nil), s.state.Shares...)
+	index := buildShareTargetIndex(s.state, now)
 	for i := range out {
-		out[i].Status = shareStatus(s.state, out[i], now)
+		out[i].Status = index.statusOf(out[i], now)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
@@ -747,11 +822,14 @@ func (s *Store) PurgeTrash(kind, id string) (removed *model.FileAsset, err error
 
 func (s *Store) EmptyTrash() (files []model.FileAsset, deletedCount int, err error) {
 	err = s.mutate(func(st *state) error {
+		purgedNotes := map[string]struct{}{}
+		purgedFiles := map[string]struct{}{}
+		purgedPads := map[string]struct{}{}
 		notes := st.Notes[:0]
 		for _, n := range st.Notes {
 			if n.DeletedAt != nil {
 				deletedCount++
-				revokeSharesForObject(st, "note", n.ID, "target purged")
+				purgedNotes[n.ID] = struct{}{}
 				continue
 			}
 			notes = append(notes, n)
@@ -762,7 +840,7 @@ func (s *Store) EmptyTrash() (files []model.FileAsset, deletedCount int, err err
 			if f.DeletedAt != nil {
 				deletedCount++
 				files = append(files, f)
-				revokeSharesForObject(st, "file", f.ID, "target purged")
+				purgedFiles[f.ID] = struct{}{}
 				continue
 			}
 			activeFiles = append(activeFiles, f)
@@ -772,7 +850,7 @@ func (s *Store) EmptyTrash() (files []model.FileAsset, deletedCount int, err err
 		for _, p := range st.Pads {
 			if p.DeletedAt != nil {
 				deletedCount++
-				revokeSharesForObject(st, "pad", p.ID, "target purged")
+				purgedPads[p.ID] = struct{}{}
 				continue
 			}
 			pads = append(pads, p)
@@ -781,6 +859,11 @@ func (s *Store) EmptyTrash() (files []model.FileAsset, deletedCount int, err err
 		if deletedCount == 0 {
 			return ErrNotFound
 		}
+		// One pass per object kind keeps this linear in shares instead of
+		// rescanning every share once per purged object.
+		revokeSharesForObjects(st, "note", purgedNotes, "target purged")
+		revokeSharesForObjects(st, "file", purgedFiles, "target purged")
+		revokeSharesForObjects(st, "pad", purgedPads, "target purged")
 		appendAudit(st, "purge", "trash", "", "trash emptied", map[string]interface{}{"count": deletedCount, "files": len(files)})
 		return nil
 	})
@@ -818,23 +901,36 @@ func (s *Store) Stats() model.DashboardStats {
 	now := time.Now()
 	st := model.DashboardStats{}
 	blobSizes := map[string]int64{}
+	index := shareTargetIndex{
+		notes: make(map[string]string, len(s.state.Notes)),
+		files: make(map[string]string, len(s.state.Files)),
+		pads:  make(map[string]string, len(s.state.Pads)),
+	}
 	for _, n := range s.state.Notes {
-		if n.DeletedAt != nil {
+		switch {
+		case n.DeletedAt != nil:
 			st.TrashCount++
-		} else if !expired(n.ExpiresAt, now) {
+			index.notes[n.ID] = "suspended"
+		case expired(n.ExpiresAt, now):
+			index.notes[n.ID] = "target_expired"
+		default:
 			st.NotesCount++
+			index.notes[n.ID] = "active"
 		}
 	}
 	for _, f := range s.state.Files {
-		if f.DeletedAt != nil {
+		switch {
+		case f.DeletedAt != nil:
 			st.TrashCount++
+			index.files[f.ID] = "suspended"
 			continue
-		}
-		if expired(f.ExpiresAt, now) {
+		case expired(f.ExpiresAt, now):
+			index.files[f.ID] = "target_expired"
 			continue
 		}
 		st.FilesCount++
 		blobSizes[f.StoragePath] = f.FileSize
+		index.files[f.ID] = "active"
 		if f.IsVideo {
 			st.VideosCount++
 		}
@@ -845,12 +941,14 @@ func (s *Store) Stats() model.DashboardStats {
 	for _, p := range s.state.Pads {
 		if p.DeletedAt != nil {
 			st.TrashCount++
+			index.pads[p.ID] = "suspended"
 		} else {
 			st.PadsCount++
+			index.pads[p.ID] = "active"
 		}
 	}
 	for _, link := range s.state.Shares {
-		if shareStatus(s.state, link, now) == "active" {
+		if index.statusOf(link, now) == "active" {
 			st.ActiveShares++
 		}
 	}
@@ -858,6 +956,52 @@ func (s *Store) Stats() model.DashboardStats {
 }
 
 func (s *Store) CleanupExpired(retentionDays int) (moved int, err error) {
+	// Cheap read-only precheck: the cleanup worker runs every minute, and cloning
+	// plus serializing a large idle state just to discover nothing changed is a
+	// significant background CPU and allocation cost.
+	probe := time.Now()
+	probeCutoff := time.Time{}
+	if retentionDays > 0 {
+		probeCutoff = probe.Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	}
+	s.mu.RLock()
+	pending := false
+	for i := range s.state.Notes {
+		n := &s.state.Notes[i]
+		if n.DeletedAt != nil {
+			continue
+		}
+		if expired(n.ExpiresAt, probe) || (!probeCutoff.IsZero() && n.UpdatedAt.Before(probeCutoff) && !n.Pinned) {
+			pending = true
+			break
+		}
+	}
+	if !pending {
+		for i := range s.state.Files {
+			f := &s.state.Files[i]
+			if f.DeletedAt != nil {
+				continue
+			}
+			if expired(f.ExpiresAt, probe) || (!probeCutoff.IsZero() && f.CreatedAt.Before(probeCutoff)) {
+				pending = true
+				break
+			}
+		}
+	}
+	if !pending && !probeCutoff.IsZero() {
+		for i := range s.state.Pads {
+			p := &s.state.Pads[i]
+			if p.DeletedAt == nil && p.UpdatedAt.Before(probeCutoff) {
+				pending = true
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if !pending {
+		return 0, nil
+	}
+
 	err = s.mutate(func(st *state) error {
 		now := time.Now()
 		cutoff := time.Time{}
@@ -907,13 +1051,59 @@ func (s *Store) PurgeExpiredTrash(days int) (files []model.FileAsset, purged int
 	if days <= 0 {
 		return nil, 0, nil
 	}
+	// Read-only precheck to keep the minute-interval cleanup worker from
+	// cloning and rewriting the whole dataset when there is nothing to purge.
+	probeNow := time.Now()
+	probeCutoff := probeNow.Add(-time.Duration(days) * 24 * time.Hour)
+	probeShareCutoff := probeNow.Add(-30 * 24 * time.Hour)
+	s.mu.RLock()
+	pending := false
+	for i := range s.state.Notes {
+		if n := &s.state.Notes[i]; n.DeletedAt != nil && n.DeletedAt.Before(probeCutoff) {
+			pending = true
+			break
+		}
+	}
+	if !pending {
+		for i := range s.state.Files {
+			if f := &s.state.Files[i]; f.DeletedAt != nil && f.DeletedAt.Before(probeCutoff) {
+				pending = true
+				break
+			}
+		}
+	}
+	if !pending {
+		for i := range s.state.Pads {
+			if p := &s.state.Pads[i]; p.DeletedAt != nil && p.DeletedAt.Before(probeCutoff) {
+				pending = true
+				break
+			}
+		}
+	}
+	if !pending {
+		for _, link := range s.state.Shares {
+			terminal := link.RevokedAt != nil || expired(link.ExpiresAt, probeNow) || (link.MaxAccessCount > 0 && link.AccessCount >= link.MaxAccessCount)
+			if terminal && link.CreatedAt.Before(probeShareCutoff) {
+				pending = true
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+	if !pending {
+		return nil, 0, nil
+	}
+
 	err = s.mutate(func(st *state) error {
 		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 		notes := st.Notes[:0]
+		purgedNotes := map[string]struct{}{}
+		purgedFiles := map[string]struct{}{}
+		purgedPads := map[string]struct{}{}
 		for _, n := range st.Notes {
 			if n.DeletedAt != nil && n.DeletedAt.Before(cutoff) {
 				purged++
-				revokeSharesForObject(st, "note", n.ID, "expired trash purged")
+				purgedNotes[n.ID] = struct{}{}
 				continue
 			}
 			notes = append(notes, n)
@@ -924,7 +1114,7 @@ func (s *Store) PurgeExpiredTrash(days int) (files []model.FileAsset, purged int
 			if f.DeletedAt != nil && f.DeletedAt.Before(cutoff) {
 				files = append(files, f)
 				purged++
-				revokeSharesForObject(st, "file", f.ID, "expired trash purged")
+				purgedFiles[f.ID] = struct{}{}
 				continue
 			}
 			activeFiles = append(activeFiles, f)
@@ -934,12 +1124,15 @@ func (s *Store) PurgeExpiredTrash(days int) (files []model.FileAsset, purged int
 		for _, p := range st.Pads {
 			if p.DeletedAt != nil && p.DeletedAt.Before(cutoff) {
 				purged++
-				revokeSharesForObject(st, "pad", p.ID, "expired trash purged")
+				purgedPads[p.ID] = struct{}{}
 				continue
 			}
 			pads = append(pads, p)
 		}
 		st.Pads = pads
+		revokeSharesForObjects(st, "note", purgedNotes, "expired trash purged")
+		revokeSharesForObjects(st, "file", purgedFiles, "expired trash purged")
+		revokeSharesForObjects(st, "pad", purgedPads, "expired trash purged")
 		// Remove terminal shares after 30 days to prevent unbounded metadata.
 		originalShareCount := len(st.Shares)
 		shares := st.Shares[:0]
@@ -1027,6 +1220,77 @@ func shareStatus(st state, link model.ShareLink, now time.Time) string {
 	return "target_missing"
 }
 
+// shareTargetIndex maps every target object ID to its lifecycle state once, so
+// listing or counting N shares costs O(N + objects) instead of O(N * objects).
+type shareTargetIndex struct {
+	notes map[string]string
+	files map[string]string
+	pads  map[string]string
+}
+
+func (index shareTargetIndex) statusOf(link model.ShareLink, now time.Time) string {
+	if link.RevokedAt != nil {
+		return "revoked"
+	}
+	if expired(link.ExpiresAt, now) {
+		return "expired"
+	}
+	if link.MaxAccessCount > 0 && link.AccessCount >= link.MaxAccessCount {
+		return "exhausted"
+	}
+	switch link.ObjectType {
+	case "note":
+		if status, ok := index.notes[link.ObjectID]; ok {
+			return status
+		}
+	case "file":
+		if status, ok := index.files[link.ObjectID]; ok {
+			return status
+		}
+	case "pad":
+		if status, ok := index.pads[link.ObjectID]; ok {
+			return status
+		}
+	}
+	return "target_missing"
+}
+
+func buildShareTargetIndex(st state, now time.Time) shareTargetIndex {
+	index := shareTargetIndex{
+		notes: make(map[string]string, len(st.Notes)),
+		files: make(map[string]string, len(st.Files)),
+		pads:  make(map[string]string, len(st.Pads)),
+	}
+	for _, n := range st.Notes {
+		switch {
+		case n.DeletedAt != nil:
+			index.notes[n.ID] = "suspended"
+		case expired(n.ExpiresAt, now):
+			index.notes[n.ID] = "target_expired"
+		default:
+			index.notes[n.ID] = "active"
+		}
+	}
+	for _, f := range st.Files {
+		switch {
+		case f.DeletedAt != nil:
+			index.files[f.ID] = "suspended"
+		case expired(f.ExpiresAt, now):
+			index.files[f.ID] = "target_expired"
+		default:
+			index.files[f.ID] = "active"
+		}
+	}
+	for _, p := range st.Pads {
+		if p.DeletedAt != nil {
+			index.pads[p.ID] = "suspended"
+		} else {
+			index.pads[p.ID] = "active"
+		}
+	}
+	return index
+}
+
 func revokeSharesForObject(st *state, kind, id, reason string) {
 	now := time.Now()
 	for i := range st.Shares {
@@ -1034,6 +1298,26 @@ func revokeSharesForObject(st *state, kind, id, reason string) {
 			st.Shares[i].RevokedAt = &now
 			appendAudit(st, "revoke", "share", st.Shares[i].ID, "share automatically revoked", map[string]interface{}{"reason": reason, "object_type": kind, "object_id": id})
 		}
+	}
+}
+
+// revokeSharesForObjects revokes every share pointing at one of ids in a single
+// pass over the share list.
+func revokeSharesForObjects(st *state, kind string, ids map[string]struct{}, reason string) {
+	if len(ids) == 0 {
+		return
+	}
+	now := time.Now()
+	for i := range st.Shares {
+		link := &st.Shares[i]
+		if link.ObjectType != kind || link.RevokedAt != nil {
+			continue
+		}
+		if _, ok := ids[link.ObjectID]; !ok {
+			continue
+		}
+		link.RevokedAt = &now
+		appendAudit(st, "revoke", "share", link.ID, "share automatically revoked", map[string]interface{}{"reason": reason, "object_type": kind, "object_id": link.ObjectID})
 	}
 }
 
@@ -1105,6 +1389,46 @@ func stringSet(ids []string) map[string]bool {
 		}
 	}
 	return set
+}
+
+func containsFold(haystack, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	if isASCII(needle) {
+		for i := 0; i+len(needle) <= len(haystack); i++ {
+			if asciiEqualFold(haystack[i:i+len(needle)], needle) {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.Contains(strings.ToLower(haystack), needle)
+}
+
+func isASCII(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiEqualFold compares a haystack window against an already lower-cased ASCII
+// needle. ASCII bytes never appear inside multi-byte UTF-8 sequences, so a
+// byte-wise search is safe for mixed Chinese/ASCII content.
+func asciiEqualFold(window, needle string) bool {
+	for i := 0; i < len(needle); i++ {
+		c := window[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != needle[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsTag(tags []string, target string) bool {

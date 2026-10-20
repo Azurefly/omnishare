@@ -1,8 +1,10 @@
 package durable
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,6 +15,17 @@ import (
 // path+.bak. File and directory syncs make a successful return substantially
 // stronger than a plain os.Rename acknowledgement.
 func WriteFile(path string, data []byte, mode fs.FileMode) error {
+	return WriteFileFunc(path, mode, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteFileFunc behaves like WriteFile but streams the new generation through
+// write instead of requiring a fully materialized buffer. Large states can be
+// encoded directly into the temporary file, which avoids a second multi-megabyte
+// allocation on every mutation.
+func WriteFileFunc(path string, mode fs.FileMode, write func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -30,7 +43,11 @@ func WriteFile(path string, data []byte, mode fs.FileMode) error {
 	if err := f.Chmod(mode); err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
+	buffered := bufio.NewWriterSize(f, 64*1024)
+	if err := write(buffered); err != nil {
+		return err
+	}
+	if err := buffered.Flush(); err != nil {
 		return err
 	}
 	if err := f.Sync(); err != nil {

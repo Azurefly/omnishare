@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -62,7 +63,39 @@ type Server struct {
 	requestIP map[string]int
 	shareIP   map[string]int
 	counted   map[string]time.Time
+
+	// requestTotal mirrors the sum of requestIP so the global concurrency check
+	// is O(1) instead of iterating every client on each request.
+	requestTotal int
+	countedSweep time.Time
+	authSweep    time.Time
+
+	// Local interface addresses change rarely. Caching them avoids a getifaddrs
+	// syscall on every request while still refreshing stale network state. The
+	// published snapshot is read without a lock: host validation runs on every
+	// request, and a mutex there serialised the whole server.
+	localMu    sync.Mutex
+	localCache atomic.Pointer[localNetworkSnapshot]
 }
+
+// localNetworkSnapshot is an immutable view of this host's addresses. Both
+// validHost and the device list read it, so a single refresh serves every
+// request that arrives inside the TTL.
+type localNetworkSnapshot struct {
+	addrs    map[string]struct{}
+	ips      []string
+	outbound string
+	until    time.Time
+}
+
+// localNetworkTTL balances responsiveness to network changes (Wi-Fi switch,
+// VPN up) against the cost of the underlying syscalls.
+const localNetworkTTL = 30 * time.Second
+
+// authSweepPeriod throttles the failed-login table scan. Expired entries only
+// matter for capacity and memory, not for correctness, because every reader
+// re-checks the entry's own timestamps.
+const authSweepPeriod = time.Minute
 
 type authState struct {
 	WindowStart time.Time
@@ -170,11 +203,12 @@ func (s *Server) common(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !s.enterRequest(clientIP(r), 8, 128) {
+		ip := clientIP(r)
+		if !s.enterRequest(ip, 8, 128) {
 			respond(w, http.StatusTooManyRequests, 429, "too many concurrent requests", nil)
 			return
 		}
-		defer s.leaveRequest(clientIP(r))
+		defer s.leaveRequest(ip)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -225,33 +259,83 @@ func (s *Server) validHost(raw string) bool {
 	if ip.IsLoopback() {
 		return true
 	}
-	interfaces, _ := net.InterfaceAddrs()
-	for _, addr := range interfaces {
-		var local net.IP
-		switch v := addr.(type) {
-		case *net.IPNet:
-			local = v.IP
-		case *net.IPAddr:
-			local = v.IP
-		}
-		if local != nil && local.Equal(ip) {
-			return true
-		}
+	return s.isLocalAddress(ip)
+}
+
+// isLocalAddress reports whether ip belongs to one of this host's interfaces.
+// The hot path is lock-free: results are cached briefly because
+// net.InterfaceAddrs performs a syscall and this check runs on every single
+// request, including static assets and media range requests.
+func (s *Server) isLocalAddress(ip net.IP) bool {
+	key := ip.String()
+	now := time.Now()
+	if snapshot := s.localCache.Load(); snapshot != nil && now.Before(snapshot.until) {
+		_, ok := snapshot.addrs[key]
+		return ok
 	}
-	return false
+	snapshot := s.localNetwork()
+	if snapshot == nil {
+		return false
+	}
+	_, ok := snapshot.addrs[key]
+	return ok
+}
+
+// localNetwork returns the current interface snapshot, refreshing it at most
+// once per TTL. Concurrent misses collapse into a single refresh.
+func (s *Server) localNetwork() *localNetworkSnapshot {
+	now := time.Now()
+	if snapshot := s.localCache.Load(); snapshot != nil && now.Before(snapshot.until) {
+		return snapshot
+	}
+
+	s.localMu.Lock()
+	defer s.localMu.Unlock()
+	now = time.Now()
+	if snapshot := s.localCache.Load(); snapshot != nil && now.Before(snapshot.until) {
+		return snapshot
+	}
+
+	interfaces, err := net.InterfaceAddrs()
+	if err != nil {
+		// A transient failure must not lock LAN clients out: keep serving the
+		// last known topology instead of publishing an empty one.
+		return s.localCache.Load()
+	}
+
+	refreshed := &localNetworkSnapshot{addrs: make(map[string]struct{}, len(interfaces))}
+	for _, addr := range interfaces {
+		ip := addressIP(addr)
+		if ip == nil {
+			continue
+		}
+		value := ip.String()
+		if _, exists := refreshed.addrs[value]; exists {
+			continue
+		}
+		refreshed.addrs[value] = struct{}{}
+		refreshed.ips = append(refreshed.ips, value)
+	}
+	refreshed.outbound = preferredOutboundIP()
+	ttl := localNetworkTTL
+	if len(refreshed.ips) == 0 {
+		// No usable interface is a transient state (for example during sleep).
+		// Re-probe quickly rather than pinning the empty result for a full TTL.
+		ttl = 2 * time.Second
+	}
+	refreshed.until = now.Add(ttl)
+	s.localCache.Store(refreshed)
+	return refreshed
 }
 
 func (s *Server) enterRequest(ip string, perIP, global int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	total := 0
-	for _, n := range s.requestIP {
-		total += n
-	}
-	if total >= global || s.requestIP[ip] >= perIP {
+	if s.requestTotal >= global || s.requestIP[ip] >= perIP {
 		return false
 	}
 	s.requestIP[ip]++
+	s.requestTotal++
 	return true
 }
 
@@ -262,6 +346,9 @@ func (s *Server) leaveRequest(ip string) {
 		delete(s.requestIP, ip)
 	} else {
 		s.requestIP[ip]--
+	}
+	if s.requestTotal > 0 {
+		s.requestTotal--
 	}
 }
 
@@ -312,12 +399,20 @@ func (s *Server) CleanupAuth() {
 }
 
 func (s *Server) cleanupAuth(now time.Time) {
+	// Both callers hold s.mu and run on every authentication attempt, so this
+	// must not scan the whole table each time. Readers re-check each entry's own
+	// timestamps, which makes a periodic sweep sufficient for correctness.
+	if len(s.auth) <= maxAuthEntries && now.Before(s.authSweep) {
+		return
+	}
 	for ip, st := range s.auth {
 		if st == nil || (now.After(st.BlockedTill) && now.Sub(st.WindowStart) > 10*time.Minute) {
 			delete(s.auth, ip)
 		}
 	}
-	for len(s.auth) > maxAuthEntries {
+	// Evict the oldest entries, but cap the work per call: an attacker cycling
+	// source addresses must not turn every attempt into an O(n^2) scan.
+	for evicted := 0; len(s.auth) > maxAuthEntries && evicted < 64; evicted++ {
 		var oldestIP string
 		var oldest time.Time
 		for ip, st := range s.auth {
@@ -338,6 +433,7 @@ func (s *Server) cleanupAuth(now time.Time) {
 		}
 		delete(s.auth, oldestIP)
 	}
+	s.authSweep = now.Add(authSweepPeriod)
 }
 
 func (s *Server) authRetryAfter(ip string) time.Duration {
@@ -826,10 +922,15 @@ func (s *Server) markTicketCounted(nonce string, expires time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	for key, exp := range s.counted {
-		if now.After(exp) {
-			delete(s.counted, key)
+	// Sweep expired tickets only when the map grows or once per minute instead
+	// of scanning every entry on each media request.
+	if len(s.counted) > 256 || now.After(s.countedSweep) {
+		for key, exp := range s.counted {
+			if now.After(exp) {
+				delete(s.counted, key)
+			}
 		}
+		s.countedSweep = now.Add(time.Minute)
 	}
 	if _, ok := s.counted[nonce]; ok {
 		return false
@@ -1381,7 +1482,14 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Get()
-	devices := summarizedLocalDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "", cfg.ListenAddress)
+	// Reuse the interface snapshot from host validation instead of performing a
+	// getifaddrs syscall plus a UDP dial on every poll.
+	var localIPs []string
+	var outbound string
+	if snapshot := s.localNetwork(); snapshot != nil {
+		localIPs, outbound = snapshot.ips, snapshot.outbound
+	}
+	devices := summarizedLocalDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "", cfg.ListenAddress, localIPs, outbound)
 	if s.registry != nil {
 		devices = append(devices, s.registry.List()...)
 	}
@@ -1394,9 +1502,11 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	for i, peer := range cfg.Peers {
 		wg.Add(1)
+		// Acquire the slot before spawning so a long peer list cannot create an
+		// unbounded pile of goroutines waiting on the semaphore.
+		sem <- struct{}{}
 		go func(index int, p model.PeerConfig) {
 			defer wg.Done()
-			sem <- struct{}{}
 			defer func() { <-sem }()
 			node := model.DeviceNode{ID: p.ID, Hostname: p.Name, URL: p.URL, NetworkType: "manual", LastSeen: time.Now()}
 			start := time.Now()
@@ -1784,36 +1894,6 @@ func (s *Server) applyRestore(archive string) error {
 		_ = s.store.AddAudit("restore_warning", "backup", "", "old uploads cleanup failed", map[string]interface{}{"error": err.Error()})
 	}
 	return os.MkdirAll(filepath.Join(currentUploads, ".staging"), 0o700)
-}
-
-func localDevices(name string, port int, tls bool) []model.DeviceNode {
-	scheme := "http"
-	if tls {
-		scheme = "https"
-	}
-	seen := map[string]bool{}
-	out := []model.DeviceNode{}
-	addrs, _ := net.InterfaceAddrs()
-	for _, addr := range addrs {
-		var ip net.IP
-		switch v := addr.(type) {
-		case *net.IPNet:
-			ip = v.IP
-		case *net.IPAddr:
-			ip = v.IP
-		}
-		if ip == nil || ip.IsUnspecified() {
-			continue
-		}
-		value := ip.String()
-		if seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, model.DeviceNode{ID: "local-" + strings.ReplaceAll(value, ":", "_"), Hostname: name, IP: value, Port: port, URL: scheme + "://" + net.JoinHostPort(value, strconv.Itoa(port)), NetworkType: networkType(value), IsLocal: true, Online: true, LastSeen: time.Now()})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].URL < out[j].URL })
-	return out
 }
 
 func networkType(ip string) string {

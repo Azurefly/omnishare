@@ -13,26 +13,20 @@ import (
 
 // summarizedLocalDevices returns one product device, not one card per network
 // interface. The selected address is only the preferred route to this device.
-func summarizedLocalDevices(name string, port int, tls bool, listenAddress string) []model.DeviceNode {
+// localIPs and outbound come from the caller's cached interface snapshot so a
+// poll does not repeat getifaddrs and UDP-dial syscalls.
+func summarizedLocalDevices(name string, port int, tls bool, listenAddress string, localIPs []string, outbound string) []model.DeviceNode {
 	scheme := "http"
 	if tls {
 		scheme = "https"
 	}
 
-	outbound := preferredOutboundIP()
 	candidates := make([]model.DeviceNode, 0, 4)
-	seen := map[string]struct{}{}
-	addrs, _ := net.InterfaceAddrs()
-	for _, addr := range addrs {
-		ip := addressIP(addr)
+	for _, value := range localIPs {
+		ip := net.ParseIP(value)
 		if !usableLocalIP(ip) {
 			continue
 		}
-		value := ip.String()
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
 		candidates = append(candidates, model.DeviceNode{
 			ID:          "local-primary",
 			Hostname:    name,

@@ -17,8 +17,12 @@ pub fn is_omnishare_backend(host: &str, port: u16) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
+    // Probe the JSON endpoint rather than the full page: the watchdog runs every
+    // few seconds for the whole life of the app, and downloading and parsing
+    // index.html each time is pure waste. The HTML checks stay as a fallback for
+    // builds that predate the health endpoint.
     let request = format!(
-        "GET / HTTP/1.0\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        "GET /api/v1/health HTTP/1.0\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
         host, port
     );
     if stream.write_all(request.as_bytes()).is_err() {
@@ -34,7 +38,8 @@ pub fn is_omnishare_backend(host: &str, port: u16) -> bool {
         return false;
     }
 
-    response.contains("<title>OmniShare</title>")
+    response.contains("\"status\":\"ok\"")
+        || response.contains("<title>OmniShare</title>")
         || response.contains("OmniShare 私有化跨设备速记、文件与协同工作台")
 }
 
@@ -91,6 +96,15 @@ mod tests {
     fn rejects_an_unrelated_http_service() {
         let (port, server) = serve_once("<!doctype html><title>Other Service</title>");
         assert!(!is_omnishare_backend("127.0.0.1", port));
+        server.join().expect("join test server");
+    }
+
+    #[test]
+    fn recognizes_the_json_health_endpoint() {
+        let (port, server) = serve_once(
+            "{\"code\":0,\"message\":\"ok\",\"data\":{\"status\":\"ok\",\"version\":\"1.3.0\"}}",
+        );
+        assert!(is_omnishare_backend("127.0.0.1", port));
         server.join().expect("join test server");
     }
 

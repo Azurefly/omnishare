@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
 BIN="$OUT/binaries"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-for tool in go node npm zip unzip tar dpkg-deb file sha256sum python3; do command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 2; }; done
+for tool in go node npm zip unzip tar file sha256sum python3; do command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 2; }; done
 "$ROOT/scripts/check-version.sh"
 bash "$ROOT/scripts/test-windows-launcher.sh"
 rm -rf "$OUT"

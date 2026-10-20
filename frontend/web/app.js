@@ -2,9 +2,9 @@ const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 const state = {
   activeTab: 'dashboard', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
-  currentPad: null, currentPadDirty: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
+  currentPad: null, currentPadDirty: false, padSaveBlocked: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
   accessKey: sessionStorage.getItem('omnishare.accessKey') || '', deferredInstall: null, editingNote: null,
-  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, padSaveChain: Promise.resolve()
+  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve()
 }
 
 const escapeHTML = (value = '') => String(value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))
@@ -103,17 +103,25 @@ function reportLoadError(err, strict=false) {
 }
 
 async function loadHealth(strict=false) {
+  // A 15s interval over a slow link otherwise stacks several in-flight polls.
+  if (state.healthLoading) return
+  state.healthLoading = true
   try {
     const data = await api('/api/v1/health')
     const badge = $('#healthBadge')
     badge.className = 'badge'
     const node = state.config?.node_name || 'OmniShare'
-    badge.innerHTML = `<i></i>${escapeHTML(node)} · v${escapeHTML(data.version)}`
+    const markup = `<i></i>${escapeHTML(node)} · v${escapeHTML(data.version)}`
+    // Polled every 15s: avoid needless DOM/HTML reparsing when nothing changed.
+    if (badge.innerHTML !== markup) badge.innerHTML = markup
   } catch (err) {
     const badge = $('#healthBadge')
     badge.className = 'badge muted'
-    badge.innerHTML = '<i></i>连接失败'
+    const markup = '<i></i>连接失败'
+    if (badge.innerHTML !== markup) badge.innerHTML = markup
     reportLoadError(err, strict)
+  } finally {
+    state.healthLoading = false
   }
 }
 
@@ -136,12 +144,16 @@ function renderStats() {
     ['回收站', state.stats.trash_count || 0],
     ['已用存储', formatBytes(state.stats.storage_used || 0)]
   ]
-  $('#stats').innerHTML = items.map(([label, value]) => `
+  const stats = $('#stats')
+  const markup = items.map(([label, value]) => `
     <article class="stat">
       <span>${label}</span>
       <strong>${escapeHTML(value)}</strong>
     </article>
   `).join('')
+  // Dashboard is reloaded after nearly every mutation; skip the reparse when the
+  // rendered values are identical (the common case for unrelated actions).
+  if (stats.innerHTML !== markup) stats.innerHTML = markup
   $('#storageUsed').textContent = `已用 ${formatBytes(state.stats.storage_used || 0)}`
   $('#storageBar').setAttribute('aria-label', '未设置磁盘总容量配额')
 }
@@ -252,9 +264,16 @@ async function loadNotes(strict=false) {
 function renderNotes() {
   $('#noteCount').textContent = `${state.notes.length} 条速记`
   const tags = [...new Set(state.notes.flatMap(n => n.tags || []))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
-  const current = $('#noteTagFilter').value
-  $('#noteTagFilter').innerHTML = '<option value="">全部标签</option>' + tags.map(t => `<option value="${escapeHTML(t)}">#${escapeHTML(t)}</option>`).join('')
-  $('#noteTagFilter').value = current
+  const filter = $('#noteTagFilter')
+  const signature = tags.join('\u0000')
+  // Rebuilding the option list on every load resets scroll state and forces the
+  // browser to reparse HTML; only touch the DOM when the tag set actually changed.
+  if (filter.dataset.signature !== signature) {
+    const current = filter.value
+    filter.innerHTML = '<option value="">全部标签</option>' + tags.map(t => `<option value="${escapeHTML(t)}">#${escapeHTML(t)}</option>`).join('')
+    filter.dataset.signature = signature
+    filter.value = current
+  }
 
   $('#notesList').innerHTML = state.notes.length ? state.notes.map(n => {
     const restricted = !n.content && !!n.content_redacted
@@ -683,6 +702,7 @@ async function selectPad(id) {
     const p = await api(`/api/v1/pads/${encodeURIComponent(id)}`)
     state.currentPad = { ...p }
     state.currentPadDirty = false
+    state.padSaveBlocked = false
     renderPadEditor(p)
   } catch (err) {
     toast(err.message, true)
@@ -719,6 +739,14 @@ function padSnapshot() {
 function markPadDirty() {
   if (!state.currentPad) return
   state.currentPadDirty = true
+  if (state.padSaveBlocked) {
+    // After a 409 the local draft is intentionally kept; keep retrying the same
+    // stale version would only produce a conflict toast and a full pad reload on
+    // every keystroke.
+    $('#saveState').textContent = '版本冲突'
+    $('#saveState').className = 'badge muted'
+    return
+  }
   $('#saveState').textContent = '待保存'
   $('#saveState').className = 'badge muted'
   clearTimeout(state.saveTimer)
@@ -760,18 +788,24 @@ async function performPadSave(snapshot, showToast=true) {
     return true
   } catch (err) {
     preservePadDraft(snapshot)
+    if (err.status === 409) state.padSaveBlocked = true
     if (state.currentPad?.id === snapshot.id) {
       $('#saveState').textContent = err.status === 409 ? '版本冲突' : '保存失败'
       $('#saveState').className = 'badge muted'
     }
     toast(err.status === 409 ? '发现远端新版本，本地草稿已保留在会话中' : err.message, true)
-    await loadPads()
+    if (err.status === 409) {
+      // Refresh the list once so the UI shows the remote version, then wait for
+      // an explicit user action instead of retrying the stale version forever.
+      await loadPads()
+    }
     return false
   }
 }
 
 async function savePad(showToast=true) {
   clearTimeout(state.saveTimer)
+  state.padSaveBlocked = false
   return enqueuePadSave(padSnapshot(), showToast)
 }
 
@@ -1047,7 +1081,7 @@ const TAB_CONFIG = {
 function switchTab(tab) {
   const config = TAB_CONFIG[tab]
   if (!config) return
-  if (state.activeTab === 'pads' && tab !== 'pads' && state.currentPadDirty) savePad(false)
+  if (state.activeTab === 'pads' && tab !== 'pads' && state.currentPadDirty && !state.padSaveBlocked) savePad(false)
   state.activeTab = tab
   $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab))
   $$('.panel-view').forEach(p => p.classList.remove('active'))
@@ -1234,7 +1268,8 @@ async function start() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {})
   await loadAll()
   switchTab(state.activeTab)
-  setInterval(loadHealth, 15000)
+  // A background tab must not keep polling the local server on a timer.
+  setInterval(() => { if (!document.hidden) loadHealth() }, 15000)
   setInterval(() => {
     if (!document.hidden) loadDevices()
   }, 30000)

@@ -11,7 +11,7 @@ PKG="$OUT/packages"
 RELEASE_NOTES="$ROOT/docs/RELEASE_NOTES_v${VERSION}.md"
 
 require() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required tool: $1" >&2; exit 2; }; }
-for tool in zip tar dpkg-deb sed sha256sum; do require "$tool"; done
+for tool in zip tar sed sha256sum python3; do require "$tool"; done
 for target in windows-amd64.exe windows-arm64.exe linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
   test -s "$BIN/omnishare-$target" || { echo "Missing binary: $BIN/omnishare-$target" >&2; exit 2; }
 done
@@ -53,7 +53,44 @@ Maintainer: OmniShare Project
 Description: Private multi-device notes, files and collaboration hub
  A lightweight local-first desktop companion with a local web interface.
 CONTROL
-  dpkg-deb --build --root-owner-group "$deb" "$PKG/omnishare_${DEB_VERSION}_${arch}.deb" >/dev/null
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    dpkg-deb --build --root-owner-group "$deb" "$PKG/omnishare_${DEB_VERSION}_${arch}.deb" >/dev/null
+  else
+    python3 - "$deb" "$PKG/omnishare_${DEB_VERSION}_${arch}.deb" <<'PY'
+import sys, os, tarfile, io
+
+deb_root, out_deb = sys.argv[1], sys.argv[2]
+
+# control.tar.gz
+control_buf = io.BytesIO()
+with tarfile.open(fileobj=control_buf, mode="w:gz") as tar:
+    debian_dir = os.path.join(deb_root, "DEBIAN")
+    for item in sorted(os.listdir(debian_dir)):
+        tar.add(os.path.join(debian_dir, item), arcname="./" + item)
+control_data = control_buf.getvalue()
+
+# data.tar.gz
+data_buf = io.BytesIO()
+with tarfile.open(fileobj=data_buf, mode="w:gz") as tar:
+    for item in sorted(os.listdir(deb_root)):
+        if item == "DEBIAN": continue
+        tar.add(os.path.join(deb_root, item), arcname="./" + item)
+data_data = data_buf.getvalue()
+
+def ar_header(name, size):
+    return (name.ljust(16) + "0".ljust(12) + "0".ljust(6) + "0".ljust(6) + "100644".ljust(8) + str(size).ljust(10) + "`\n").encode("ascii")
+
+binary_data = b"2.0\n"
+with open(out_deb, "wb") as f:
+    f.write(b"!<arch>\n")
+    f.write(ar_header("debian-binary", len(binary_data)))
+    f.write(binary_data)
+    f.write(ar_header("control.tar.gz", len(control_data)))
+    f.write(control_data)
+    f.write(ar_header("data.tar.gz", len(data_data)))
+    f.write(data_data)
+PY
+  fi
   rm -rf "$deb"
 done
 
@@ -71,6 +108,6 @@ for doc in "$ROOT/README.md" "$RELEASE_NOTES" "$ROOT/docs/REMEDIATION_v1.3.0-rc1
 done
 (
   cd "$PKG"
-  find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt
+  find . -maxdepth 1 -type f ! -name SHA256SUMS.txt | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS.txt
 )
 printf 'Packages created in %s\n' "$PKG"
