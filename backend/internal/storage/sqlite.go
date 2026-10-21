@@ -114,6 +114,38 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audits_created ON audit_events(created_at ASC);
 `
 
+// sqliteBusyTimeoutMS bounds how long a connection waits for a competing lock.
+// Commits on a slow disk or a network share can overlap for seconds, so this
+// is deliberately larger than the interactive timeout used elsewhere.
+const sqliteBusyTimeoutMS = 10000
+
+// sqliteWriteDSN builds the write-pool DSN. Two parameters matter under
+// contention:
+//
+//   - _txlock=immediate makes every sql.Tx start with BEGIN IMMEDIATE, taking
+//     the write lock up front. With the default deferred begin, a transaction
+//     that reads before it writes must upgrade mid-flight, and SQLite then
+//     reports SQLITE_BUSY immediately instead of honouring busy_timeout,
+//     because waiting could deadlock. That shows up as a sporadic
+//     "database is locked" on slow runners and never on a fast local disk.
+//   - busy_timeout makes concurrent writers wait rather than fail.
+func sqliteWriteDSN(dbPath string) string {
+	params := url.Values{}
+	params.Set("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
+	params.Set("_txlock", "immediate")
+	return fmt.Sprintf("file:%s?%s", dbPath, params.Encode())
+}
+
+// sqliteReadDSN opens a read-only pool. The read pool never writes, so it keeps
+// the default deferred transactions; mode=ro makes an accidental write fail
+// instead of silently succeeding.
+func sqliteReadDSN(dbPath string) string {
+	params := url.Values{}
+	params.Set("mode", "ro")
+	params.Set("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
+	return fmt.Sprintf("file:%s?%s", dbPath, params.Encode())
+}
+
 // NewSQLite creates and initializes a SQLiteStore with WAL mode, dual connection pools, and migration.
 func NewSQLite(dataDir string) (*SQLiteStore, error) {
 	if strings.TrimSpace(dataDir) == "" {
@@ -137,10 +169,7 @@ func NewSQLite(dataDir string) (*SQLiteStore, error) {
 	}
 
 	// 1. Setup Write Connection Pool
-	// DSN parameters: _journal_mode=WAL, _busy_timeout=5000, _foreign_keys=ON, etc.
-	writeParams := url.Values{}
-	writeParams.Set("_pragma", "busy_timeout(5000)")
-	writeDSN := fmt.Sprintf("file:%s?%s", dbPath, writeParams.Encode())
+	writeDSN := sqliteWriteDSN(dbPath)
 
 	writeDB, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
@@ -150,10 +179,12 @@ func NewSQLite(dataDir string) (*SQLiteStore, error) {
 	writeDB.SetMaxIdleConns(1)
 	writeDB.SetConnMaxLifetime(0)
 
-	// Configure PRAGMAs on write pool
+	// Configure PRAGMAs on write pool. The DSN already applies busy_timeout, but
+	// this pool only ever holds a single connection, so re-applying is cheap and
+	// keeps the setting explicit if the pool is ever widened.
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL;",
-		"PRAGMA busy_timeout=5000;",
+		fmt.Sprintf("PRAGMA busy_timeout=%d;", sqliteBusyTimeoutMS),
 		"PRAGMA foreign_keys=ON;",
 		"PRAGMA synchronous=NORMAL;",
 		"PRAGMA wal_autocheckpoint=1000;",
@@ -197,10 +228,7 @@ func NewSQLite(dataDir string) (*SQLiteStore, error) {
 	}
 
 	// 3. Setup Read Connection Pool (read-only with mode=ro)
-	readParams := url.Values{}
-	readParams.Set("mode", "ro")
-	readParams.Set("_pragma", "busy_timeout(5000)")
-	readDSN := fmt.Sprintf("file:%s?%s", dbPath, readParams.Encode())
+	readDSN := sqliteReadDSN(dbPath)
 
 	readDB, err := sql.Open("sqlite", readDSN)
 	if err != nil {

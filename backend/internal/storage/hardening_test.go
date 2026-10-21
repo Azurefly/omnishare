@@ -1,9 +1,13 @@
 package storage
 
 import (
+	"database/sql"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,5 +203,98 @@ func TestMutateRollbackLeavesStateIntact(t *testing.T) {
 	s.mu.RUnlock()
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("rollback leaked mutations:\nbefore=%+v\nafter=%+v", before, after)
+	}
+}
+
+// Writers must take the SQLite write lock when the transaction starts. A
+// deferred begin defers the lock until the first write, and a transaction that
+// reads before it writes then has to upgrade mid-flight; SQLite answers that
+// upgrade with SQLITE_BUSY immediately rather than waiting, because retrying
+// could deadlock. That surfaced as a sporadic "database is locked" on slow CI
+// runners while passing on a fast local disk.
+func TestWritePoolTakesLockAtBegin(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "lock.db")
+
+	first, err := sql.Open("sqlite", sqliteWriteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	first.SetMaxOpenConns(1)
+	if _, err := first.Exec(sqliteSchema); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	second, err := sql.Open("sqlite", sqliteWriteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	second.SetMaxOpenConns(1)
+
+	// Opening a write transaction without executing a statement must already
+	// hold the lock, otherwise the second begin below returns immediately.
+	held, err := first.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acquired := make(chan error, 1)
+	go func() {
+		tx, beginErr := second.Begin()
+		if beginErr == nil {
+			_ = tx.Rollback()
+		}
+		acquired <- beginErr
+	}()
+
+	select {
+	case err := <-acquired:
+		_ = held.Rollback()
+		t.Fatalf("second begin returned before the first transaction ended (%v); the write pool is using deferred transactions", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if err := held.Rollback(); err != nil {
+		t.Fatalf("rollback first transaction: %v", err)
+	}
+	select {
+	case err := <-acquired:
+		if err != nil {
+			t.Fatalf("second begin failed after the lock was released: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second begin never acquired the write lock after release")
+	}
+}
+
+// The DSN is the only place these settings live, so assert the contract
+// directly rather than relying on a behavioural test to infer it.
+func TestWriteDSNConfiguresContentionHandling(t *testing.T) {
+	dsn := sqliteWriteDSN(filepath.Join("data", "omnishare.db"))
+	query := dsn[strings.Index(dsn, "?")+1:]
+	params, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatalf("parse write DSN %q: %v", dsn, err)
+	}
+	if got := params.Get("_txlock"); got != "immediate" {
+		t.Fatalf("write DSN _txlock = %q, want immediate", got)
+	}
+	if got, want := params.Get("_pragma"), fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS); got != want {
+		t.Fatalf("write DSN _pragma = %q, want %q", got, want)
+	}
+
+	readDSN := sqliteReadDSN(filepath.Join("data", "omnishare.db"))
+	readQuery := readDSN[strings.Index(readDSN, "?")+1:]
+	readParams, err := url.ParseQuery(readQuery)
+	if err != nil {
+		t.Fatalf("parse read DSN %q: %v", readDSN, err)
+	}
+	if got := readParams.Get("mode"); got != "ro" {
+		t.Fatalf("read DSN mode = %q, want ro", got)
+	}
+	if got := readParams.Get("_txlock"); got != "" {
+		t.Fatalf("read DSN should keep deferred transactions, got _txlock=%q", got)
 	}
 }

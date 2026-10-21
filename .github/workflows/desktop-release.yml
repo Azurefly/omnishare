@@ -37,6 +37,13 @@ jobs:
     name: Build and test desktop ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
+    # Prerelease semver identifiers cannot be bundled by the desktop targets:
+    # the WiX MSI target requires a numeric-only prerelease identifier and RPM
+    # forbids '-' inside the version, so a v1.3.0-rc2 build fails at bundling
+    # after the expensive compile steps. Desktop installers are produced for
+    # stable versions and for the dedicated -desktop tag series; RC tags ship
+    # the server build from the Release workflow.
+    if: ${{ !(contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta')) }}
     strategy:
       fail-fast: false
       matrix:

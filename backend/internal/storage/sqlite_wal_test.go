@@ -208,7 +208,9 @@ func TestWAL_ReadOnlyConnectionWriteInterception(t *testing.T) {
 	dbPath := filepath.Join(dir, "omnishare_ro.db")
 
 	// Writer Pool (MaxOpenConns = 1)
-	writeDSN := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
+	// Use the production write DSN so this test exercises the same
+	// transaction mode and contention settings as the real store.
+	writeDSN := sqliteWriteDSN(dbPath)
 	writeDB, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +228,7 @@ func TestWAL_ReadOnlyConnectionWriteInterception(t *testing.T) {
 	writeDB.Close()
 
 	// Reader Pool with mode=ro (MaxOpenConns = 10)
-	readDSN := fmt.Sprintf("file:%s?mode=ro&_pragma=busy_timeout(5000)", dbPath)
+	readDSN := sqliteReadDSN(dbPath)
 	readDB, err := sql.Open("sqlite", readDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +333,9 @@ func TestWAL_SingleTxMigrationRollbackAndCleanup(t *testing.T) {
 	initialChecksum := hex.EncodeToString(hInitial[:])
 
 	// 2. 模拟单事务迁移并在 Pad 第 15 条注入致命错误
-	writeDSN := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath)
+	// Use the production write DSN so this test exercises the same
+	// transaction mode and contention settings as the real store.
+	writeDSN := sqliteWriteDSN(dbPath)
 	db, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
 		t.Fatal(err)
