@@ -42,8 +42,8 @@ jobs:
           cd backend
           go test ./... -count=1 -coverprofile=coverage.out
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')
-          echo "total statement coverage: ${total}% (floor 51.6%)"
-          awk -v total="$total" 'BEGIN { exit !(total + 0 >= 51.6) }'
+          echo "total statement coverage: ${total}% (floor 53.1%)"
+          awk -v total="$total" 'BEGIN { exit !(total + 0 >= 53.1) }'
       - name: Staticcheck
         run: |
           cd backend
