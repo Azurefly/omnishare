@@ -82,6 +82,11 @@ type Server struct {
 	denied       map[string]*deniedBucket
 	deniedWindow time.Duration
 
+	// restorePreSwapHook is test-only: it runs after extraction and before the
+	// short exclusive swap, so tests can prove uploads are not blocked during
+	// the long part of a restore.
+	restorePreSwapHook func()
+
 	// requestTotal mirrors the sum of requestIP so the global concurrency check
 	// is O(1) instead of iterating every client on each request.
 	requestTotal int
@@ -1864,6 +1869,12 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	// produced.
 	max := s.cfg.Get().BackupMaxMB*1024*1024 + multipartOverheadMB*1024*1024
 	r.Body = http.MaxBytesReader(w, r.Body, max)
+	// A restore may upload for hours on a slow link, but a dead connection must
+	// still be reclaimed. Reset an idle timer on every successful read instead
+	// of using a fixed total timeout.
+	idleBody := newIdleTimeoutBody(r.Body, restoreIdleTimeout)
+	defer idleBody.Stop()
+	r.Body = idleBody
 	reader, err := r.MultipartReader()
 	if err != nil {
 		respond(w, 400, 400, "multipart backup upload required", nil)
@@ -1949,10 +1960,6 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applyRestore(archive string, expected *model.BackupManifest) error {
-	// Extraction already writes into uploads/.staging, so the exclusive lock has
-	// to cover the whole restore, not just the final rename.
-	s.uploadsMu.Lock()
-	defer s.uploadsMu.Unlock()
 	zr, err := zip.OpenReader(archive)
 	if err != nil {
 		return err
@@ -2098,6 +2105,14 @@ func (s *Server) applyRestore(archive string, expected *model.BackupManifest) er
 			return fmt.Errorf("backup file checksum mismatch: %s", item.ArchivePath)
 		}
 	}
+	newUploads := filepath.Join(stage, "uploads")
+	if err := os.MkdirAll(newUploads, 0o700); err != nil {
+		return err
+	}
+
+	// Everything above (unzip, checksum verification, rollback snapshots) runs
+	// without the exclusive lock, so uploads and downloads keep flowing while a
+	// multi-gigabyte archive is extracted.
 	oldState, err := s.store.Snapshot()
 	if err != nil {
 		return err
@@ -2106,10 +2121,19 @@ func (s *Server) applyRestore(archive string, expected *model.BackupManifest) er
 	if err != nil {
 		return err
 	}
-	newUploads := filepath.Join(stage, "uploads")
-	if err := os.MkdirAll(newUploads, 0o700); err != nil {
-		return err
+	if s.restorePreSwapHook != nil {
+		s.restorePreSwapHook()
 	}
+	return s.commitRestore(newUploads, stateJSON, configJSON, oldState, oldConfig)
+}
+
+// commitRestore is the short critical section: it swaps the staged uploads
+// directory, replaces the state and restores config. Only this window blocks
+// concurrent uploads/downloads, not the whole extraction.
+func (s *Server) commitRestore(newUploads string, stateJSON, configJSON, oldState, oldConfig []byte) error {
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
+
 	oldUploads := filepath.Join(s.dataDir, "uploads.pre-restore")
 	_ = os.RemoveAll(oldUploads)
 	currentUploads := filepath.Join(s.dataDir, "uploads")
