@@ -45,6 +45,7 @@ func postRestoreFrom(t *testing.T, h http.Handler, remote string, archive []byte
 	r.RemoteAddr = remote
 	r.Header.Set("Content-Type", mw.FormDataContentType())
 	r.Header.Set("X-OmniShare-Confirm", "RESTORE-BACKUP")
+	applyTestAuth(r)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
@@ -65,6 +66,7 @@ func uploadFrom(t *testing.T, h http.Handler, remote, name string, content []byt
 	r.Host = "127.0.0.1:8081"
 	r.RemoteAddr = remote
 	r.Header.Set("Content-Type", mw.FormDataContentType())
+	applyTestAuth(r)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
@@ -171,6 +173,7 @@ func TestDownloadRejectsStatePathEscapingUploads(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(store, cfg)
+	testAuthToken = s.initToken
 	w := request(t, s.Handler(), "GET", "/api/v1/files/f_traversal/download", nil, "", "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("traversal download served: %d %s", w.Code, w.Body.String())

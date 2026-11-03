@@ -1,9 +1,23 @@
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
+
+// First run: the backend prints a loopback-only URL carrying this token. Keep it
+// in sessionStorage and strip it from the address bar so it does not leak into
+// history or referrers.
+const INIT_TOKEN_KEY = 'omnishare.initToken'
+const urlInitToken = new URLSearchParams(location.search).get('init_token') || ''
+if (urlInitToken) {
+  sessionStorage.setItem(INIT_TOKEN_KEY, urlInitToken)
+  const clean = new URL(location.href)
+  clean.searchParams.delete('init_token')
+  history.replaceState(null, '', clean.pathname + clean.search + clean.hash)
+}
+
 const state = {
   activeTab: 'dashboard', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
   currentPad: null, currentPadDirty: false, padSaveBlocked: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
-  accessKey: sessionStorage.getItem('omnishare.accessKey') || '', deferredInstall: null, editingNote: null,
+  accessKey: sessionStorage.getItem('omnishare.accessKey') || '', initToken: sessionStorage.getItem(INIT_TOKEN_KEY) || '',
+  deferredInstall: null, editingNote: null,
   uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
   noteTotal: 0, fileTotal: 0
 }
@@ -25,7 +39,10 @@ const toast = (message, error=false) => {
   el._timer = setTimeout(() => { el.className = 'toast' }, 2800)
 }
 
-const headers = (extra={}) => ({ ...(state.accessKey ? {'X-OmniShare-Key':state.accessKey} : {}), ...extra })
+const authHeaders = () => state.accessKey
+  ? {'X-OmniShare-Key': state.accessKey}
+  : (state.initToken ? {'X-OmniShare-Init-Token': state.initToken} : {})
+const headers = (extra={}) => ({ ...authHeaders(), ...extra })
 
 async function api(path, options={}) {
   const res = await fetch(path, {...options, headers: headers(options.headers || {})})
@@ -651,7 +668,7 @@ function uploadOne({file, ttl}) {
       // 120 s used to fail any upload below ~35 MB of bandwidth. Budget by size
       // with a 64 KB/s floor and a 5 minute minimum instead of a fixed clock.
       xhr.timeout = Math.max(5 * 60 * 1000, Math.ceil(file.size / (64 * 1024)) * 1000)
-      if (state.accessKey) xhr.setRequestHeader('X-OmniShare-Key', state.accessKey)
+      Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value))
       pct.textContent = attempt > 1 ? `重试 ${attempt - 1}` : '0%'
       progress.value = 0
       setActions()
@@ -1235,7 +1252,7 @@ function restoreBackup() {
     return
   }
   const restoreHeaders = { 'X-OmniShare-Confirm': 'RESTORE-BACKUP' }
-  if (state.accessKey) restoreHeaders['X-OmniShare-Key'] = state.accessKey
+  Object.assign(restoreHeaders, authHeaders())
   const restorePassword = $('#restorePassword').value.trim()
   if (restorePassword) restoreHeaders['X-OmniShare-Backup-Password'] = restorePassword
   const form = new FormData()

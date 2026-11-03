@@ -401,6 +401,16 @@ func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorized(r) {
 			s.recordDenied(r)
+			if !s.cfg.HasAccessKey() {
+				// First-run writes keep the explicit 403 "init token required"
+				// contract; reads default-deny with a 401 that explains the flow.
+				if r.Method == http.MethodGet || r.Method == http.MethodHead {
+					respond(w, http.StatusUnauthorized, 401, "instance is not initialised: use the token-bearing local URL printed at startup or the X-OmniShare-Init-Token header", nil)
+				} else {
+					respond(w, http.StatusForbidden, 403, "init token required", nil)
+				}
+				return
+			}
 			respond(w, http.StatusUnauthorized, 401, "access key required", nil)
 			return
 		}
@@ -467,9 +477,22 @@ func (s *Server) FlushDeniedAudits() {
 
 func (s *Server) authorized(r *http.Request) bool {
 	if !s.cfg.HasAccessKey() {
-		return !s.cfg.Get().AllowLAN
+		// Uninitialised instances deny every protected endpoint by default, both
+		// reads and writes. The loopback-only one-time token is the only way in,
+		// so a local process cannot claim the node by racing the first config
+		// write and the user still gets a first-run path.
+		return s.initTokenValid(r)
 	}
 	return s.cfg.VerifyAccessKey(r.Header.Get("X-OmniShare-Key"))
+}
+
+// InitToken exposes the current one-time token so startup can hand a
+// token-bearing local URL to the browser. It is empty after initialisation.
+func (s *Server) InitToken() string {
+	if s.cfg.HasAccessKey() {
+		return ""
+	}
+	return s.initToken
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

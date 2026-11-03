@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -125,12 +126,20 @@ func main() {
 		scheme = "https"
 	}
 	localURL := fmt.Sprintf("%s://%s", scheme, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", current.Port)))
+	browserURL := localURL
+	if token := server.InitToken(); token != "" {
+		// First run: protected reads are denied until the browser presents this
+		// loopback-only token, so hand it over directly instead of asking the
+		// user to copy the file by hand.
+		browserURL = localURL + "/?init_token=" + url.QueryEscape(token)
+		log.Printf("first-run URL (token valid only on this machine until an access key is set): %s", browserURL)
+	}
 	log.Printf("OmniShare v%s started: %s", api.Version, localURL)
 	log.Printf("Listen: %s | Data: %s | LAN: %t | TLS: %t", addr, current.DataDir, current.AllowLAN, current.TLSCertFile != "")
 	if !*noBrowser && current.AutoOpenBrowser {
 		go func() {
 			time.Sleep(350 * time.Millisecond)
-			if err := desktop.OpenBrowser(localURL); err != nil {
+			if err := desktop.OpenBrowser(browserURL); err != nil {
 				log.Printf("browser: %v", err)
 			}
 		}()

@@ -19,6 +19,7 @@ func downloadBackup(t *testing.T, h http.Handler, password string) *httptest.Res
 	if password != "" {
 		r.Header.Set("X-OmniShare-Backup-Password", password)
 	}
+	applyTestAuth(r)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
@@ -44,6 +45,7 @@ func postRestorePassword(t *testing.T, h http.Handler, archive []byte, password 
 	if password != "" {
 		r.Header.Set("X-OmniShare-Backup-Password", password)
 	}
+	applyTestAuth(r)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
