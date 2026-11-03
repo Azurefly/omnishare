@@ -714,6 +714,7 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	// from replacing the directory mid-request.
 	s.uploadsMu.RLock()
 	defer s.uploadsMu.RUnlock()
+	allowLongTransfer(w)
 	cfg := s.cfg.Get()
 	maxBytes := cfg.MaxUploadMB * 1024 * 1024
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+2*1024*1024)
@@ -1573,6 +1574,7 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
+	allowLongTransfer(w)
 	tmp, err := os.CreateTemp(s.dataDir, "omnishare-backup-*.zip")
 	if err != nil {
 		respond(w, 500, 500, err.Error(), nil)
@@ -1700,6 +1702,7 @@ func (s *Server) generateBackup(path string) error {
 }
 
 func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
+	allowLongTransfer(w)
 	if r.Header.Get("X-OmniShare-Confirm") != "RESTORE-BACKUP" {
 		respond(w, 400, 400, "restore requires X-OmniShare-Confirm: RESTORE-BACKUP", nil)
 		return
@@ -1949,6 +1952,15 @@ func (s *Server) applyRestore(archive string) error {
 		_ = s.store.AddAudit("restore_warning", "backup", "", "old uploads cleanup failed", map[string]interface{}{"error": err.Error()})
 	}
 	return os.MkdirAll(filepath.Join(currentUploads, ".staging"), 0o700)
+}
+
+// allowLongTransfer clears the server's global 30 minute read/write deadlines
+// for the three endpoints that legitimately move gigabytes. Without this a
+// slow link still fails no matter what budget the client allows itself.
+func allowLongTransfer(w http.ResponseWriter) {
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Time{})
+	_ = controller.SetWriteDeadline(time.Time{})
 }
 
 // verifyReferencedBlobs confirms that every file the restored state points at
