@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"omnishare/internal/config"
 	"omnishare/internal/storage"
@@ -38,6 +39,10 @@ func requireAccessKey(t *testing.T, cfg *config.Manager) {
 func TestAuthDeniedStormDoesNotWritePerRequest(t *testing.T) {
 	s, h, store := newSQLiteTestServer(t)
 	requireAccessKey(t, s.cfg)
+	// Keep the whole storm inside one aggregation window. Under -race the 50
+	// PBKDF2 verifications can take over a minute, and a window rollover would
+	// legitimately flush one batch mid-test.
+	s.deniedWindow = time.Hour
 
 	before := store.WriteTransactions()
 	for i := 0; i < 50; i++ {
