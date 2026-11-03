@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +29,9 @@ var (
 	ErrShareRevoked    = errors.New("share link revoked")
 	ErrShareExhausted  = errors.New("share link access limit reached")
 	ErrVersionConflict = errors.New("version conflict")
+	// ErrUnsafeStoragePath marks a blob reference that could escape the uploads
+	// directory, either from a tampered state file or a crafted backup.
+	ErrUnsafeStoragePath = errors.New("storage path escapes the uploads directory")
 )
 
 type state struct {
@@ -254,6 +258,32 @@ func (s *Store) WithSnapshot(fn func(stateJSON []byte, files []model.FileAsset) 
 	return fn(data, files)
 }
 
+// ValidateStoragePath accepts only slash-separated relative paths inside the
+// uploads directory. An empty path means "no blob" and is allowed for records
+// that never had one. This is the single gate used by download, state replace
+// and restore so all three agree on what a legal blob reference is.
+func ValidateStoragePath(p string) error {
+	if p == "" {
+		return nil
+	}
+	// Storage paths written on Windows contain backslashes, so normalise the
+	// separator before judging containment instead of rejecting native paths.
+	normalized := strings.ReplaceAll(p, `\`, "/")
+	if strings.Contains(normalized, ":") || path.IsAbs(normalized) || filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
+		return ErrUnsafeStoragePath
+	}
+	clean := path.Clean(normalized)
+	if clean != normalized || clean == "." || clean == ".." || !strings.HasPrefix(clean, "uploads/") {
+		return ErrUnsafeStoragePath
+	}
+	for _, segment := range strings.Split(clean, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return ErrUnsafeStoragePath
+		}
+	}
+	return nil
+}
+
 func (s *Store) ReplaceStateJSON(data []byte) error {
 	var candidate state
 	if err := json.Unmarshal(data, &candidate); err != nil {
@@ -262,6 +292,11 @@ func (s *Store) ReplaceStateJSON(data []byte) error {
 	candidate.SchemaVersion = currentStateSchema
 	if candidate.Notes == nil || candidate.Files == nil || candidate.Pads == nil || candidate.Shares == nil || candidate.Audits == nil {
 		return errors.New("backup state is incomplete")
+	}
+	for _, f := range candidate.Files {
+		if err := ValidateStoragePath(f.StoragePath); err != nil {
+			return fmt.Errorf("backup references %q: %w", f.StoragePath, err)
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

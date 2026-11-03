@@ -710,6 +710,10 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
+	// Uploads and restores both mutate uploads/; the read lock keeps a restore
+	// from replacing the directory mid-request.
+	s.uploadsMu.RLock()
+	defer s.uploadsMu.RUnlock()
 	cfg := s.cfg.Get()
 	maxBytes := cfg.MaxUploadMB * 1024 * 1024
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+2*1024*1024)
@@ -960,8 +964,15 @@ func (s *Server) markTicketCounted(nonce string, expires time.Time) bool {
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, asset model.FileAsset, inline, count bool) {
-	path := filepath.Join(s.dataDir, asset.StoragePath)
-	f, err := os.Open(path)
+	// Downloads hold a read lock for their whole duration so a restore cannot
+	// swap the uploads directory out from under an open blob.
+	s.uploadsMu.RLock()
+	defer s.uploadsMu.RUnlock()
+	if err := storage.ValidateStoragePath(asset.StoragePath); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(filepath.Join(s.dataDir, filepath.FromSlash(asset.StoragePath)))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1809,7 +1820,7 @@ func (s *Server) applyRestore(archive string) error {
 	var manifestTotal uint64
 	for _, item := range manifest.Files {
 		clean := filepath.ToSlash(filepath.Clean(item.ArchivePath))
-		if clean != item.ArchivePath || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || clean == "." {
+		if err := storage.ValidateStoragePath(clean); err != nil {
 			return fmt.Errorf("backup contains unsafe manifest path: %s", item.ArchivePath)
 		}
 		if _, exists := manifestPaths[clean]; exists {
@@ -1875,6 +1886,10 @@ func (s *Server) applyRestore(archive string) error {
 			return fmt.Errorf("backup file checksum mismatch: %s", item.ArchivePath)
 		}
 	}
+	// The exclusive window: no upload may add a blob and no download may hold a
+	// file open while the uploads directory is renamed.
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
 	oldState, err := s.store.Snapshot()
 	if err != nil {
 		return err
@@ -1916,16 +1931,49 @@ func (s *Server) applyRestore(archive string) error {
 		_ = s.store.ReplaceStateJSON(oldState)
 		return err
 	}
+	// A crafted archive can carry a state file whose references are absent from
+	// the manifest, so check every referenced blob before declaring success.
+	if err := s.verifyReferencedBlobs(stateJSON); err != nil {
+		restoreUploads()
+		_ = s.store.ReplaceStateJSON(oldState)
+		return err
+	}
 	if err := s.cfg.RestoreJSON(configJSON); err != nil {
 		restoreUploads()
 		_ = s.store.ReplaceStateJSON(oldState)
 		_ = s.cfg.RestoreJSON(oldConfig)
 		return err
 	}
+	s.finishInitialization()
 	if err := os.RemoveAll(oldUploads); err != nil {
 		_ = s.store.AddAudit("restore_warning", "backup", "", "old uploads cleanup failed", map[string]interface{}{"error": err.Error()})
 	}
 	return os.MkdirAll(filepath.Join(currentUploads, ".staging"), 0o700)
+}
+
+// verifyReferencedBlobs confirms that every file the restored state points at
+// actually exists after the swap. Without this a tampered archive can leave a
+// library full of dangling records while the restore reports success.
+func (s *Server) verifyReferencedBlobs(stateJSON []byte) error {
+	var snapshot struct {
+		Files []model.FileAsset `json:"files"`
+	}
+	if err := json.Unmarshal(stateJSON, &snapshot); err != nil {
+		return err
+	}
+	for _, f := range snapshot.Files {
+		if f.StoragePath == "" {
+			continue
+		}
+		if err := storage.ValidateStoragePath(f.StoragePath); err != nil {
+			return err
+		}
+		info, err := os.Stat(filepath.Join(s.dataDir, filepath.FromSlash(f.StoragePath)))
+		if err != nil || info.IsDir() {
+			return fmt.Errorf("restored state references a missing blob for file %s", f.ID)
+		}
+	}
+	return nil
 }
 
 func networkType(ip string) string {
