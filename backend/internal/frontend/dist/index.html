@@ -33,6 +33,7 @@
         <button id="installBtn" class="button ghost hidden">📲 安装到桌面</button>
         <button id="themeToggle" type="button" class="button ghost theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题">☀ 白天</button>
         <button id="backupBtn" class="button ghost" title="导出全系统加密备份压缩包">📦 导出备份</button>
+        <button id="restoreBtn" class="button ghost" title="从备份压缩包恢复数据（会覆盖当前数据）">♻️ 从备份恢复</button>
         <button id="settingsBtn" class="button" title="节点网络与安全设置">⚙️ 系统设置</button>
       </div>
     </header>
@@ -359,6 +360,34 @@
       <div class="modal-actions">
         <button value="cancel" class="button ghost">取消</button>
         <button id="saveSettingsBtn" type="button" class="button primary">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 从备份恢复对话框 -->
+  <dialog id="restoreDialog" class="modal">
+    <form method="dialog" class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2>从备份恢复</h2>
+          <p>恢复会用备份中的状态、配置和文件覆盖当前数据，完成后建议重启程序。</p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="关闭">×</button>
+      </div>
+      <label>
+        备份文件（.zip）
+        <input id="restoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" />
+        <small>上传大小受“备份上限”限制。</small>
+      </label>
+      <label class="switch-row">
+        <input id="restoreConfirm" type="checkbox" />
+        我确认恢复会覆盖当前数据
+      </label>
+      <progress id="restoreProgress" class="progress-track hidden" max="100" value="0"></progress>
+      <p id="restoreStatus" class="error-text"></p>
+      <div class="modal-actions">
+        <button value="cancel" class="button ghost">取消</button>
+        <button id="restoreSubmitBtn" type="button" class="button primary">开始恢复</button>
       </div>
     </form>
   </dialog>

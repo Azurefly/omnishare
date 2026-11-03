@@ -1114,6 +1114,71 @@ async function exportBackup() {
   }
 }
 
+function openRestoreDialog() {
+  $('#restoreFile').value = ''
+  $('#restoreConfirm').checked = false
+  $('#restoreProgress').classList.add('hidden')
+  $('#restoreProgress').value = 0
+  $('#restoreStatus').textContent = ''
+  $('#restoreSubmitBtn').disabled = false
+  $('#restoreDialog').showModal()
+}
+
+function restoreBackup() {
+  const file = $('#restoreFile').files?.[0]
+  const status = $('#restoreStatus')
+  const progress = $('#restoreProgress')
+  const submit = $('#restoreSubmitBtn')
+  if (!file) {
+    status.textContent = '请先选择备份文件'
+    return
+  }
+  if (!$('#restoreConfirm').checked) {
+    status.textContent = '请先勾选确认覆盖当前数据'
+    return
+  }
+  const restoreHeaders = { 'X-OmniShare-Confirm': 'RESTORE-BACKUP' }
+  if (state.accessKey) restoreHeaders['X-OmniShare-Key'] = state.accessKey
+  const form = new FormData()
+  form.append('backup', file)
+  submit.disabled = true
+  progress.classList.remove('hidden')
+  progress.value = 0
+  status.textContent = '正在上传并校验备份…'
+  const xhr = new XMLHttpRequest()
+  // Backups are capped by the server's backup limit, not by a fixed duration;
+  // a slow link must not turn a valid restore into a timeout.
+  xhr.timeout = 0
+  xhr.open('POST', '/api/v1/restore')
+  Object.entries(restoreHeaders).forEach(([name, value]) => xhr.setRequestHeader(name, value))
+  xhr.upload.onprogress = event => {
+    if (event.lengthComputable) progress.value = Math.round((event.loaded / event.total) * 100)
+  }
+  xhr.onerror = () => {
+    status.textContent = '网络错误，恢复未完成'
+    submit.disabled = false
+  }
+  xhr.onload = () => {
+    let payload = {}
+    try { payload = JSON.parse(xhr.responseText) } catch { /* non-JSON error page */ }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      status.textContent = '恢复完成，正在刷新数据…'
+      toast('备份已恢复，建议重启程序')
+      $('#restoreDialog').close()
+      loadAll()
+      return
+    }
+    if (xhr.status === 401) {
+      status.textContent = '需要访问密钥'
+      showAuth()
+    } else {
+      status.textContent = payload.message || ('恢复失败：HTTP ' + xhr.status)
+    }
+    submit.disabled = false
+  }
+  xhr.send(form)
+}
+
 function bindEvents() {
   $$('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)))
   $$('.dashboard-link').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.targetTab)))
@@ -1229,6 +1294,8 @@ function bindEvents() {
     $('#settingsDialog').showModal()
   })
   $('#backupBtn').addEventListener('click', exportBackup)
+  $('#restoreBtn').addEventListener('click', openRestoreDialog)
+  $('#restoreSubmitBtn').addEventListener('click', restoreBackup)
   $('#saveSettingsBtn').addEventListener('click', saveSettings)
   $('#addPeerBtn').addEventListener('click', () => addPeerRow())
   $('#peerRows').addEventListener('click', e => {
