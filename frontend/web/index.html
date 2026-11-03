@@ -32,7 +32,7 @@
         <span id="healthBadge" class="badge muted"><i></i>连接中</span>
         <button id="installBtn" class="button ghost hidden">📲 安装到桌面</button>
         <button id="themeToggle" type="button" class="button ghost theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题">☀ 白天</button>
-        <button id="backupBtn" class="button ghost" title="导出全系统加密备份压缩包">📦 导出备份</button>
+        <button id="backupBtn" class="button ghost" title="导出全系统备份压缩包（未加密 ZIP，请妥善保管）">📦 导出备份</button>
         <button id="restoreBtn" class="button ghost" title="从备份压缩包恢复数据（会覆盖当前数据）">♻️ 从备份恢复</button>
         <button id="settingsBtn" class="button" title="节点网络与安全设置">⚙️ 系统设置</button>
       </div>
@@ -226,7 +226,7 @@
             <div class="list-toolbar">
               <div>
                 <h2>活动审计日志</h2>
-                <p class="muted-text">基于 SHA-256 加密哈希链保证不可篡改的关键安全与操作审计流水</p>
+                <p class="muted-text">基于 SHA-256 哈希链保证不可篡改的关键安全与操作审计流水</p>
               </div>
               <button id="refreshAuditBtn" class="button ghost small">🔄 刷新</button>
             </div>
@@ -379,7 +379,7 @@
       <label>
         备份文件（.zip）
         <input id="restoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" />
-        <small>上传大小受“备份上限”限制。</small>
+        <small>备份是未加密 ZIP，请仅在本机保存并妥善保管；上传大小受“备份上限”限制。</small>
       </label>
       <label class="switch-row">
         <input id="restoreConfirm" type="checkbox" />

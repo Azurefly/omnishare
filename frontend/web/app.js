@@ -1054,7 +1054,7 @@ function renderAudit() {
     <div class="empty">
       <div class="empty-icon">⚡</div>
       <h3>暂无活动记录</h3>
-      <p>所有内容修改、文件上传与分享访问均会通过加密链记录于此</p>
+      <p>所有内容修改、文件上传与分享访问均会通过 SHA-256 哈希链记录于此</p>
     </div>
   `
 }
