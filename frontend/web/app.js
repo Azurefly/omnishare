@@ -1096,8 +1096,12 @@ function switchTab(tab) {
 }
 
 async function exportBackup() {
+  // Backups can take minutes. Passing our own signal keeps the request out of
+  // the runtime bridge's 6 s abort watchdog; it only ends on network failure.
+  const controller = new AbortController()
   try {
-    const blob = await apiBlob('/api/v1/backup')
+    toast('正在生成备份，请稍候…')
+    const blob = await apiBlob('/api/v1/backup', {signal: controller.signal})
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `omnishare-backup-${new Date().toISOString().slice(0, 10)}.zip`
