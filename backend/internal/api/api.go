@@ -64,6 +64,14 @@ type Server struct {
 	shareIP   map[string]int
 	counted   map[string]time.Time
 
+	// initToken guards the first configuration write before any access key
+	// exists; see init_token.go.
+	initToken     string
+	initTokenPath string
+	// uploadsMu serialises whole-request consumers of the uploads directory.
+	// Restore takes the write lock, uploads and downloads take the read lock.
+	uploadsMu sync.RWMutex
+
 	// requestTotal mirrors the sum of requestIP so the global concurrency check
 	// is O(1) instead of iterating every client on each request.
 	requestTotal int
@@ -130,10 +138,14 @@ func New(store *storage.Store, cfg *config.Manager, registries ...*discovery.Reg
 			return http.ErrUseLastResponse
 		},
 	}
-	return &Server{
+	server := &Server{
 		store: store, cfg: cfg, dataDir: cfg.Get().DataDir, started: time.Now(), client: client, registry: registry,
 		ticketKey: key, auth: map[string]*authState{}, requestIP: map[string]int{}, shareIP: map[string]int{}, counted: map[string]time.Time{},
 	}
+	if err := server.ensureInitToken(); err != nil {
+		panic(fmt.Sprintf("initialize first-run token: %v", err))
+	}
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
@@ -482,6 +494,13 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
+	// Before a key exists every loopback process could otherwise claim this
+	// instance by writing the first config. The token is readable only by the
+	// account that owns the data directory.
+	if !s.cfg.HasAccessKey() && !s.initTokenValid(r) {
+		respond(w, http.StatusForbidden, 403, "first-run setup requires X-OmniShare-Init-Token (see the init-token file in the data directory)", nil)
+		return
+	}
 	var req model.AppConfig
 	if err := decodeJSON(r, &req); err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
@@ -500,6 +519,7 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
 	}
+	s.finishInitialization()
 	_ = s.store.AddAudit("config_update", "config", "", "configuration updated", map[string]interface{}{
 		"source_ip": clientIP(r), "node_name_changed": current.NodeName != s.cfg.Get().NodeName, "lan_enabled": s.cfg.Get().AllowLAN,
 	})

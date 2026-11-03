@@ -182,6 +182,8 @@ function fillSettings() {
   $('#cfgPublicBaseURL').value = state.config.public_base_url || ''
   $('#cfgAllowedOrigins').value = (state.config.allowed_origins || []).join(', ')
   $('#cfgAccessKey').value = ''
+  $('#cfgInitToken').value = ''
+  $('#cfgInitTokenRow').classList.toggle('hidden', !!state.config.has_access_key)
   renderPeers(state.config.peers || [])
 }
 
@@ -228,6 +230,10 @@ async function saveSettings() {
   }
   const requestHeaders = { 'Content-Type': 'application/json' }
   if (secret === 'CLEAR') requestHeaders['X-OmniShare-Confirm']='CLEAR-ACCESS-KEY'
+  // Before any key exists the server only accepts config writes carrying the
+  // one-time token from <data-dir>/init-token.
+  const initToken = $('#cfgInitToken').value.trim()
+  if (!state.config?.has_access_key && initToken) requestHeaders['X-OmniShare-Init-Token'] = initToken
 
   try {
     state.config = await api('/api/v1/config', {method:'PUT', headers:requestHeaders, body:JSON.stringify(payload)})

@@ -77,6 +77,9 @@ func main() {
 	}
 
 	server := api.New(store, cfg, registry)
+	if tokenPath := server.InitTokenPath(); tokenPath != "" {
+		log.Printf("first-run setup: writing config requires header X-OmniShare-Init-Token; the one-time token is in %s (mode 0600, delete after setting an access key)", tokenPath)
+	}
 	httpServer := &http.Server{
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,

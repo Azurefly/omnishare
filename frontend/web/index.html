@@ -335,6 +335,11 @@
           <input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="留空保持不变；输入 CLEAR 清除" />
           <small>密钥只保存在当前浏览器会话，不写入 URL 或长期存储。</small>
         </label>
+        <label class="full hidden" id="cfgInitTokenRow">
+          初始化令牌（仅首次配置需要）
+          <input id="cfgInitToken" autocomplete="off" placeholder="粘贴 data 目录下 init-token 文件中的令牌" />
+          <small>未设置访问密钥时，保存配置必须携带这个一次性令牌；设置密钥成功后令牌文件会被自动删除。</small>
+        </label>
       </div>
       <div class="peer-section">
         <div class="card-title">

@@ -424,10 +424,16 @@ func TestConfigHidesDataDirAndPadListOmitsContent(t *testing.T) {
 }
 
 func TestConfigAPIActuallySetsWriteOnlyAccessKey(t *testing.T) {
-	_, h, cfg := newTestServer(t)
+	s, h, cfg := newTestServer(t)
 	secret := "0123456789abcdef-secure"
 	payload := `{"node_name":"secured-node","listen_address":"127.0.0.1","allow_lan":false,"max_upload_mb":128,"retention_days":30,"trash_retention_days":14,"auto_open_browser":false,"access_key":"` + secret + `","peers":[],"allowed_origins":[]}`
-	w := request(t, h, http.MethodPut, "/api/v1/config", strings.NewReader(payload), "", "application/json")
+	r := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(payload))
+	r.Host = "127.0.0.1:8081"
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-OmniShare-Init-Token", s.initToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("set key=%d %s", w.Code, w.Body.String())
 	}
