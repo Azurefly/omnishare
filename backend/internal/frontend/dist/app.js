@@ -4,8 +4,13 @@ const state = {
   activeTab: 'dashboard', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
   currentPad: null, currentPadDirty: false, padSaveBlocked: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
   accessKey: sessionStorage.getItem('omnishare.accessKey') || '', deferredInstall: null, editingNote: null,
-  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve()
+  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
+  noteTotal: 0, fileTotal: 0
 }
+
+// Server default is 100; ask explicitly so the response can be paged instead of
+// silently truncated.
+const PAGE_SIZE = 100
 
 const escapeHTML = (value = '') => String(value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))
 const formatBytes = (bytes = 0) => { if (!bytes) return '0 B'; const units=['B','KB','MB','GB','TB']; const i=Math.min(Math.floor(Math.log(bytes)/Math.log(1024)),units.length-1); return `${(bytes/1024**i).toFixed(i ? 1 : 0)} ${units[i]}` }
@@ -41,6 +46,19 @@ async function api(path, options={}) {
     throw err
   }
   return payload.data
+}
+
+// api() returns only data; paged lists also need X-Total-Count to know whether
+// the server truncated the result instead of silently dropping the rest.
+async function apiPage(path) {
+  const res = await fetch(path, {headers: headers()})
+  if (res.status === 401) {
+    showAuth()
+    throw new Error('需要访问密钥')
+  }
+  const payload = await res.json()
+  if (!res.ok) throw new Error(payload.message || `HTTP ${res.status}`)
+  return {items: payload.data || [], total: Number(res.headers.get('X-Total-Count') || 0)}
 }
 
 async function apiBlob(path, options={}) {
@@ -255,14 +273,16 @@ async function saveSettings() {
   }
 }
 
-async function loadNotes(strict=false) {
+async function loadNotes(strict=false, append=false) {
   const seq = ++state.requestSeq.notes
   const q = encodeURIComponent($('#noteSearch').value.trim())
   const tag = encodeURIComponent($('#noteTagFilter').value)
+  const offset = append ? state.notes.length : 0
   try {
-    const notes = await api(`/api/v1/notes?q=${q}&tag=${tag}`)
+    const page = await apiPage(`/api/v1/notes?q=${q}&tag=${tag}&limit=${PAGE_SIZE}&offset=${offset}`)
     if (seq !== state.requestSeq.notes) return
-    state.notes = notes
+    state.notes = append ? [...state.notes, ...page.items] : page.items
+    state.noteTotal = page.total
     renderNotes()
   } catch (err) {
     if (seq === state.requestSeq.notes) reportLoadError(err, strict)
@@ -270,7 +290,10 @@ async function loadNotes(strict=false) {
 }
 
 function renderNotes() {
-  $('#noteCount').textContent = `${state.notes.length} 条速记`
+  $('#noteCount').textContent = state.noteTotal > state.notes.length
+    ? `${state.notes.length} / ${state.noteTotal} 条速记`
+    : `${state.notes.length} 条速记`
+  $('#loadMoreNotes').classList.toggle('hidden', state.notes.length >= state.noteTotal)
   const tags = [...new Set(state.notes.flatMap(n => n.tags || []))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
   const filter = $('#noteTagFilter')
   const signature = tags.join('\u0000')
@@ -429,14 +452,16 @@ async function saveEditNote() {
   }
 }
 
-async function loadFiles(strict=false) {
+async function loadFiles(strict=false, append=false) {
   const seq = ++state.requestSeq.files
   const q = encodeURIComponent($('#fileSearch').value.trim())
   const type = encodeURIComponent($('#fileType').value)
+  const offset = append ? state.files.length : 0
   try {
-    const files = await api(`/api/v1/files?q=${q}&type=${type}`)
+    const page = await apiPage(`/api/v1/files?q=${q}&type=${type}&limit=${PAGE_SIZE}&offset=${offset}`)
     if (seq !== state.requestSeq.files) return
-    state.files = files
+    state.files = append ? [...state.files, ...page.items] : page.items
+    state.fileTotal = page.total
     renderFiles()
   } catch (err) {
     if (seq === state.requestSeq.files) reportLoadError(err, strict)
@@ -452,7 +477,10 @@ function fileIcon(f) {
 }
 
 function renderFiles() {
-  $('#fileCount').textContent = `${state.files.length} 个文件`
+  $('#fileCount').textContent = state.fileTotal > state.files.length
+    ? `${state.files.length} / ${state.fileTotal} 个文件`
+    : `${state.files.length} 个文件`
+  $('#loadMoreFiles').classList.toggle('hidden', state.files.length >= state.fileTotal)
   $('#filesList').innerHTML = state.files.length ? state.files.map(f => `
     <article class="card file-card" data-file-id="${escapeHTML(f.id)}">
       <div class="file-info">
@@ -1296,6 +1324,8 @@ function bindEvents() {
     $('#settingsDialog').showModal()
   })
   $('#backupBtn').addEventListener('click', exportBackup)
+  $('#loadMoreNotes').addEventListener('click', () => loadNotes(false, true))
+  $('#loadMoreFiles').addEventListener('click', () => loadFiles(false, true))
   $('#restoreBtn').addEventListener('click', openRestoreDialog)
   $('#restoreSubmitBtn').addEventListener('click', restoreBackup)
   $('#saveSettingsBtn').addEventListener('click', saveSettings)
