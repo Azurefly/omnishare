@@ -30,6 +30,8 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file")
 	tlsKey := flag.String("tls-key", "", "TLS private key file")
 	noBrowser := flag.Bool("no-browser", false, "do not open the browser automatically")
+	storageEngine := flag.String("storage-engine", defaultStorageEngine(), "storage engine: sqlite (default) or json")
+	migrateStorage := flag.Bool("migrate-storage", false, "migrate omnishare.json to SQLite and exit")
 	flag.Parse()
 
 	lock, err := instance.Acquire(*dataDir)
@@ -52,10 +54,23 @@ func main() {
 		}
 	}
 	current := cfg.Get()
-	store, err := storage.New(current.DataDir)
+	if *migrateStorage {
+		report, err := migrateStorageNow(current.DataDir)
+		if err != nil {
+			log.Fatalf("migrate storage: %v", err)
+		}
+		log.Printf("migration report: %+v", report)
+		return
+	}
+	store, storageState, err := openStorage(current.DataDir, *storageEngine)
 	if err != nil {
 		log.Fatalf("storage: %v", err)
 	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("storage close: %v", err)
+		}
+	}()
 
 	addr := net.JoinHostPort(current.ListenAddress, fmt.Sprintf("%d", current.Port))
 	listener, err := net.Listen("tcp", addr)
@@ -77,6 +92,7 @@ func main() {
 	}
 
 	server := api.New(store, cfg, registry)
+	server.SetStorageState(storageState)
 	if tokenPath := server.InitTokenPath(); tokenPath != "" {
 		log.Printf("first-run setup: writing config requires header X-OmniShare-Init-Token; the one-time token is in %s (mode 0600, delete after setting an access key)", tokenPath)
 	}
@@ -141,11 +157,57 @@ func main() {
 	case <-time.After(2 * time.Second):
 		log.Printf("cleanup worker did not stop within deadline")
 	}
+	server.FlushDeniedAudits()
 }
 
-func cleanupLoop(ctx context.Context, store *storage.Store, cfg *config.Manager) {
+// openStorage selects the production SQLite engine. If the one-shot JSON
+// import fails, the process keeps running on the legacy JSON engine and reports
+// "not migrated" through the health endpoint instead of failing to boot.
+func openStorage(dataDir, engine string) (storage.Backend, api.StorageState, error) {
+	if engine == "json" {
+		store, err := storage.New(dataDir)
+		if err != nil {
+			return nil, api.StorageState{}, err
+		}
+		return store, api.StorageState{Engine: "json"}, nil
+	}
+	store, err := storage.NewSQLite(dataDir)
+	if err == nil {
+		report := store.MigrationInfo()
+		return store, api.StorageState{Engine: "sqlite", MigrationPending: !report.Migrated}, nil
+	}
+	jsonPath := filepath.Join(dataDir, "omnishare.json")
+	if _, statErr := os.Stat(jsonPath); statErr != nil {
+		return nil, api.StorageState{}, err
+	}
+	log.Printf("sqlite unavailable, falling back to JSON (not migrated): %v", err)
+	legacy, legacyErr := storage.New(dataDir)
+	if legacyErr != nil {
+		return nil, api.StorageState{}, fmt.Errorf("sqlite: %v; json fallback: %w", err, legacyErr)
+	}
+	return legacy, api.StorageState{Engine: "json", MigrationFailed: true, MigrationError: err.Error()}, nil
+}
+
+func migrateStorageNow(dataDir string) (storage.MigrationReport, error) {
+	store, err := storage.NewSQLite(dataDir)
+	if err != nil {
+		return storage.MigrationReport{}, err
+	}
+	defer store.Close()
+	return store.MigrationInfo(), nil
+}
+
+func defaultStorageEngine() string {
+	if value := os.Getenv("OMNISHARE_STORAGE"); value != "" {
+		return value
+	}
+	return "sqlite"
+}
+
+func cleanupLoop(ctx context.Context, store storage.Backend, cfg *config.Manager) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
+	defer store.FlushStats()
 	for {
 		select {
 		case <-ctx.Done():
@@ -154,6 +216,9 @@ func cleanupLoop(ctx context.Context, store *storage.Store, cfg *config.Manager)
 			current := cfg.Get()
 			if _, err := store.CleanupExpired(current.RetentionDays); err != nil {
 				log.Printf("cleanup expired: %v", err)
+			}
+			if _, err := store.PruneAudits(current.AuditRetentionDays, current.AuditMaxEvents); err != nil {
+				log.Printf("prune audits: %v", err)
 			}
 			files, _, err := store.PurgeExpiredTrash(current.TrashRetentionDays)
 			if err != nil {

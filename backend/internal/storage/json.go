@@ -930,6 +930,20 @@ func (s *Store) AddAudit(action, object, objectID, summary string, metadata map[
 	})
 }
 
+// FlushStats is a no-op: the JSON engine persists every mutation synchronously
+// and has no buffered counters. The legacy fallback is only used when the
+// SQLite migration fails, so it keeps the pre-existing write-on-read behaviour.
+func (s *Store) FlushStats() {}
+
+// PruneAudits is a no-op on the JSON fallback. Its state file has no anchor
+// table, so trimming entries would silently break the hash chain. Retention is
+// only enforced by the production SQLite engine.
+func (s *Store) PruneAudits(retentionDays, maxEvents int) (int, error) { return 0, nil }
+
+// Close releases nothing for the JSON engine; it exists so the maintenance
+// loop can shut both backends down the same way.
+func (s *Store) Close() error { return nil }
+
 func (s *Store) Stats() model.DashboardStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

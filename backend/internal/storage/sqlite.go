@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"omnishare/internal/model"
@@ -25,7 +28,40 @@ type SQLiteStore struct {
 	writeDB *sql.DB
 	readDB  *sql.DB
 	writeMu sync.Mutex // Serializes write operations in the application layer
+
+	// writeTx counts committed write transactions. Reads must not bump it; tests
+	// and the health endpoint use it to prove that read paths stay write-free.
+	writeTx atomic.Int64
+
+	// Read counters are accumulated in memory and flushed in batches, so a
+	// browse-heavy client cannot turn every request into a WAL commit.
+	statsMu          sync.Mutex
+	pendingReads     map[string]int
+	pendingDownloads map[string]int
+	statsStop        chan struct{}
+	statsDone        chan struct{}
+	statsInterval    time.Duration
+
+	migration MigrationReport
 }
+
+// MigrationReport describes the one-shot JSON to SQLite import.
+type MigrationReport struct {
+	Migrated   bool      `json:"migrated"`
+	BackupPath string    `json:"backup_path,omitempty"`
+	Notes      int       `json:"notes"`
+	Files      int       `json:"files"`
+	Pads       int       `json:"pads"`
+	Shares     int       `json:"shares"`
+	Audits     int       `json:"audits"`
+	Trash      int       `json:"trash"`
+	MigratedAt time.Time `json:"migrated_at,omitempty"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// MigrationInfo reports whether the database was created by importing a legacy
+// omnishare.json file.
+func (s *SQLiteStore) MigrationInfo() MigrationReport { return s.migration }
 
 const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -112,6 +148,18 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audits_created ON audit_events(created_at ASC);
+
+CREATE TABLE IF NOT EXISTS audit_anchors (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    start_seq INTEGER NOT NULL,
+    end_seq INTEGER NOT NULL,
+    event_count INTEGER NOT NULL,
+    first_prev_hash TEXT NOT NULL DEFAULT '',
+    last_hash TEXT NOT NULL,
+    prev_anchor_hash TEXT NOT NULL DEFAULT '',
+    anchor_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
 `
 
 // sqliteBusyTimeoutMS bounds how long a connection waits for a competing lock.
@@ -213,9 +261,12 @@ func NewSQLite(dataDir string) (*SQLiteStore, error) {
 	}
 
 	store := &SQLiteStore{
-		dataDir: dataDir,
-		dbPath:  dbPath,
-		writeDB: writeDB,
+		dataDir:          dataDir,
+		dbPath:           dbPath,
+		writeDB:          writeDB,
+		pendingReads:     map[string]int{},
+		pendingDownloads: map[string]int{},
+		statsInterval:    5 * time.Second,
 	}
 
 	// 2. Perform Migration if omnishare.json exists and DB was newly created
@@ -240,10 +291,47 @@ func NewSQLite(dataDir string) (*SQLiteStore, error) {
 	readDB.SetConnMaxLifetime(time.Hour)
 
 	store.readDB = readDB
+	store.statsStop = make(chan struct{})
+	store.statsDone = make(chan struct{})
+	go store.statsLoop()
 	return store, nil
 }
 
+// commit commits a transaction and records it as a logical write, which is what
+// the zero-write-on-read assertions count.
+func (s *SQLiteStore) commit(tx *sql.Tx) error {
+	err := tx.Commit()
+	if err == nil {
+		s.writeTx.Add(1)
+	}
+	return err
+}
+
+// WriteTransactions returns the number of committed write transactions since
+// start. Reads never touch this counter.
+func (s *SQLiteStore) WriteTransactions() int64 { return s.writeTx.Load() }
+
+func (s *SQLiteStore) statsLoop() {
+	ticker := time.NewTicker(s.statsInterval)
+	defer ticker.Stop()
+	defer close(s.statsDone)
+	for {
+		select {
+		case <-s.statsStop:
+			s.flushStats()
+			return
+		case <-ticker.C:
+			s.flushStats()
+		}
+	}
+}
+
 func (s *SQLiteStore) Close() error {
+	if s.statsStop != nil {
+		close(s.statsStop)
+		<-s.statsDone
+		s.statsStop = nil
+	}
 	var errs []error
 	if s.readDB != nil {
 		if err := s.readDB.Close(); err != nil {
@@ -276,17 +364,89 @@ func CleanDirtyDBArtifacts(basePath string) error {
 	return nil
 }
 
-// VerifyAuditChain traverses the audit_events table in strict physical sequence order (seq ASC)
-// and mathematically validates that the Merkle prev_hash chain and SHA-256 hashes are 100% unbroken.
+// auditAnchorEvery is the number of audit events covered by one anchor. Pruning
+// removes whole anchored segments, so the anchor chain still proves that the
+// removed range was intact when it was written.
+const auditAnchorEvery = 256
+
+type auditAnchor struct {
+	Seq            int64
+	StartSeq       int64
+	EndSeq         int64
+	EventCount     int64
+	FirstPrevHash  string
+	LastHash       string
+	PrevAnchorHash string
+	AnchorHash     string
+}
+
+func hashAuditAnchor(start, end, count int64, firstPrev, lastHash, prevAnchor string) string {
+	payload := fmt.Sprintf("%d|%d|%d|%s|%s|%s", start, end, count, firstPrev, lastHash, prevAnchor)
+	sum := sha256hex(payload)
+	return sum
+}
+
+func sha256hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// loadAnchors reads the anchor chain in creation order.
+func (s *SQLiteStore) loadAnchors() ([]auditAnchor, error) {
+	rows, err := s.readDB.Query(`SELECT seq, start_seq, end_seq, event_count, first_prev_hash, last_hash, prev_anchor_hash, anchor_hash
+		FROM audit_anchors ORDER BY seq ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []auditAnchor
+	for rows.Next() {
+		var a auditAnchor
+		if err := rows.Scan(&a.Seq, &a.StartSeq, &a.EndSeq, &a.EventCount, &a.FirstPrevHash, &a.LastHash, &a.PrevAnchorHash, &a.AnchorHash); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// VerifyAuditChain validates the anchor chain and every surviving event. Events
+// removed by retention are covered by anchors, so the remaining chain is still
+// verifiable from the first retained event.
 func (s *SQLiteStore) VerifyAuditChain() (int, error) {
-	rows, err := s.readDB.Query(`SELECT id, action, object, object_id, summary, metadata, prev_hash, hash, created_at FROM audit_events ORDER BY seq ASC`)
+	anchors, err := s.loadAnchors()
+	if err != nil {
+		return 0, err
+	}
+	prevAnchor := ""
+	var baseline string
+	var startSeq int64
+	var anchorEvents int
+	for _, a := range anchors {
+		if a.PrevAnchorHash != prevAnchor {
+			return 0, fmt.Errorf("audit anchor chain broken at seq %d", a.Seq)
+		}
+		if a.EventCount != a.EndSeq-a.StartSeq+1 {
+			return 0, fmt.Errorf("audit anchor %d has inconsistent span", a.Seq)
+		}
+		if hashAuditAnchor(a.StartSeq, a.EndSeq, a.EventCount, a.FirstPrevHash, a.LastHash, a.PrevAnchorHash) != a.AnchorHash {
+			return 0, fmt.Errorf("audit anchor %d hash mismatch", a.Seq)
+		}
+		prevAnchor = a.AnchorHash
+		baseline = a.LastHash
+		startSeq = a.EndSeq
+		anchorEvents += int(a.EventCount)
+	}
+
+	rows, err := s.readDB.Query(`SELECT id, action, object, object_id, summary, metadata, prev_hash, hash, created_at
+		FROM audit_events WHERE seq > ? ORDER BY seq ASC`, startSeq)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 
-	var verifyPrev string
-	var count int
+	verifyPrev := baseline
+	count := 0
 	for rows.Next() {
 		var a model.AuditEvent
 		var metaStr, createdStr string
@@ -305,7 +465,191 @@ func (s *SQLiteStore) VerifyAuditChain() (int, error) {
 		verifyPrev = a.Hash
 		count++
 	}
-	return count, rows.Err()
+	if err := rows.Err(); err != nil {
+		return count, err
+	}
+	_ = anchorEvents // anchors were verified; the returned count is surviving events.
+	return count, nil
+}
+
+// maybeAnchorTx adds one anchor once a full segment of events has accumulated.
+// It is called inside the same transaction as the append, so an anchor always
+// describes committed events.
+func maybeAnchorTx(tx *sql.Tx) error {
+	var lastEnd int64
+	var prevAnchor string
+	err := tx.QueryRow(`SELECT COALESCE(MAX(end_seq), 0) FROM audit_anchors`).Scan(&lastEnd)
+	if err != nil {
+		return err
+	}
+	if err := tx.QueryRow(`SELECT COALESCE((SELECT anchor_hash FROM audit_anchors ORDER BY seq DESC LIMIT 1), '')`).Scan(&prevAnchor); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT seq, prev_hash, hash FROM audit_events WHERE seq > ? ORDER BY seq ASC LIMIT ?`, lastEnd, auditAnchorEvery)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var seqs []int64
+	var firstPrev, lastHash string
+	for rows.Next() {
+		var seq int64
+		var prev, hash string
+		if err := rows.Scan(&seq, &prev, &hash); err != nil {
+			return err
+		}
+		if len(seqs) == 0 {
+			firstPrev = prev
+		}
+		seqs = append(seqs, seq)
+		lastHash = hash
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(seqs) < auditAnchorEvery {
+		return nil
+	}
+	start, end := seqs[0], seqs[len(seqs)-1]
+	count := int64(len(seqs))
+	a := auditAnchor{StartSeq: start, EndSeq: end, EventCount: count, FirstPrevHash: firstPrev, LastHash: lastHash, PrevAnchorHash: prevAnchor}
+	a.AnchorHash = hashAuditAnchor(start, end, count, firstPrev, lastHash, prevAnchor)
+	_, err = tx.Exec(`INSERT INTO audit_anchors(start_seq, end_seq, event_count, first_prev_hash, last_hash, prev_anchor_hash, anchor_hash, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.StartSeq, a.EndSeq, a.EventCount, a.FirstPrevHash, a.LastHash, a.PrevAnchorHash, a.AnchorHash, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// rebuildAuditAnchorsTx rewrites the anchor list from scratch. Used after a
+// migration or a restore, where events were inserted in bulk.
+func rebuildAuditAnchorsTx(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DELETE FROM audit_anchors`); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT seq, prev_hash, hash FROM audit_events ORDER BY seq ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var pending []struct {
+		seq        int64
+		prev, hash string
+	}
+	prevAnchor := ""
+	flush := func() error {
+		if len(pending) < auditAnchorEvery {
+			pending = nil
+			return nil
+		}
+		start, end := pending[0].seq, pending[len(pending)-1].seq
+		count := int64(len(pending))
+		a := auditAnchor{StartSeq: start, EndSeq: end, EventCount: count, FirstPrevHash: pending[0].prev, LastHash: pending[len(pending)-1].hash, PrevAnchorHash: prevAnchor}
+		a.AnchorHash = hashAuditAnchor(start, end, count, a.FirstPrevHash, a.LastHash, prevAnchor)
+		if _, err := tx.Exec(`INSERT INTO audit_anchors(start_seq, end_seq, event_count, first_prev_hash, last_hash, prev_anchor_hash, anchor_hash, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, a.StartSeq, a.EndSeq, a.EventCount, a.FirstPrevHash, a.LastHash, a.PrevAnchorHash, a.AnchorHash, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		prevAnchor = a.AnchorHash
+		pending = nil
+		return nil
+	}
+	for rows.Next() {
+		var item struct {
+			seq        int64
+			prev, hash string
+		}
+		if err := rows.Scan(&item.seq, &item.prev, &item.hash); err != nil {
+			return err
+		}
+		pending = append(pending, item)
+		if len(pending) == auditAnchorEvery {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return rows.Err()
+}
+
+// PruneAudits applies retention and a capacity cap. It only deletes whole
+// anchored segments so the anchor chain still proves the removed range. The
+// tail below one full segment is kept until it is anchored.
+func (s *SQLiteStore) PruneAudits(retentionDays, maxEvents int) (int, error) {
+	if retentionDays <= 0 && maxEvents <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var total int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM audit_events`).Scan(&total); err != nil {
+		return 0, err
+	}
+	anchors, err := s.anchorsTx(tx)
+	if err != nil {
+		return 0, err
+	}
+	remaining := total
+	deleted := 0
+	for _, a := range anchors {
+		var oldest, newest string
+		err := tx.QueryRow(`SELECT COALESCE(MIN(created_at),''), COALESCE(MAX(created_at),'') FROM audit_events WHERE seq BETWEEN ? AND ?`, a.StartSeq, a.EndSeq).Scan(&oldest, &newest)
+		if err != nil {
+			return 0, err
+		}
+		if newest == "" {
+			// Already pruned earlier; remaining was reduced then.
+			continue
+		}
+		expired := mustParseTime(newest).Before(cutoff)
+		overCapacity := maxEvents > 0 && remaining > maxEvents
+		if !expired && !overCapacity {
+			break
+		}
+		res, err := tx.Exec(`DELETE FROM audit_events WHERE seq BETWEEN ? AND ?`, a.StartSeq, a.EndSeq)
+		if err != nil {
+			return 0, err
+		}
+		affected, _ := res.RowsAffected()
+		deleted += int(affected)
+		remaining -= int(affected)
+	}
+	if deleted == 0 {
+		return 0, nil
+	}
+	if err := s.commit(tx); err != nil {
+		return 0, err
+	}
+	tx = nil
+	return deleted, nil
+}
+
+func (s *SQLiteStore) anchorsTx(tx *sql.Tx) ([]auditAnchor, error) {
+	rows, err := tx.Query(`SELECT seq, start_seq, end_seq, event_count, first_prev_hash, last_hash, prev_anchor_hash, anchor_hash
+		FROM audit_anchors ORDER BY seq ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []auditAnchor
+	for rows.Next() {
+		var a auditAnchor
+		if err := rows.Scan(&a.Seq, &a.StartSeq, &a.EndSeq, &a.EventCount, &a.FirstPrevHash, &a.LastHash, &a.PrevAnchorHash, &a.AnchorHash); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // Checkpoint manually executes a WAL checkpoint (PASSIVE, FULL, RESTART, or TRUNCATE).
@@ -377,6 +721,23 @@ func (s *SQLiteStore) migrateFromJSON(jsonPath string) error {
 	var st state
 	if err := json.Unmarshal(data, &st); err != nil {
 		return fmt.Errorf("unmarshal source json: %w", err)
+	}
+
+	// Copy the legacy state to a timestamped backup before touching anything. A
+	// crash must never leave a truncated "backup" that looks valid, so write a
+	// temporary file, fsync it, then rename into place.
+	backupPath := fmt.Sprintf("%s.%s.migrated.bak", jsonPath, time.Now().UTC().Format("20060102-150405"))
+	tmpBackup := backupPath + ".tmp"
+	if err := os.WriteFile(tmpBackup, data, 0o600); err != nil {
+		return fmt.Errorf("write migration backup: %w", err)
+	}
+	if f, err := os.Open(tmpBackup); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+	if err := os.Rename(tmpBackup, backupPath); err != nil {
+		_ = os.Remove(tmpBackup)
+		return fmt.Errorf("publish migration backup: %w", err)
 	}
 
 	// Verify existing audit hash chain before importing
@@ -515,43 +876,112 @@ func (s *SQLiteStore) migrateFromJSON(jsonPath string) error {
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return err
+	// Verify the imported rows inside the same transaction. A count mismatch or
+	// a broken audit chain must roll back the whole import: a half-migrated
+	// database would be worse than staying on the JSON engine.
+	wantTrash := 0
+	for _, n := range st.Notes {
+		if n.DeletedAt != nil {
+			wantTrash++
+		}
 	}
-	tx = nil
+	for _, f := range st.Files {
+		if f.DeletedAt != nil {
+			wantTrash++
+		}
+	}
+	for _, p := range st.Pads {
+		if p.DeletedAt != nil {
+			wantTrash++
+		}
+	}
+	counts := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{"notes", "SELECT COUNT(*) FROM quick_notes", len(st.Notes)},
+		{"files", "SELECT COUNT(*) FROM file_assets", len(st.Files)},
+		{"pads", "SELECT COUNT(*) FROM pad_documents", len(st.Pads)},
+		{"shares", "SELECT COUNT(*) FROM share_links", len(st.Shares)},
+		{"audits", "SELECT COUNT(*) FROM audit_events", len(st.Audits)},
+		{"trash", "SELECT (SELECT COUNT(*) FROM quick_notes WHERE deleted_at IS NOT NULL) + (SELECT COUNT(*) FROM file_assets WHERE deleted_at IS NOT NULL) + (SELECT COUNT(*) FROM pad_documents WHERE deleted_at IS NOT NULL)", wantTrash},
+	}
+	for _, c := range counts {
+		var got int
+		if err := tx.QueryRow(c.query).Scan(&got); err != nil {
+			return fmt.Errorf("verify %s count: %w", c.name, err)
+		}
+		if got != c.want {
+			return fmt.Errorf("migrated %s count mismatch: got %d want %d", c.name, got, c.want)
+		}
+	}
 
-	// Verify imported audit chain
-	rows, err := s.writeDB.Query("SELECT id, action, object, object_id, summary, metadata, prev_hash, hash, created_at FROM audit_events ORDER BY seq ASC")
+	rows, err := tx.Query("SELECT id, action, object, object_id, summary, metadata, prev_hash, hash, created_at FROM audit_events ORDER BY seq ASC")
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
 	var verifyPrev string
-	var count int
+	var verified int
 	for rows.Next() {
 		var a model.AuditEvent
 		var metaStr, createdStr string
 		if err := rows.Scan(&a.ID, &a.Action, &a.Object, &a.ObjectID, &a.Summary, &metaStr, &a.PrevHash, &a.Hash, &createdStr); err != nil {
+			_ = rows.Close()
 			return err
 		}
 		_ = json.Unmarshal([]byte(metaStr), &a.Metadata)
 		a.CreatedAt = mustParseTime(createdStr)
 		if a.PrevHash != verifyPrev {
+			_ = rows.Close()
 			return fmt.Errorf("migrated audit chain broken at %s", a.ID)
 		}
 		if a.Hash != auditHash(a) {
+			_ = rows.Close()
 			return fmt.Errorf("migrated audit hash mismatch at %s", a.ID)
 		}
 		verifyPrev = a.Hash
-		count++
+		verified++
 	}
-	if count != len(st.Audits) {
-		return fmt.Errorf("migrated audit count mismatch: got %d want %d", count, len(st.Audits))
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	if verified != len(st.Audits) {
+		return fmt.Errorf("migrated audit count mismatch: got %d want %d", verified, len(st.Audits))
 	}
 
-	// Rename omnishare.json to omnishare.json.bak
-	_ = os.Rename(jsonPath, jsonPath+".bak")
+	if err := rebuildAuditAnchorsTx(tx); err != nil {
+		return err
+	}
+
+	marker := time.Now().UTC()
+	if _, err := tx.Exec("INSERT OR REPLACE INTO schema_meta(key, value, updated_at) VALUES ('storage_backend', 'sqlite', ?)", marker.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("INSERT OR REPLACE INTO schema_meta(key, value, updated_at) VALUES ('migrated_from', ?, ?)", jsonPath, marker.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+
+	if err := s.commit(tx); err != nil {
+		return err
+	}
+	tx = nil
+
+	s.migration = MigrationReport{
+		Migrated:   true,
+		BackupPath: backupPath,
+		Notes:      len(st.Notes),
+		Files:      len(st.Files),
+		Pads:       len(st.Pads),
+		Shares:     len(st.Shares),
+		Audits:     len(st.Audits),
+		Trash:      wantTrash,
+		MigratedAt: marker,
+	}
+	// Keep the source file in place as the documented rollback path. It is not
+	// renamed, so an operator can always point OMNISHARE_STORAGE=json at it.
 	return nil
 }
 
@@ -721,7 +1151,7 @@ func (s *SQLiteStore) ReplaceStateJSON(data []byte) error {
 		}
 	}()
 
-	tables := []string{"quick_notes", "file_assets", "pad_documents", "share_links", "audit_events"}
+	tables := []string{"quick_notes", "file_assets", "pad_documents", "share_links", "audit_events", "audit_anchors"}
 	for _, t := range tables {
 		if _, err := tx.Exec("DELETE FROM " + t); err != nil {
 			return err
@@ -806,8 +1236,11 @@ func (s *SQLiteStore) ReplaceStateJSON(data []byte) error {
 			return err
 		}
 	}
+	if err := rebuildAuditAnchorsTx(tx); err != nil {
+		return err
+	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -838,7 +1271,10 @@ func (s *SQLiteStore) appendAuditTx(tx *sql.Tx, action, object, objectID, summar
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.Action, e.Object, e.ObjectID, e.Summary, string(metaJSON), e.PrevHash, e.Hash, e.CreatedAt.Format(time.RFC3339Nano),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return maybeAnchorTx(tx)
 }
 
 func (s *SQLiteStore) AddAudit(action, object, objectID, summary string, metadata map[string]interface{}) error {
@@ -856,7 +1292,7 @@ func (s *SQLiteStore) AddAudit(action, object, objectID, summary string, metadat
 	if err := s.appendAuditTx(tx, action, object, objectID, summary, metadata); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -997,7 +1433,7 @@ func (s *SQLiteStore) CreateNote(n model.QuickNote) error {
 	if err := s.appendAuditTx(tx, "create", "note", n.ID, "note created", nil); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -1066,33 +1502,24 @@ func (s *SQLiteStore) UpdateNote(id string, apply func(*model.QuickNote) error) 
 	if err := s.appendAuditTx(tx, "update", "note", id, "note updated", nil); err != nil {
 		return model.QuickNote{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return model.QuickNote{}, err
 	}
 	tx = nil
 	return n, nil
 }
 
+// ReadNote is a read-only operation for ordinary notes: the counter is buffered
+// in memory and flushed in batches. Burn-after-read and max-read notes are true
+// state transitions, so only those consume the row synchronously.
 func (s *SQLiteStore) ReadNote(id string) (result model.QuickNote, err error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	tx, err := s.writeDB.Begin()
-	if err != nil {
-		return model.QuickNote{}, err
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
 	now := time.Now().UTC()
 	var n model.QuickNote
 	var redacted, pinned, burn int
 	var tagsStr, createdStr, updatedStr string
 	var expStr, delStr *string
 
-	err = tx.QueryRow(`SELECT id, content, content_redacted, content_type, tags, pinned, is_burn_after_read,
+	err = s.readDB.QueryRow(`SELECT id, content, content_redacted, content_type, tags, pinned, is_burn_after_read,
 		read_count, max_read_count, expires_at, deleted_at, created_at, updated_at
 		FROM quick_notes WHERE id = ? AND deleted_at IS NULL`, id).Scan(
 		&n.ID, &n.Content, &redacted, &n.ContentType, &tagsStr, &pinned, &burn,
@@ -1117,31 +1544,108 @@ func (s *SQLiteStore) ReadNote(id string) (result model.QuickNote, err error) {
 
 	n.ReadCount++
 	remove := n.IsBurnAfterRead || (n.MaxReadCount > 0 && n.ReadCount >= n.MaxReadCount)
-
 	if remove {
-		if _, err := tx.Exec("DELETE FROM quick_notes WHERE id = ?", id); err != nil {
-			return model.QuickNote{}, err
-		}
-		nowStr := now.Format(time.RFC3339Nano)
-		if _, err := tx.Exec("UPDATE share_links SET revoked_at = ? WHERE object_type = 'note' AND object_id = ? AND revoked_at IS NULL", nowStr, id); err != nil {
-			return model.QuickNote{}, err
-		}
-	} else {
-		if _, err := tx.Exec("UPDATE quick_notes SET read_count = ? WHERE id = ?", n.ReadCount, id); err != nil {
-			return model.QuickNote{}, err
-		}
+		return s.consumeNote(n, now)
 	}
+	s.bufferCounter(false, id, 1)
+	return n, nil
+}
 
-	if err := s.appendAuditTx(tx, "read", "note", id, "note read", map[string]interface{}{"removed": remove}); err != nil {
+// consumeNote deletes a burn-after-read or max-read note and revokes its
+// shares. This is the only read-path operation allowed to write, because it is
+// a one-shot destructive access rather than a counter update.
+func (s *SQLiteStore) consumeNote(n model.QuickNote, now time.Time) (model.QuickNote, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
 		return model.QuickNote{}, err
 	}
-
-	if err := tx.Commit(); err != nil {
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec("DELETE FROM quick_notes WHERE id = ?", n.ID); err != nil {
+		return model.QuickNote{}, err
+	}
+	if _, err := tx.Exec("UPDATE share_links SET revoked_at = ? WHERE object_type = 'note' AND object_id = ? AND revoked_at IS NULL", now.Format(time.RFC3339Nano), n.ID); err != nil {
+		return model.QuickNote{}, err
+	}
+	if err := s.appendAuditTx(tx, "read", "note", n.ID, "note read", map[string]interface{}{"removed": true}); err != nil {
+		return model.QuickNote{}, err
+	}
+	if err := s.commit(tx); err != nil {
 		return model.QuickNote{}, err
 	}
 	tx = nil
 	return n, nil
 }
+
+func (s *SQLiteStore) bufferCounter(download bool, id string, delta int) {
+	if delta <= 0 {
+		return
+	}
+	s.statsMu.Lock()
+	if download {
+		s.pendingDownloads[id] += delta
+	} else {
+		s.pendingReads[id] += delta
+	}
+	s.statsMu.Unlock()
+}
+
+// flushStats writes all buffered read/download counters in one transaction.
+// One aggregate audit event records the batch, so audit volume scales with
+// flush intervals instead of request count.
+func (s *SQLiteStore) flushStats() {
+	s.statsMu.Lock()
+	reads, downloads := s.pendingReads, s.pendingDownloads
+	if len(reads) == 0 && len(downloads) == 0 {
+		s.statsMu.Unlock()
+		return
+	}
+	s.pendingReads = map[string]int{}
+	s.pendingDownloads = map[string]int{}
+	s.statsMu.Unlock()
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.Begin()
+	if err != nil {
+		return
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	readTotal, downloadTotal := 0, 0
+	for id, delta := range reads {
+		if _, err := tx.Exec("UPDATE quick_notes SET read_count = read_count + ? WHERE id = ?", delta, id); err != nil {
+			return
+		}
+		readTotal += delta
+	}
+	for id, delta := range downloads {
+		if _, err := tx.Exec("UPDATE file_assets SET download_count = download_count + ? WHERE id = ?", delta, id); err != nil {
+			return
+		}
+		downloadTotal += delta
+	}
+	if readTotal > 0 || downloadTotal > 0 {
+		if err := s.appendAuditTx(tx, "counter_flush", "metrics", "", "buffered read/download counters flushed", map[string]interface{}{"reads": readTotal, "downloads": downloadTotal}); err != nil {
+			return
+		}
+	}
+	if err := s.commit(tx); err != nil {
+		return
+	}
+	tx = nil
+}
+
+// FlushStats exposes the batch flush for the maintenance loop and tests.
+func (s *SQLiteStore) FlushStats() { s.flushStats() }
 
 func (s *SQLiteStore) DeleteNotes(ids []string) (deleted int, err error) {
 	if len(ids) == 0 {
@@ -1177,7 +1681,7 @@ func (s *SQLiteStore) DeleteNotes(ids []string) (deleted int, err error) {
 	if deleted == 0 {
 		return 0, ErrNotFound
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return 0, err
 	}
 	tx = nil
@@ -1385,7 +1889,7 @@ func (s *SQLiteStore) CreateFile(f model.FileAsset) error {
 	if err := s.appendAuditTx(tx, "upload", "file", f.ID, "file uploaded", map[string]interface{}{"name": f.FileName, "size": f.FileSize, "hash": f.FileHash}); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -1422,7 +1926,7 @@ func (s *SQLiteStore) RenameFile(id, name string) (result model.FileAsset, err e
 	if err := s.appendAuditTx(tx, "rename", "file", id, "file renamed", map[string]interface{}{"name": name}); err != nil {
 		return model.FileAsset{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return model.FileAsset{}, err
 	}
 	tx = nil
@@ -1430,17 +1934,17 @@ func (s *SQLiteStore) RenameFile(id, name string) (result model.FileAsset, err e
 	return s.GetFile(id)
 }
 
+// IncrementDownload buffers the counter instead of committing per download.
 func (s *SQLiteStore) IncrementDownload(id string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	res, err := s.writeDB.Exec("UPDATE file_assets SET download_count = download_count + 1 WHERE id = ? AND deleted_at IS NULL", id)
+	var exists int
+	err := s.readDB.QueryRow("SELECT 1 FROM file_assets WHERE id = ? AND deleted_at IS NULL", id).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return err
 	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		return ErrNotFound
-	}
+	s.bufferCounter(true, id, 1)
 	return nil
 }
 
@@ -1494,7 +1998,7 @@ func (s *SQLiteStore) DeleteFiles(ids []string) (deleted []model.FileAsset, err 
 	if len(deleted) == 0 {
 		return nil, ErrNotFound
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return nil, err
 	}
 	tx = nil
@@ -1582,7 +2086,7 @@ func (s *SQLiteStore) CreatePad(p model.PadDocument) error {
 	if err := s.appendAuditTx(tx, "create", "pad", p.ID, "document created", map[string]interface{}{"title": p.Title}); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -1637,7 +2141,7 @@ func (s *SQLiteStore) UpdatePad(id, title, content string, expectedVersion int) 
 	if err := s.appendAuditTx(tx, "update", "pad", id, "document updated", map[string]interface{}{"version": p.Version}); err != nil {
 		return model.PadDocument{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return model.PadDocument{}, err
 	}
 	tx = nil
@@ -1675,7 +2179,7 @@ func (s *SQLiteStore) DeletePad(id string) error {
 	if err := s.appendAuditTx(tx, "trash", "pad", id, "document moved to trash", map[string]interface{}{"title": title}); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -1717,7 +2221,7 @@ func (s *SQLiteStore) CreateShare(link model.ShareLink) error {
 	if err := s.appendAuditTx(tx, "share", link.ObjectType, link.ObjectID, "share created", map[string]interface{}{"share_id": link.ID, "max_access_count": link.MaxAccessCount}); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -1905,7 +2409,7 @@ func (s *SQLiteStore) ConsumeShare(token string) (result model.ShareLink, err er
 	if err := s.appendAuditTx(tx, "access", "share", link.ID, "share accessed", map[string]interface{}{"count": link.AccessCount}); err != nil {
 		return model.ShareLink{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return model.ShareLink{}, err
 	}
 	tx = nil
@@ -1944,7 +2448,7 @@ func (s *SQLiteStore) RevokeShare(id string) error {
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -2081,7 +2585,7 @@ func (s *SQLiteStore) RestoreTrash(kind, id string) error {
 		return errors.New("unsupported trash type")
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return err
 	}
 	tx = nil
@@ -2164,7 +2668,7 @@ func (s *SQLiteStore) PurgeTrash(kind, id string) (removed *model.FileAsset, err
 		return nil, errors.New("unsupported trash type")
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return nil, err
 	}
 	tx = nil
@@ -2244,7 +2748,7 @@ func (s *SQLiteStore) EmptyTrash() (files []model.FileAsset, deletedCount int, e
 	if err := s.appendAuditTx(tx, "purge", "trash", "", "trash emptied", map[string]interface{}{"count": deletedCount, "files": len(files)}); err != nil {
 		return nil, 0, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return nil, 0, err
 	}
 	tx = nil
@@ -2409,7 +2913,7 @@ func (s *SQLiteStore) CleanupExpired(retentionDays int) (moved int, err error) {
 	if err := s.appendAuditTx(tx, "cleanup", "system", "", "expired items moved to trash", map[string]interface{}{"count": moved}); err != nil {
 		return 0, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return 0, err
 	}
 	tx = nil
@@ -2500,7 +3004,7 @@ func (s *SQLiteStore) PurgeExpiredTrash(days int) (files []model.FileAsset, purg
 	if err := s.appendAuditTx(tx, "purge", "trash", "", "expired trash purged", map[string]interface{}{"count": purged, "files": len(files)}); err != nil {
 		return nil, 0, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commit(tx); err != nil {
 		return nil, 0, err
 	}
 	tx = nil

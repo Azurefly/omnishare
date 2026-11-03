@@ -205,6 +205,16 @@ Linux 用户级安装包使用 XDG 目录：
 
 卸载程序默认保留用户数据。
 
+### 存储引擎与升级（SQLite）
+
+生产默认使用 SQLite（`omnishare.db`，WAL 模式），旧版单文件 JSON 实现保留为回退引擎。
+
+- 自动迁移：首次以 SQLite 启动且数据目录存在 `omnishare.json` 时，先把原文件完整复制为 `omnishare.json.<UTC时间戳>.migrated.bak`，再在单个事务中导入并逐项校验 `notes/files/pads/shares/audits/trash` 条数与审计哈希链。任一不一致会回滚事务、保留原 JSON，并自动回退到 JSON 引擎继续运行；启动日志和 `/api/v1/health` 会显示 `"migration": "not_migrated"`。
+- 手动迁移：`omnishare --migrate-storage`，打印迁移条目数后退出。
+- 强制回退：`omnishare --storage-engine=json`（或环境变量 `OMNISHARE_STORAGE=json`）。迁移成功后原 `omnishare.json` 仍然保留，不会被删除或改名。
+- 完整回滚：停止服务，把 `omnishare.db`、`omnishare.db-wal`、`omnishare.db-shm` 移出数据目录，再以 `--storage-engine=json` 启动即可回到旧数据。
+- 已知限制：笔记阅读数与文件下载数是内存累加、每 5 秒批量落库，进程崩溃会丢失最近几秒的计数；`burn-after-read` / 达到最大阅读次数的笔记仍为同步销毁。审计保留策略（`audit_retention_days` 默认 90、`audit_max_events` 默认 100000）只在 SQLite 引擎执行，裁剪以锚点分段进行；JSON 回退引擎不裁剪审计。
+
 ## 构建桌面端
 
 ### Windows

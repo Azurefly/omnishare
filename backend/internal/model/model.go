@@ -69,6 +69,8 @@ type AppConfig struct {
 	BackupMaxMB         int64        `json:"backup_max_mb"`
 	RetentionDays       int          `json:"retention_days"`
 	TrashRetentionDays  int          `json:"trash_retention_days"`
+	AuditRetentionDays  int          `json:"audit_retention_days"`
+	AuditMaxEvents      int          `json:"audit_max_events"`
 	AllowedOrigins      []string     `json:"allowed_origins,omitempty"`
 	Peers               []PeerConfig `json:"peers"`
 	AccessKey           string       `json:"access_key,omitempty"`
@@ -95,6 +97,8 @@ type PublicConfig struct {
 	BackupMaxMB        int64        `json:"backup_max_mb"`
 	RetentionDays      int          `json:"retention_days"`
 	TrashRetentionDays int          `json:"trash_retention_days"`
+	AuditRetentionDays int          `json:"audit_retention_days"`
+	AuditMaxEvents     int          `json:"audit_max_events"`
 	HasAccessKey       bool         `json:"has_access_key"`
 	TLSEnabled         bool         `json:"tls_enabled"`
 	AllowedOrigins     []string     `json:"allowed_origins,omitempty"`

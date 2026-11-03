@@ -50,7 +50,7 @@ const (
 )
 
 type Server struct {
-	store    *storage.Store
+	store    storage.Backend
 	cfg      *config.Manager
 	dataDir  string
 	started  time.Time
@@ -71,6 +71,16 @@ type Server struct {
 	// uploadsMu serialises whole-request consumers of the uploads directory.
 	// Restore takes the write lock, uploads and downloads take the read lock.
 	uploadsMu sync.RWMutex
+
+	storageMu    sync.RWMutex
+	storageState StorageState
+
+	// Unauthorized requests are aggregated per client and time window instead
+	// of writing one audit row each. A brute-force storm therefore costs one
+	// commit per window, not one per request.
+	deniedMu     sync.Mutex
+	denied       map[string]*deniedBucket
+	deniedWindow time.Duration
 
 	// requestTotal mirrors the sum of requestIP so the global concurrency check
 	// is O(1) instead of iterating every client on each request.
@@ -111,6 +121,28 @@ type authState struct {
 	BlockedTill time.Time
 }
 
+// StorageState reports which engine is serving and the outcome of a pending
+// legacy JSON import. It is surfaced through /api/v1/health so operators can
+// see "not migrated" without reading logs.
+type StorageState struct {
+	Engine           string `json:"engine"`
+	MigrationPending bool   `json:"migration_pending,omitempty"`
+	MigrationFailed  bool   `json:"migration_failed,omitempty"`
+	MigrationError   string `json:"migration_error,omitempty"`
+}
+
+// SetStorageState is called once during startup.
+func (s *Server) SetStorageState(st StorageState) {
+	s.storageMu.Lock()
+	s.storageState = st
+	s.storageMu.Unlock()
+}
+
+type deniedBucket struct {
+	windowStart time.Time
+	count       int
+}
+
 type mediaTicket struct {
 	FileID      string `json:"file_id"`
 	Disposition string `json:"disposition"`
@@ -123,7 +155,7 @@ type shareSession struct {
 	ExpiresUnix int64  `json:"expires_unix"`
 }
 
-func New(store *storage.Store, cfg *config.Manager, registries ...*discovery.Registry) *Server {
+func New(store storage.Backend, cfg *config.Manager, registries ...*discovery.Registry) *Server {
 	var registry *discovery.Registry
 	if len(registries) > 0 {
 		registry = registries[0]
@@ -141,6 +173,7 @@ func New(store *storage.Store, cfg *config.Manager, registries ...*discovery.Reg
 	server := &Server{
 		store: store, cfg: cfg, dataDir: cfg.Get().DataDir, started: time.Now(), client: client, registry: registry,
 		ticketKey: key, auth: map[string]*authState{}, requestIP: map[string]int{}, shareIP: map[string]int{}, counted: map[string]time.Time{},
+		denied: map[string]*deniedBucket{}, deniedWindow: time.Minute,
 	}
 	if err := server.ensureInitToken(); err != nil {
 		panic(fmt.Sprintf("initialize first-run token: %v", err))
@@ -367,11 +400,68 @@ func (s *Server) leaveRequest(ip string) {
 func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorized(r) {
-			_ = s.store.AddAudit("auth_denied", "security", "", "authorization denied", requestMetadata(r))
+			s.recordDenied(r)
 			respond(w, http.StatusUnauthorized, 401, "access key required", nil)
 			return
 		}
 		next(w, r)
+	}
+}
+
+// recordDenied aggregates 401s per source inside a time window. A single
+// denied request must not open a write transaction, otherwise a brute-force
+// storm can turn every connection attempt into a WAL commit.
+func (s *Server) recordDenied(r *http.Request) {
+	ip := clientIP(r)
+	now := time.Now().UTC()
+	var pending *deniedBucket
+	s.deniedMu.Lock()
+	b, ok := s.denied[ip]
+	switch {
+	case !ok:
+		s.denied[ip] = &deniedBucket{windowStart: now, count: 1}
+	case now.Sub(b.windowStart) >= s.deniedWindow:
+		pending = b
+		s.denied[ip] = &deniedBucket{windowStart: now, count: 1}
+	default:
+		b.count++
+	}
+	if len(s.denied) > 2048 {
+		pendingBatches := s.denied
+		s.denied = map[string]*deniedBucket{}
+		s.deniedMu.Unlock()
+		for source, bucket := range pendingBatches {
+			s.writeDeniedAudit(source, bucket)
+		}
+	} else {
+		s.deniedMu.Unlock()
+	}
+	if pending != nil {
+		s.writeDeniedAudit(ip, pending)
+	}
+}
+
+func (s *Server) writeDeniedAudit(source string, b *deniedBucket) {
+	if b == nil || b.count == 0 {
+		return
+	}
+	_ = s.store.AddAudit("auth_denied", "security", "", "aggregated authorization denials", map[string]interface{}{
+		"source":         source,
+		"count":          b.count,
+		"window_seconds": int(s.deniedWindow.Seconds()),
+		"window_start":   b.windowStart.Format(time.RFC3339),
+	})
+}
+
+// FlushDeniedAudits writes every open bucket. Called on shutdown and by tests
+// that need a deterministic write count.
+func (s *Server) FlushDeniedAudits() {
+	s.deniedMu.Lock()
+	pending := s.denied
+	s.denied = map[string]*deniedBucket{}
+	s.deniedMu.Unlock()
+	for source, bucket := range pending {
+		s.writeDeniedAudit(source, bucket)
 	}
 }
 
@@ -383,7 +473,21 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	respond(w, http.StatusOK, 0, "ok", map[string]interface{}{"status": "ok", "version": Version})
+	s.storageMu.RLock()
+	state := s.storageState
+	s.storageMu.RUnlock()
+	data := map[string]interface{}{"status": "ok", "version": Version}
+	if state.Engine != "" {
+		data["storage"] = state.Engine
+		data["storage_migrated"] = !state.MigrationPending && !state.MigrationFailed
+	}
+	if state.MigrationPending || state.MigrationFailed {
+		data["migration"] = "not_migrated"
+	}
+	if state.MigrationError != "" {
+		data["migration_error"] = state.MigrationError
+	}
+	respond(w, http.StatusOK, 0, "ok", data)
 }
 
 func (s *Server) verifyAuth(w http.ResponseWriter, r *http.Request) {
