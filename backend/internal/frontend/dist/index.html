@@ -377,9 +377,13 @@
         <button value="cancel" class="icon-button" aria-label="关闭">×</button>
       </div>
       <label>
-        备份文件（.zip）
-        <input id="restoreFile" type="file" accept=".zip,application/zip,application/x-zip-compressed" />
-        <small>备份是未加密 ZIP，请仅在本机保存并妥善保管；上传大小受“备份上限”限制。</small>
+        备份文件（.zip 或 .osb）
+        <input id="restoreFile" type="file" accept=".zip,.osb,application/zip,application/x-zip-compressed,application/octet-stream" />
+        <small>支持未加密 ZIP 与 AES-256-GCM 加密包；上传大小受“备份上限”限制。</small>
+      </label>
+      <label>
+        备份口令（仅 .osb 加密包需要）
+        <input id="restorePassword" type="password" autocomplete="off" placeholder="未加密 ZIP 留空即可" />
       </label>
       <label class="switch-row">
         <input id="restoreConfirm" type="checkbox" />

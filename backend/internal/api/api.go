@@ -1687,7 +1687,8 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 	name := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(name)
-	if err := s.generateBackup(name); err != nil {
+	manifest, err := s.generateBackup(name)
+	if err != nil {
 		respond(w, 500, 500, err.Error(), nil)
 		return
 	}
@@ -1697,19 +1698,42 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	info, _ := f.Stat()
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="omnishare-backup-`+time.Now().Format("20060102-150405")+`.zip"`)
-	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+
+	// A password turns the archive into a real AES-256-GCM encrypted package.
+	// Both paths stream from the temporary ZIP, so a multi-gigabyte backup never
+	// has to fit in memory.
+	password := r.Header.Get("X-OmniShare-Backup-Password")
+	stamp := time.Now().Format("20060102-150405")
+	if password == "" {
+		info, _ := f.Stat()
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="omnishare-backup-`+stamp+`.zip"`)
+		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="omnishare-backup-`+stamp+`.osb"`)
+	encoder, err := NewBackupEncryptWriter(w, password, manifest)
+	if err != nil {
+		respond(w, 500, 500, err.Error(), nil)
+		return
+	}
+	if _, err := io.Copy(encoder, f); err != nil {
+		return
+	}
+	if err := encoder.Close(); err != nil {
+		return
+	}
 }
 
-func (s *Server) generateBackup(path string) error {
+func (s *Server) generateBackup(path string) (model.BackupManifest, error) {
 	configJSON, err := s.cfg.BackupJSON()
 	if err != nil {
-		return err
+		return model.BackupManifest{}, err
 	}
-	return s.store.WithSnapshot(func(stateJSON []byte, files []model.FileAsset) error {
-		manifest := model.BackupManifest{FormatVersion: 1, AppVersion: Version, CreatedAt: time.Now().UTC(), StateSHA256: hexDigest(stateJSON), ConfigSHA256: hexDigest(configJSON), Files: []model.BackupFileManifest{}}
+	var manifest model.BackupManifest
+	err = s.store.WithSnapshot(func(stateJSON []byte, files []model.FileAsset) error {
+		manifest = model.BackupManifest{FormatVersion: 1, AppVersion: Version, CreatedAt: time.Now().UTC(), StateSHA256: hexDigest(stateJSON), ConfigSHA256: hexDigest(configJSON), Files: []model.BackupFileManifest{}}
 		unique := map[string]model.FileAsset{}
 		for _, f := range files {
 			if f.StoragePath != "" {
@@ -1803,6 +1827,7 @@ func (s *Server) generateBackup(path string) error {
 		}
 		return out.Close()
 	})
+	return manifest, err
 }
 
 func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
@@ -1856,7 +1881,43 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(archive)
-	if err := s.applyRestore(archive); err != nil {
+
+	// Restore accepts both the encrypted .osb container and the legacy plain
+	// ZIP, so upgrades do not strand older backups.
+	var expected *model.BackupManifest
+	if encrypted, err := IsEncryptedBackup(archive); err != nil {
+		respond(w, 400, 400, "could not inspect backup", nil)
+		return
+	} else if encrypted {
+		password := r.Header.Get("X-OmniShare-Backup-Password")
+		if password == "" {
+			respond(w, 400, 400, "this backup is encrypted; a password is required", nil)
+			return
+		}
+		decrypted, err := os.CreateTemp(s.dataDir, "restore-decrypted-*.zip")
+		if err != nil {
+			respond(w, 500, 500, err.Error(), nil)
+			return
+		}
+		decryptedPath := decrypted.Name()
+		defer os.Remove(decryptedPath)
+		src, err := os.Open(archive)
+		if err != nil {
+			_ = decrypted.Close()
+			respond(w, 400, 400, "could not read backup", nil)
+			return
+		}
+		header, decErr := DecryptBackup(src, decrypted, password)
+		_ = src.Close()
+		closeErr := decrypted.Close()
+		if decErr != nil || closeErr != nil {
+			respond(w, 400, 400, "backup password is wrong or the package is corrupted", nil)
+			return
+		}
+		expected = &header.Manifest
+		archive = decryptedPath
+	}
+	if err := s.applyRestore(archive, expected); err != nil {
 		respond(w, 409, 409, err.Error(), nil)
 		return
 	}
@@ -1864,7 +1925,7 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, 0, "backup restored; restart is recommended", nil)
 }
 
-func (s *Server) applyRestore(archive string) error {
+func (s *Server) applyRestore(archive string, expected *model.BackupManifest) error {
 	// Extraction already writes into uploads/.staging, so the exclusive lock has
 	// to cover the whole restore, not just the final rename.
 	s.uploadsMu.Lock()
@@ -1923,6 +1984,23 @@ func (s *Server) applyRestore(archive string) error {
 	}
 	if manifest.FormatVersion != 1 {
 		return errors.New("unsupported backup format")
+	}
+	// The encrypted header is authenticated and carries a copy of the manifest.
+	// Both copies must agree, which catches truncation or a container/archive
+	// mismatch before anything is extracted.
+	if expected != nil {
+		if manifest.StateSHA256 != expected.StateSHA256 || manifest.ConfigSHA256 != expected.ConfigSHA256 || len(manifest.Files) != len(expected.Files) {
+			return errors.New("encrypted header manifest does not match the archive")
+		}
+		expectedFiles := map[string]model.BackupFileManifest{}
+		for _, item := range expected.Files {
+			expectedFiles[item.ArchivePath] = item
+		}
+		for _, item := range manifest.Files {
+			if other, ok := expectedFiles[item.ArchivePath]; !ok || other.Size != item.Size || other.SHA256 != item.SHA256 || other.ID != item.ID {
+				return errors.New("encrypted header file manifest does not match the archive")
+			}
+		}
 	}
 	if len(manifest.Files) > maxRestoreManifestFiles {
 		return errors.New("backup manifest contains too many files")

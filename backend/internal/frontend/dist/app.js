@@ -1130,13 +1130,79 @@ function switchTab(tab) {
 async function exportBackup() {
   // Backups can take minutes. Passing our own signal keeps the request out of
   // the runtime bridge's 6 s abort watchdog; it only ends on network failure.
+  const password = window.prompt('设置备份口令（留空则导出未加密 ZIP；加密包只能用同一口令恢复）', '')
+  if (password === null) return
   const controller = new AbortController()
   try {
     toast('正在生成备份，请稍候…')
-    const blob = await apiBlob('/api/v1/backup', {signal: controller.signal})
+    const extra = password ? { 'X-OmniShare-Backup-Password': password } : {}
+    const res = await fetch('/api/v1/backup', {signal: controller.signal, headers: headers(extra)})
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`
+      try {
+        const payload = await res.json()
+        message = payload.message || message
+      } catch { /* non-JSON error */ }
+      throw new Error(message)
+    }
+    const disposition = res.headers.get('content-disposition') || ''
+    const suggested = `omnishare-backup-${new Date().toISOString().slice(0, 10)}${password ? '.osb' : '.zip'}`
+    const total = Number(res.headers.get('content-length') || 0)
+
+    // Prefer the File System Access API so a 16 GB backup is written chunk by
+    // chunk instead of being materialised as one Blob in memory.
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({ suggestedName: suggested })
+      const writable = await handle.createWritable()
+      const reader = res.body.getReader()
+      let loaded = 0
+      let lastShown = -10
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          await writable.write(value)
+          loaded += value.length
+          if (total) {
+            const percent = Math.floor((loaded / total) * 100)
+            if (percent >= lastShown + 10) {
+              lastShown = percent
+              toast(`正在写入备份文件 ${percent}%`)
+            }
+          }
+        }
+        await writable.close()
+      } catch (err) {
+        try { await writable.abort() } catch { /* already closed */ }
+        throw err
+      }
+      toast(disposition.includes('.osb') ? '加密备份已保存' : '备份已保存')
+      return
+    }
+
+    // Fallback browsers have to buffer the whole response. Refuse instead of
+    // silently exhausting memory on multi-gigabyte archives.
+    const MAX_BUFFERED = 2 * 1024 * 1024 * 1024
+    if (total > MAX_BUFFERED) {
+      throw new Error('当前浏览器不支持流式下载，备份超过 2 GB。请使用 Chrome/Edge，或降低“备份上限”')
+    }
+    const reader = res.body.getReader()
+    const chunks = []
+    let received = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      received += value.length
+      if (received > MAX_BUFFERED) {
+        controller.abort()
+        throw new Error('备份超过 2 GB 且浏览器不支持流式下载，已中止')
+      }
+    }
+    const blob = new Blob(chunks, { type: 'application/octet-stream' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = `omnishare-backup-${new Date().toISOString().slice(0, 10)}.zip`
+    a.download = suggested
     a.click()
     setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   } catch (err) {
@@ -1146,6 +1212,7 @@ async function exportBackup() {
 
 function openRestoreDialog() {
   $('#restoreFile').value = ''
+  $('#restorePassword').value = ''
   $('#restoreConfirm').checked = false
   $('#restoreProgress').classList.add('hidden')
   $('#restoreProgress').value = 0
@@ -1169,6 +1236,8 @@ function restoreBackup() {
   }
   const restoreHeaders = { 'X-OmniShare-Confirm': 'RESTORE-BACKUP' }
   if (state.accessKey) restoreHeaders['X-OmniShare-Key'] = state.accessKey
+  const restorePassword = $('#restorePassword').value.trim()
+  if (restorePassword) restoreHeaders['X-OmniShare-Backup-Password'] = restorePassword
   const form = new FormData()
   form.append('backup', file)
   submit.disabled = true
@@ -1178,6 +1247,8 @@ function restoreBackup() {
   const xhr = new XMLHttpRequest()
   // Backups are capped by the server's backup limit, not by a fixed duration;
   // a slow link must not turn a valid restore into a timeout.
+  // 0 means "no total deadline". The server enforces an idle timeout instead,
+  // so a dead connection can still be reclaimed while a slow upload completes.
   xhr.timeout = 0
   xhr.open('POST', '/api/v1/restore')
   Object.entries(restoreHeaders).forEach(([name, value]) => xhr.setRequestHeader(name, value))
