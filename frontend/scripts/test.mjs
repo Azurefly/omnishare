@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 const root=resolve(import.meta.dirname,'..')
 const [html,js,runtimeBridge,themeJS,themeCSS,manifest,sw,packageText]=await Promise.all(['web/index.html','web/app.js','web/runtime-bridge.js','web/theme.js','web/theme.css','web/manifest.webmanifest','web/service-worker.js','package.json'].map(p=>readFile(resolve(root,p),'utf8')))
-const requiredIds=['notesPanel','filesPanel','padsPanel','sharesPanel','trashPanel','activityPanel','settingsDialog','authDialog','shareDialog','videoDialog','cfgAllowLAN','cfgListenAddress','cfgPublicBaseURL','cfgAllowedOrigins','noteMaxReads','editNoteBurn','editNoteMaxReads','themeToggle','cfgTheme']
+const requiredIds=['notesPanel','filesPanel','padsPanel','sharesPanel','trashPanel','activityPanel','settingsDialog','authDialog','shareDialog','videoDialog','cfgAllowLAN','cfgListenAddress','cfgPublicBaseURL','cfgAllowedOrigins','noteMaxReads','editNoteBurn','editNoteMaxReads','themeToggle','cfgTheme','restoreDialog','restoreFile','restoreConfirm','restoreSubmitBtn','restoreProgress','restoreStatus','loadMoreNotes','loadMoreFiles']
 for(const id of requiredIds) if(!html.includes(`id="${id}"`)) throw new Error(`missing UI id ${id}`)
 const routes=['/api/v1/dashboard','/api/v1/notes','/api/v1/files','/api/v1/pads','/api/v1/devices','/api/v1/shares','/api/v1/trash','/api/v1/audit','/api/v1/backup','/ticket']
 for(const route of routes) if(!js.includes(route)) throw new Error(`missing route ${route}`)
@@ -30,4 +30,6 @@ const packageJSON=JSON.parse(packageText)
 if(!sw.includes(`omnishare-v${packageJSON.version}`))throw new Error(`service worker cache version missing for ${packageJSON.version}`)
 for(const sensitive of ["'/s/'","'/media/'","'/api/'","'/n/'"])if(sw.includes(sensitive))throw new Error(`service worker mentions sensitive route ${sensitive}`)
 if(!sw.includes('STATIC_ASSETS.has(url.pathname)'))throw new Error('service worker is not static-allowlist based')
-console.log('Frontend security, recovery and theme contract checks passed')
+// These are static wiring contracts, not behaviour tests: the security and
+// recovery behaviour is covered by backend/internal/api tests.
+console.log('Frontend static contract checks passed')
