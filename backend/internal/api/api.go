@@ -1761,6 +1761,10 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applyRestore(archive string) error {
+	// Extraction already writes into uploads/.staging, so the exclusive lock has
+	// to cover the whole restore, not just the final rename.
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
 	zr, err := zip.OpenReader(archive)
 	if err != nil {
 		return err
@@ -1889,10 +1893,6 @@ func (s *Server) applyRestore(archive string) error {
 			return fmt.Errorf("backup file checksum mismatch: %s", item.ArchivePath)
 		}
 	}
-	// The exclusive window: no upload may add a blob and no download may hold a
-	// file open while the uploads directory is renamed.
-	s.uploadsMu.Lock()
-	defer s.uploadsMu.Unlock()
 	oldState, err := s.store.Snapshot()
 	if err != nil {
 		return err
