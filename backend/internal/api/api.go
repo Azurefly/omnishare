@@ -37,16 +37,16 @@ import (
 )
 
 const (
-	Version                  = buildinfo.Version
-	maxJSONBody              = 1 << 20
-	maxTTLSeconds            = 10 * 365 * 24 * 60 * 60
-	shareSessionDuration     = 30 * time.Minute
-	maxAuthEntries           = 4096
-	maxRestoreZIPEntries     = 10000
-	maxRestoreManifestFiles  = 5000
-	maxRestoreSingleFileSize = 4 << 30
-	maxRestoreTotalSize      = 16 << 30
-	maxRestoreCompressedSize = 8 << 30
+	Version                 = buildinfo.Version
+	maxJSONBody             = 1 << 20
+	maxTTLSeconds           = 10 * 365 * 24 * 60 * 60
+	shareSessionDuration    = 30 * time.Minute
+	maxAuthEntries          = 4096
+	maxRestoreZIPEntries    = 10000
+	maxRestoreManifestFiles = 5000
+	// multipartOverheadMB is head-room for the multipart envelope around an
+	// archive that is itself capped by the configured backup limit.
+	multipartOverheadMB = 64
 )
 
 type Server struct {
@@ -1604,6 +1604,8 @@ func (s *Server) generateBackup(path string) error {
 			paths = append(paths, p)
 		}
 		sort.Strings(paths)
+		limit := s.cfg.Get().BackupMaxMB * 1024 * 1024
+		var total int64
 		for _, p := range paths {
 			f := unique[p]
 			full := filepath.Join(s.dataDir, p)
@@ -1613,6 +1615,12 @@ func (s *Server) generateBackup(path string) error {
 			}
 			if info.Size() != f.FileSize || !fileHashMatches(full, f.FileHash) {
 				return fmt.Errorf("backup integrity failure for %s", f.ID)
+			}
+			total += info.Size()
+			if total > limit {
+				// Producing an archive restore would refuse is worse than failing
+				// here with an actionable message.
+				return fmt.Errorf("backup exceeds the configured %d MB limit; raise backup_max_mb first", s.cfg.Get().BackupMaxMB)
 			}
 			manifest.Files = append(manifest.Files, model.BackupFileManifest{ID: f.ID, ArchivePath: filepath.ToSlash(p), Size: info.Size(), SHA256: f.FileHash})
 		}
@@ -1685,7 +1693,10 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, 400, "restore requires X-OmniShare-Confirm: RESTORE-BACKUP", nil)
 		return
 	}
-	max := s.cfg.Get().MaxUploadMB*1024*1024 + 64*1024*1024
+	// Restore accepts a backup no larger than the export allows; the old
+	// MaxUploadMB-derived cap silently rejected archives the server had just
+	// produced.
+	max := s.cfg.Get().BackupMaxMB*1024*1024 + multipartOverheadMB*1024*1024
 	r.Body = http.MaxBytesReader(w, r.Body, max)
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -1745,6 +1756,7 @@ func (s *Server) applyRestore(archive string) error {
 		return errors.New("backup contains too many ZIP entries")
 	}
 	entries := map[string]*zip.File{}
+	limit := uint64(s.cfg.Get().BackupMaxMB) << 20
 	var compressedTotal, uncompressedTotal uint64
 	for _, f := range zr.File {
 		clean := filepath.ToSlash(filepath.Clean(f.Name))
@@ -1757,14 +1769,14 @@ func (s *Server) applyRestore(archive string) error {
 		entries[clean] = f
 		compressedTotal += uint64(f.CompressedSize64)
 		uncompressedTotal += f.UncompressedSize64
-		if uncompressedTotal > maxRestoreTotalSize {
-			return errors.New("backup uncompressed size exceeds limit")
+		if uncompressedTotal > limit {
+			return errors.New("backup uncompressed size exceeds the configured backup limit")
 		}
-		if f.UncompressedSize64 > maxRestoreSingleFileSize {
+		if f.UncompressedSize64 > limit {
 			return fmt.Errorf("backup file exceeds size limit: %s", clean)
 		}
-		if compressedTotal > maxRestoreCompressedSize {
-			return errors.New("backup compressed size exceeds limit")
+		if compressedTotal > limit {
+			return errors.New("backup compressed size exceeds the configured backup limit")
 		}
 	}
 	manifestFile, stateFile, configFile := entries["backup-manifest.json"], entries["omnishare.json"], entries["config.json"]
@@ -1804,12 +1816,12 @@ func (s *Server) applyRestore(archive string) error {
 			return fmt.Errorf("backup manifest contains duplicate path: %s", clean)
 		}
 		manifestPaths[clean] = struct{}{}
-		if item.Size < 0 || uint64(item.Size) > maxRestoreSingleFileSize {
+		if item.Size < 0 || uint64(item.Size) > limit {
 			return fmt.Errorf("backup file exceeds size limit: %s", clean)
 		}
 		manifestTotal += uint64(item.Size)
-		if manifestTotal > maxRestoreTotalSize {
-			return errors.New("backup manifest size exceeds limit")
+		if manifestTotal > limit {
+			return errors.New("backup manifest size exceeds the configured backup limit")
 		}
 		if entries[clean] == nil {
 			return fmt.Errorf("backup file missing: %s", item.ArchivePath)

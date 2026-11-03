@@ -176,6 +176,7 @@ function fillSettings() {
   $('#cfgRetention').value = state.config.retention_days ?? 0
   $('#cfgTrashRetention').value = state.config.trash_retention_days ?? 30
   $('#cfgMaxUpload').value = state.config.max_upload_mb || 4096
+  $('#cfgBackupMax').value = state.config.backup_max_mb || 16384
   $('#cfgAutoOpen').checked = !!state.config.auto_open_browser
   $('#cfgAllowLAN').checked = !!state.config.allow_lan
   $('#cfgListenAddress').value = state.config.listen_address || '127.0.0.1'
@@ -218,6 +219,7 @@ async function saveSettings() {
   const payload = {
     node_name: $('#cfgNodeName').value.trim(),
     max_upload_mb: Number($('#cfgMaxUpload').value),
+    backup_max_mb: Number($('#cfgBackupMax').value),
     retention_days: Number($('#cfgRetention').value),
     trash_retention_days: Number($('#cfgTrashRetention').value),
     auto_open_browser: $('#cfgAutoOpen').checked,

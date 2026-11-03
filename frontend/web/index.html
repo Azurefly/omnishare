@@ -306,6 +306,11 @@
           单文件上传上限（MB）
           <input id="cfgMaxUpload" type="number" min="1" max="1048576" />
         </label>
+        <label>
+          备份上限（MB）
+          <input id="cfgBackupMax" type="number" min="1" max="1048576" />
+          <small>导出与恢复共用这一上限，默认 16384 MB。</small>
+        </label>
         <label class="switch-row">
           <span>启动时自动打开浏览器</span>
           <input id="cfgAutoOpen" type="checkbox" />

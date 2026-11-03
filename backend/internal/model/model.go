@@ -66,6 +66,7 @@ type AppConfig struct {
 	PublicBaseURL       string       `json:"public_base_url,omitempty"`
 	AutoOpenBrowser     bool         `json:"auto_open_browser"`
 	MaxUploadMB         int64        `json:"max_upload_mb"`
+	BackupMaxMB         int64        `json:"backup_max_mb"`
 	RetentionDays       int          `json:"retention_days"`
 	TrashRetentionDays  int          `json:"trash_retention_days"`
 	AllowedOrigins      []string     `json:"allowed_origins,omitempty"`
@@ -91,6 +92,7 @@ type PublicConfig struct {
 	PublicBaseURL      string       `json:"public_base_url,omitempty"`
 	AutoOpenBrowser    bool         `json:"auto_open_browser"`
 	MaxUploadMB        int64        `json:"max_upload_mb"`
+	BackupMaxMB        int64        `json:"backup_max_mb"`
 	RetentionDays      int          `json:"retention_days"`
 	TrashRetentionDays int          `json:"trash_retention_days"`
 	HasAccessKey       bool         `json:"has_access_key"`

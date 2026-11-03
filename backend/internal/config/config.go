@@ -27,6 +27,7 @@ import (
 const (
 	defaultPort          = 8081
 	defaultUploadMB      = 4096
+	defaultBackupMB      = 16384
 	defaultTrashDays     = 30
 	defaultKeyIterations = 210_000
 	maxPeers             = 32
@@ -63,6 +64,7 @@ func New(dataDir string, port int, nodeName string) (*Manager, error) {
 			ListenAddress:       "127.0.0.1",
 			AutoOpenBrowser:     true,
 			MaxUploadMB:         defaultUploadMB,
+			BackupMaxMB:         defaultBackupMB,
 			TrashRetentionDays:  defaultTrashDays,
 			AccessKeyIterations: defaultKeyIterations,
 			AllowedOrigins:      []string{},
@@ -119,6 +121,9 @@ func (m *Manager) applyDefaults(abs string) {
 	}
 	if m.cfg.MaxUploadMB <= 0 {
 		m.cfg.MaxUploadMB = defaultUploadMB
+	}
+	if m.cfg.BackupMaxMB <= 0 {
+		m.cfg.BackupMaxMB = defaultBackupMB
 	}
 	if m.cfg.TrashRetentionDays <= 0 {
 		m.cfg.TrashRetentionDays = defaultTrashDays
@@ -250,6 +255,7 @@ func (m *Manager) Public() model.PublicConfig {
 		PublicBaseURL:      cfg.PublicBaseURL,
 		AutoOpenBrowser:    cfg.AutoOpenBrowser,
 		MaxUploadMB:        cfg.MaxUploadMB,
+		BackupMaxMB:        cfg.BackupMaxMB,
 		RetentionDays:      cfg.RetentionDays,
 		TrashRetentionDays: cfg.TrashRetentionDays,
 		HasAccessKey:       cfg.AccessKeyHash != "",
@@ -359,6 +365,9 @@ func (m *Manager) Update(req model.AppConfig) error {
 	candidate.PublicBaseURL = strings.TrimSpace(req.PublicBaseURL)
 	if req.MaxUploadMB > 0 {
 		candidate.MaxUploadMB = req.MaxUploadMB
+	}
+	if req.BackupMaxMB > 0 {
+		candidate.BackupMaxMB = req.BackupMaxMB
 	}
 	if req.RetentionDays >= 0 {
 		candidate.RetentionDays = req.RetentionDays
@@ -472,6 +481,9 @@ func (m *Manager) RestoreJSON(data []byte) error {
 	if candidate.MaxUploadMB <= 0 {
 		candidate.MaxUploadMB = defaultUploadMB
 	}
+	if candidate.BackupMaxMB <= 0 {
+		candidate.BackupMaxMB = defaultBackupMB
+	}
 	if candidate.TrashRetentionDays <= 0 {
 		candidate.TrashRetentionDays = defaultTrashDays
 	}
@@ -561,6 +573,9 @@ func validateConfig(cfg model.AppConfig) error {
 	}
 	if cfg.MaxUploadMB < 1 || cfg.MaxUploadMB > 1024*1024 {
 		return errors.New("max upload size is out of range")
+	}
+	if cfg.BackupMaxMB < 1 || cfg.BackupMaxMB > 1024*1024 {
+		return errors.New("backup size limit is out of range")
 	}
 	if cfg.RetentionDays < 0 || cfg.RetentionDays > 36500 || cfg.TrashRetentionDays < 1 || cfg.TrashRetentionDays > 36500 {
 		return errors.New("retention setting is out of range")
