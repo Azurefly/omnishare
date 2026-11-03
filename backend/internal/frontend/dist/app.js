@@ -620,7 +620,9 @@ function uploadOne({file, ttl}) {
       attempt++
       xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/v1/files/upload')
-      xhr.timeout = 120000
+      // 120 s used to fail any upload below ~35 MB of bandwidth. Budget by size
+      // with a 64 KB/s floor and a 5 minute minimum instead of a fixed clock.
+      xhr.timeout = Math.max(5 * 60 * 1000, Math.ceil(file.size / (64 * 1024)) * 1000)
       if (state.accessKey) xhr.setRequestHeader('X-OmniShare-Key', state.accessKey)
       pct.textContent = attempt > 1 ? `重试 ${attempt - 1}` : '0%'
       progress.value = 0
