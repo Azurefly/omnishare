@@ -18,6 +18,7 @@ assert.deepEqual(linux[1], { args: ['bundle', '--bundles', 'rpm'], config: { ver
 assert.deepEqual(buildPlan('1.3.0', 'linux'), [{ args: ['build'] }]);
 assert.deepEqual(buildPlan('1.3.0-rc2', 'linux', ['--no-bundle']), [{ args: ['build', '--no-bundle'] }]);
 assert.equal(buildPlan('1.3.0-rc2', 'linux', ['--bundles=deb']).length, 1);
+assert.deepEqual(buildPlan('1.3.0-rc2', 'linux', ['--help']), [{ args: ['build', '--help'] }]);
 const rpm = buildPlan('1.3.0-rc2', 'linux', ['--bundles', 'rpm', '--target', 'x86_64-unknown-linux-gnu', '--debug']);
 assert.ok(rpm[0].args.includes('--no-bundle'));
 assert.deepEqual(rpm[1].args, ['bundle', '--target', 'x86_64-unknown-linux-gnu', '--debug', '--bundles', 'rpm']);
