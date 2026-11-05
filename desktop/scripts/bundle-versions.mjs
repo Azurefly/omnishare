@@ -16,6 +16,9 @@ export function bundleVersions(version) {
 }
 
 export function buildPlan(version, platform, args = []) {
+  if (args.some(arg => ['--help', '-h', '--version', '-V'].includes(arg))) {
+    return [{ args: ['build', ...args] }];
+  }
   const versions = bundleVersions(version);
   if (platform === 'win32') {
     return [{ args: ['build', ...args], config: { bundle: { windows: { wix: { version: versions.msi } } } } }];
