@@ -9,6 +9,7 @@
 .DS_Store
 Thumbs.db
 node_modules/
+frontend/test-results/
 backend/omnishare
 backend/data/
 data/

@@ -6,45 +6,45 @@ OmniShare 是面向个人、家庭、小团队和内网环境的私有化多设�
 
 | 组成 | 版本或分支 | 状态 |
 |---|---:|---|
-| 后端与 Web | `v1.3.0-rc3` | Release Candidate，Windows/Linux/macOS 的 AMD64/ARM64 便携包 |
-| Windows/Linux 桌面 | `v1.3.0-rc3` | 同版本预发布，Tauri x64 安装包 |
+| 后端与 Web | `v1.3.0-rc4` | Release Candidate，Windows/Linux/macOS 的 AMD64/ARM64 便携包 |
+| Windows/Linux 桌面 | `v1.3.0-rc4` | 同版本预发布，Tauri x64 安装包 |
 | macOS Tauri 桌面 | 源码与 CI 验证 | Universal 构建可用；公开签名、公证分发待完成 |
-| `main` 主分支 | 统一开发基线 | 已整合安全加固、SQLite、v3 加密备份、恢复与受限阅读修复、桌面初始化及主题功能 |
+| `main` 主分支 | 统一开发基线 | 统一源码与发布，包含安全备份、工作区改版、剪贴板确认与传输队列 |
 
-> **版本边界：** `v1.3.0-rc3` 将后端、Web 和 Windows/Linux 桌面统一为一个候选版本。下载内容以该 Release 的实际附件为准。旧 `v1.0.1-desktop` 不包含下述整合更新，已有用户升级前应先备份并核对数据目录。升级步骤和已知限制见 [RC3 发布说明](docs/RELEASE_NOTES_v1.3.0-rc3.md)。
+> **版本边界：** `v1.3.0-rc4` 将后端、Web 和 Windows/Linux 桌面统一为一个候选版本。下载内容以该 Release 的实际附件为准。旧 `v1.0.1-desktop` 不包含下述整合更新，已有用户升级前应先备份并核对数据目录。升级步骤和已知限制见 [RC4 发布说明](docs/RELEASE_NOTES_v1.3.0-rc4.md)。
 
-### RC3 更新
+### RC4 更新
 
 | 范围 | 使用上的变化 |
 |---|---|
-| SQLite 存储 | 默认使用 SQLite WAL；旧 JSON 数据可自动迁移。已有数据库损坏或无法打开时明确报错，避免误用迁移前的旧数据。 |
-| 加密备份 | 新 `.osb` 使用 v3 格式，校验完整包头、数据顺序和结束记录；继续读取旧 v2 `.osb` 与 ZIP。 |
-| 恢复与计数 | 失败恢复保留最终切换前已成功完成的写入；修复阅读上限、并发阅后即焚与缓冲计数一致性。 |
-| 首次桌面启动 | 桌面端为自己启动的后端自动交接初始化令牌，首次进入后即可配置访问密钥。 |
-| 浏览器与文档 | 会话存储不可用时页面仍可使用；保存失败保留最新草稿，备份取消与写入失败会停止下载，恢复过程防止重复提交。 |
-| 界面主题 | Web、PWA 和桌面端支持跟随系统、白天和黑夜模式。 |
+| 工作区布局 | 桌面左侧集中导航、设备与存储，右侧保留一个主工作区；移动端保留连接状态和可滚动导航。 |
+| 剪贴板发送 | 点击读取纯文本或 PNG，预览内容、目标节点和保留时长后再确认发送；默认保留 24 小时。不会在后台监控或自动同步剪贴板。 |
+| 传输队列 | 所有排队任务立即可见；支持取消、手动重试和清理记录。重试也受最多 3 个并发限制，错误保留在任务行内。 |
+| 设备状态 | 按当前节点、在线和离线分组；发现设备仅表示可找到节点，打开其他节点仍需独立验证。 |
+| 视觉与交互 | 统一图标、间距、卡片和焦点样式，设置按用途分组，改善浅色主题状态文字与危险按钮的对比度。 |
+| 发布校验 | 服务器 DEB 的公开文件名采用 `-rc4`，内部 Debian 版本仍使用 `~rc4`；发布后再次核对公开附件名称与 SHA-256。 |
 
-实现与验证记录见 [分支整合与可靠性优化](docs/INTEGRATION_2026-11-07.md)。
+本轮参考 Oink 的设备组织、剪贴板入口和任务状态设计独立实现，未引入其源码、品牌素材、键鼠驱动或音频组件。具体实现、安全边界和参考版本见 [Oink 功能与界面吸收记录](docs/OINK_ADOPTION.md)。此前的 SQLite、v3 加密备份和桌面可靠性更新继续保留，见 [分支整合记录](docs/INTEGRATION_2026-11-07.md)。
 
 ## 下载与版本选择
 
-- [OmniShare v1.3.0-rc3：服务器便携包与 Windows/Linux 桌面安装包](https://github.com/Azurefly/omnishare/releases/tag/v1.3.0-rc3)
-- [RC3 更新、升级与备份兼容说明](docs/RELEASE_NOTES_v1.3.0-rc3.md)
+- [OmniShare v1.3.0-rc4：服务器便携包与 Windows/Linux 桌面安装包](https://github.com/Azurefly/omnishare/releases/tag/v1.3.0-rc4)
+- [RC4 更新、升级与备份兼容说明](docs/RELEASE_NOTES_v1.3.0-rc4.md)
 - [全部 Releases](https://github.com/Azurefly/omnishare/releases)
 
 Windows x64 桌面用户优先选择：
 
 ```text
-OmniShare_1.3.0-rc3_x64-setup.exe
+OmniShare_1.3.0-rc4_x64-setup.exe
 ```
 
 需要 MSI 部署时选择：
 
 ```text
-OmniShare_1.3.0-rc3_x64_en-US.msi
+OmniShare_1.3.0-rc4_x64_en-US.msi
 ```
 
-Linux x64 桌面根据发行版选择 `OmniShare` AppImage、DEB 或 RPM。Windows/Linux/macOS 的 AMD64、ARM64 便携包名称以 `OmniShare-v1.3.0-rc3-` 开头，提供单后端进程和浏览器界面；Linux 小写 `omnishare_1.3.0~rc3_*.deb` 属于服务器包。Windows ARM64 使用对应便携包。
+Linux x64 桌面根据发行版选择 `OmniShare` AppImage、DEB 或 RPM。Windows/Linux/macOS 的 AMD64、ARM64 便携包名称以 `OmniShare-v1.3.0-rc4-` 开头，提供单后端进程和浏览器界面；Linux 小写 `omnishare_1.3.0-rc4_*.deb` 属于服务器包。Windows ARM64 使用对应便携包。
 
 Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清单，以及 Windows 安装布局与后端自动恢复测试的 JUnit/JSON 证据。
 
@@ -58,6 +58,14 @@ Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清�
 - Windows MSI 安装布局测试会强制终止后端并验证新进程恢复，同时校验本机设备条目恰好为 1。
 - npm、Cargo 与 Tauri bundle 版本必须一致，否则发布契约失败。
 
+## 剪贴板与文件传输
+
+在“随手记”点击“从剪贴板发送”，浏览器会请求相应读取权限。预览确认框展示内容、当前节点地址与保留时长；确认后，纯文本保存为随手记，PNG 图片进入文件传输队列。取消会清空预览，内容不会自动上传，也不会保存到浏览器长期存储。剪贴板读取通常需要 HTTPS 或本机地址；不支持的浏览器仍可手动粘贴文本或选择文件。
+
+剪贴板预览限制为 256 KB 纯文本或 16 MB PNG，图片还受节点上传上限和解码尺寸限制；HTML、SVG 等富内容不会作为活动页面导入。发送目标是当前打开的 OmniShare 节点，其他设备通过该节点访问内容；这不是后台点对点剪贴板同步。
+
+文件区显示排队、上传、服务端处理中、完成、失败和取消状态。取消排队任务不会发出请求；取消正在上传的任务会停止当前连接，但无法撤回服务端已经保存的数据。发生连接中断时，应先检查文件列表再手动重试，以免重复创建逻辑文件。上传不提供分片断点续传；下载和视频播放继续支持 HTTP Range。
+
 ## 界面主题
 
 主题功能已经合并到 `main`，适用于 Web、PWA 和 Tauri 桌面端。
@@ -67,8 +75,8 @@ Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清�
 页面顶部工具栏提供主题按钮：
 
 ```text
-☀ 白天
-☾ 黑夜
+浅色
+深色
 ```
 
 点击后会在浅色与深色之间立即切换，无需刷新页面或重启桌面程序。
@@ -78,7 +86,7 @@ Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清�
 进入：
 
 ```text
-系统设置 → 界面主题
+设置 → 常规与外观 → 界面主题
 ```
 
 可选择：
@@ -136,7 +144,7 @@ Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清�
 
 ### 备份与恢复
 
-1. 点击“导出备份”，设置口令可生成加密 `.osb`；留空生成明文 ZIP。口令不会写入数据目录，恢复加密包需要相同口令。
+1. 在“设置 → 存储与保留”点击“导出备份”，设置口令可生成加密 `.osb`；留空生成明文 ZIP。口令不会写入数据目录，恢复加密包需要相同口令。
 2. 支持 File System Access API 的浏览器先选择保存位置，再生成并分块写入备份；取消选择不会开始导出，写入失败会停止下载。
 3. 不支持该 API 的浏览器使用内存缓冲下载，上限为 2 GB；即使响应没有提供文件长度，也会按实际接收字节限制。更大的备份需要支持流式保存的浏览器。
 4. 恢复时选择备份文件、填写加密口令并确认覆盖。一次恢复完成前不会重复提交；服务端先解压和校验，再切换数据。
@@ -372,11 +380,11 @@ MSI 真实运行测试发现，后端在 Windows 上完成配置文件同步和�
 - Windows 托盘物理可见性和点击行为仍需在 Windows 10/11 真机完成最终验收。
 - macOS 正式分发仍依赖 Apple Developer ID、公证和真机 Gatekeeper 验收。
 - 清除密钥或恢复无密钥配置后的初始化令牌续发、自动清理与恢复的文件协调、审计锚点在备份恢复中的完整保存仍属后续专项，详见[整合记录](docs/INTEGRATION_2026-11-07.md#后续专项)。
-- RC3 仍为候选版本，下载能力以对应 Release 的实际附件为准；旧 `v1.0.1-desktop` 不包含本轮整合更新。
+- RC4 仍为候选版本，下载能力以对应 Release 的实际附件为准；旧 `v1.0.1-desktop` 不包含本轮整合更新。
 
 ## 文档
 
-- [v1.3.0-rc3 发布与升级说明](docs/RELEASE_NOTES_v1.3.0-rc3.md)
+- [v1.3.0-rc4 发布与升级说明](docs/RELEASE_NOTES_v1.3.0-rc4.md)
 - [2026-11-07 分支整合与可靠性优化](docs/INTEGRATION_2026-11-07.md)
 - [Desktop v1.0.0 发布说明](docs/RELEASE_NOTES_v1.0.0-desktop.md)
 - [桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)

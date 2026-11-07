@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#090d18" />
+  <meta name="theme-color" content="#0b1020" />
   <meta name="description" content="OmniShare 私有化跨设备速记、文件与协同工作台" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
@@ -13,6 +13,33 @@
   <title>OmniShare</title>
 </head>
 <body>
+  <a class="skip-link" href="#mainContent">跳至主要内容</a>
+  <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></symbol>
+    <symbol id="icon-note" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h4"/></symbol>
+    <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="icon-document" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></symbol>
+    <symbol id="icon-link" viewBox="0 0 24 24"><path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 0) scale(.92 1)"/></symbol>
+    <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+    <symbol id="icon-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--surface)"/><circle cx="15" cy="17" r="3" fill="var(--surface)"/></symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></symbol>
+    <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M4 16v5h16v-5"/></symbol>
+    <symbol id="icon-restore" viewBox="0 0 24 24"><path d="M3 4v6h6M3 10a9 9 0 1 1 1 8M12 7v5l3 2"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 4v6h-6M4 20v-6h6M20 10a8 8 0 0 0-14-5M4 14a8 8 0 0 0 14 5"/></symbol>
+    <symbol id="icon-clipboard" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="3" width="6" height="4" rx="1" fill="var(--surface)"/><path d="M9 12h6M9 16h4"/></symbol>
+    <symbol id="icon-send" viewBox="0 0 24 24"><path d="m3 4 18 8-18 8 3-8-3-8Zm3 8h15"/></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="icon-save" viewBox="0 0 24 24"><path d="M4 3h13l3 3v15H4V3Z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/></symbol>
+    <symbol id="icon-device" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+  </defs>
+</svg>
   <div id="app">
     <header class="topbar">
       <div class="brand">
@@ -24,60 +51,102 @@
           </svg>
         </div>
         <div>
-          <h1>OmniShare</h1>
-          <p>私有化多设备内容中枢</p>
+          <p class="brand-name">OmniShare</p>
+          <p class="brand-caption">私有内容工作台</p>
         </div>
       </div>
       <div class="top-actions">
-        <span id="healthBadge" class="badge muted"><i></i>连接中</span>
-        <button id="installBtn" class="button ghost hidden">📲 安装到桌面</button>
-        <button id="themeToggle" type="button" class="button ghost theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题">☀ 白天</button>
-        <button id="backupBtn" class="button ghost" title="导出全系统备份压缩包（未加密 ZIP，请妥善保管）">📦 导出备份</button>
-        <button id="restoreBtn" class="button ghost" title="从备份压缩包恢复数据（会覆盖当前数据）">♻️ 从备份恢复</button>
-        <button id="settingsBtn" class="button" title="节点网络与安全设置">⚙️ 系统设置</button>
+        <span id="healthBadge" class="badge muted" role="status" aria-live="polite"><i></i>连接中</span>
+        <button id="installBtn" class="button ghost hidden"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-download"></use></svg><span>安装应用</span></button>
+        <button id="themeToggle" type="button" class="button ghost theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-sun"></use></svg><span>浅色</span></button>
+        <button id="settingsBtn" class="button" title="节点网络与安全设置"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-settings"></use></svg><span>设置</span></button>
       </div>
     </header>
 
-    <main class="shell">
+    <div class="shell">
       <div class="workspace">
-        <section class="content-column">
+        <aside class="app-rail" aria-label="工作区导航与节点信息">
+          <div class="rail-navigation">
+            <p class="rail-label">工作空间</p>
           <nav class="tabs" aria-label="主功能导航">
-            <button class="tab active" data-tab="dashboard"><span class="tab-icon">⌂</span><span>工作台</span></button>
-            <button class="tab" data-tab="notes"><span class="tab-icon">✎</span><span>随手记</span></button>
-            <button class="tab" data-tab="files"><span class="tab-icon">⇧</span><span>文件与视频</span></button>
-            <button class="tab" data-tab="pads"><span class="tab-icon">▤</span><span>协同文档</span></button>
-            <button class="tab" data-tab="shares"><span class="tab-icon">↗</span><span>安全分享</span></button>
-            <button class="tab" data-tab="trash"><span class="tab-icon">♲</span><span>回收站</span></button>
-            <button class="tab" data-tab="activity"><span class="tab-icon">◷</span><span>活动记录</span></button>
+            <button type="button" class="tab active" aria-current="page" data-tab="dashboard"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-home"></use></svg><span>工作台</span></button>
+            <button type="button" class="tab" data-tab="notes"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-note"></use></svg><span>随手记</span></button>
+            <button type="button" class="tab" data-tab="files"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-folder"></use></svg><span>文件与传输</span></button>
+            <button type="button" class="tab" data-tab="pads"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg><span>协同文档</span></button>
+            <button type="button" class="tab" data-tab="shares"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>安全分享</span></button>
+            <button type="button" class="tab" data-tab="trash"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>回收站</span></button>
+            <button type="button" class="tab" data-tab="activity"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-activity"></use></svg><span>活动记录</span></button>
           </nav>
+          </div>
+          <details class="sidebar-disclosure" open>
+            <summary><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-device"></use></svg><span>设备与存储</span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-chevron"></use></svg></summary>
+        <div class="sidebar">
+          <article class="card">
+            <div class="card-title">
+              <div>
+                <h2>设备与网络</h2>
+                <p>发现与连接状态，不代表访问授权</p>
+              </div>
+              <button id="refreshDevicesBtn" type="button" class="icon-button" title="刷新设备列表" aria-label="刷新设备列表"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg></button>
+            </div>
+            <div id="deviceList" class="device-list"></div>
+            <p id="nodeSecuritySummary" class="security-summary" role="status">正在检查当前节点的访问设置…</p>
+          </article>
 
+          <article class="card storage-card">
+            <div class="card-title">
+              <div>
+                <h2>存储概览</h2>
+                <p id="dataDirText">本机私有存储（路径未通过 API 暴露）</p>
+              </div>
+            </div>
+            <p id="storageBar" class="storage-capacity-note">未设置总容量配额</p>
+            <div class="storage-footer">
+              <span id="storageUsed">已用 0 B</span>
+              <span id="uploadLimit">单文件上限 —</span>
+            </div>
+          </article>
+
+          <article class="card tips">
+            <h2>连接其他设备</h2>
+            <p>在另一台设备的浏览器中打开节点地址，并单独验证访问密钥。跨网段的节点可在设置中手动添加。</p>
+          </article>
+        </div>
+          </details>
+          <p class="rail-footer">本地优先 · 自主管理</p>
+        </aside>
+        <main id="mainContent" class="content-column" tabindex="-1">
+          <header class="workspace-heading">
+            <div><p class="eyebrow">OMNISHARE</p><h1 id="workspaceTitle">工作台</h1></div>
+            <p class="workspace-description">内容随手可得，分享由你决定。</p>
+          </header>
           <section id="dashboardPanel" class="panel-view active">
             <div class="module-hero">
-              <span class="module-kicker">OVERVIEW</span>
-              <h2>工作台概览</h2>
-              <p>集中查看节点状态、内容统计、存储使用和已连接设备。通过导航进入各个独立功能模块。</p>
+              <span class="module-kicker">属于你的工作空间</span>
+              <h2>记录、传递、继续创作。</h2>
+              <p>文本、文件与文档集中保存在当前节点。选择一个入口，开始今天的工作。</p>
             </div>
             <section id="stats" class="stats-grid" aria-label="系统统计"></section>
             <div class="dashboard-grid">
               <article class="card dashboard-card">
-                <span class="dashboard-card-icon">✎</span>
+                <span class="dashboard-card-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-note"></use></svg></span>
                 <div><h3>随手记</h3><p>快速记录文本、代码和剪贴板内容。</p></div>
-                <button class="button ghost small dashboard-link" data-target-tab="notes">进入模块</button>
+                <button class="button ghost small dashboard-link" data-target-tab="notes" aria-label="进入随手记"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-arrow"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
               <article class="card dashboard-card">
-                <span class="dashboard-card-icon">⇧</span>
-                <div><h3>文件与视频</h3><p>独立管理上传、下载、播放和文件分享。</p></div>
-                <button class="button ghost small dashboard-link" data-target-tab="files">进入模块</button>
+                <span class="dashboard-card-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-folder"></use></svg></span>
+                <div><h3>文件与传输</h3><p>独立管理上传、下载、播放和文件分享。</p></div>
+                <button class="button ghost small dashboard-link" data-target-tab="files" aria-label="进入文件与传输"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-arrow"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
               <article class="card dashboard-card">
-                <span class="dashboard-card-icon">▤</span>
+                <span class="dashboard-card-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg></span>
                 <div><h3>协同文档</h3><p>编辑支持版本保护和自动保存的文档。</p></div>
-                <button class="button ghost small dashboard-link" data-target-tab="pads">进入模块</button>
+                <button class="button ghost small dashboard-link" data-target-tab="pads" aria-label="进入协同文档"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-arrow"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
               <article class="card dashboard-card">
-                <span class="dashboard-card-icon">↗</span>
+                <span class="dashboard-card-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg></span>
                 <div><h3>分享与审计</h3><p>管理匿名外链、回收站和操作记录。</p></div>
-                <button class="button ghost small dashboard-link" data-target-tab="shares">进入模块</button>
+                <button class="button ghost small dashboard-link" data-target-tab="shares" aria-label="进入安全分享"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-arrow"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
             </div>
           </section>
@@ -87,69 +156,79 @@
               <div class="card-title">
                 <div>
                   <h2>新建随手记</h2>
-                  <p>文本、代码、Markdown 与剪贴板片段统一收集（支持 Ctrl+Enter 快捷发布）</p>
+                  <p>记录文本、代码或灵感。按 Ctrl+Enter 发布。</p>
                 </div>
-                <button id="pasteBtn" class="button ghost small" title="快速读取剪贴板内容">📋 读取剪贴板</button>
+                <button id="pasteBtn" type="button" class="button ghost small" title="预览剪贴板内容，确认后发送到当前节点"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-clipboard"></use></svg><span>从剪贴板发送</span></button>
               </div>
+              <label for="noteContent" class="visually-hidden">随手记正文</label>
               <textarea id="noteContent" rows="5" placeholder="输入随手记内容，正文中的 #标签 会自动识别提取..."></textarea>
               <div class="form-row">
-                <input id="noteTags" placeholder="自定义标签（逗号分隔，如：工作, 待办）" />
-                <select id="noteTTL" title="选择内容有效期">
+                <label for="noteTags" class="visually-hidden">自定义标签</label><input id="noteTags" placeholder="自定义标签（逗号分隔，如：工作, 待办）" />
+                <label for="noteTTL" class="visually-hidden">随手记保留时长</label><select id="noteTTL" title="选择内容有效期">
                   <option value="0">永久保存</option>
                   <option value="3600">1 小时</option>
                   <option value="86400">24 小时</option>
                   <option value="604800">7 天</option>
                   <option value="2592000">30 天</option>
                 </select>
-                <input id="noteMaxReads" type="number" min="0" max="1000000" value="0" placeholder="最大读取次数（0 表示不限）" />
+                <label for="noteMaxReads" class="visually-hidden">最大读取次数，0 表示不限</label><input id="noteMaxReads" type="number" min="0" max="1000000" value="0" placeholder="最大读取次数（0 表示不限）" />
               </div>
               <div class="toolbar">
                 <div class="switch-group">
-                  <label><input id="notePinned" type="checkbox" /> 📌 置顶</label>
-                  <label><input id="noteBurn" type="checkbox" /> 🔥 阅后即焚</label>
+                  <label><input id="notePinned" type="checkbox" /> 置顶</label>
+                  <label><input id="noteBurn" type="checkbox" /> 阅后即焚</label>
                 </div>
-                <button id="createNoteBtn" class="button primary">✨ 发布速记</button>
+                <button id="createNoteBtn" class="button primary"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg><span>发布随手记</span></button>
               </div>
             </article>
             <div class="list-toolbar">
-              <input id="noteSearch" type="search" placeholder="🔍 搜索速记内容或标签..." />
-              <select id="noteTagFilter"><option value="">全部标签</option></select>
+              <input id="noteSearch" type="search" placeholder="搜索内容或标签…" aria-label="搜索随手记" />
+              <select id="noteTagFilter" aria-label="按标签筛选随手记"><option value="">全部标签</option></select>
               <span id="noteCount" class="muted-text"></span>
             </div>
             <div id="notesList" class="stack"></div>
-            <button id="loadMoreNotes" class="button ghost hidden" style="width:100%;margin-top:10px">加载更多</button>
+            <button id="loadMoreNotes" class="button ghost load-more hidden">加载更多</button>
           </section>
 
           <!-- 文件与视频 Panel -->
           <section id="filesPanel" class="panel-view">
             <article id="dropZone" class="drop-zone" tabindex="0" role="region" aria-label="文件上传区域">
               <input id="fileInput" type="file" multiple hidden />
-              <div class="drop-icon" aria-hidden="true">⇧</div>
-              <h2>拖拽文件到这里上传</h2>
-              <p>支持多文件并发队列、流式大文件传输、视频在线播放与 HTTP Range 断点续传</p>
+              <div class="drop-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg></div>
+              <h2>把文件放到这里</h2>
+              <p>拖入或选择文件，上传到当前节点。视频可在线播放；下载支持分段读取。</p>
               <div class="form-row compact">
-                <select id="fileTTL" title="文件有效期">
+                <label for="fileTTL" class="visually-hidden">上传文件保留时长</label><select id="fileTTL" title="文件有效期">
                   <option value="0">永久保存</option>
                   <option value="86400">保留 24 小时</option>
                   <option value="604800">保留 7 天</option>
                   <option value="2592000">保留 30 天</option>
                 </select>
-                <button id="chooseFilesBtn" class="button primary">📁 选择文件</button>
+                <button id="chooseFilesBtn" class="button primary"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>选择文件</span></button>
               </div>
             </article>
-            <div id="uploadQueue" class="stack compact-stack"></div>
+            <section class="transfer-panel" aria-labelledby="transferHeading">
+              <div class="transfer-panel-head">
+                <div><h3 id="transferHeading">传输队列</h3><p id="transferSummary" class="muted-text" role="status" aria-live="polite">等待上传</p></div>
+                <div class="inline-actions">
+                  <button id="cancelAllUploadsBtn" type="button" class="button ghost small" disabled>取消未完成</button>
+                  <button id="clearFinishedUploadsBtn" type="button" class="button ghost small" disabled>清除已结束</button>
+                </div>
+              </div>
+              <div id="uploadQueue" class="upload-queue stack"></div>
+            </section>
             <div class="list-toolbar">
-              <input id="fileSearch" type="search" placeholder="🔍 搜索文件名或类型..." />
-              <select id="fileType">
+              <input id="fileSearch" type="search" placeholder="搜索文件名或类型…" aria-label="搜索文件" />
+              <select id="fileType" aria-label="按文件类型筛选">
                 <option value="">全部类型</option>
-                <option value="video">🎬 视频</option>
-                <option value="image">🖼 图片</option>
-                <option value="document">📄 文档与其它</option>
+                <option value="video">视频</option>
+                <option value="image">图片</option>
+                <option value="document">文档与其他</option>
               </select>
               <span id="fileCount" class="muted-text"></span>
             </div>
             <div id="filesList" class="file-grid"></div>
-            <button id="loadMoreFiles" class="button ghost hidden" style="width:100%;margin-top:10px">加载更多</button>
+            <button id="loadMoreFiles" class="button ghost load-more hidden">加载更多</button>
           </section>
 
           <!-- 协同文档 Panel -->
@@ -159,30 +238,31 @@
                 <div class="card-title">
                   <div>
                     <h2>协同文档</h2>
-                    <p>乐观锁版本冲突保护与自动保存</p>
+                    <p>自动保存，修改冲突时保留本地草稿</p>
                   </div>
-                  <button id="newPadBtn" class="button primary small">＋ 新建</button>
+                  <button id="newPadBtn" class="button primary small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>新建</span></button>
                 </div>
-                <input id="padSearch" type="search" placeholder="🔍 搜索文档标题..." />
+                <input id="padSearch" type="search" placeholder="搜索文档标题…" aria-label="搜索文档" />
                 <div id="padsList" class="pad-list"></div>
               </aside>
               <article class="card pad-editor">
                 <div id="padEmpty" class="empty">
-                  <p>📝 从左侧列表选择或新建一个协同文档</p>
+                  <p>选择一篇文档，或新建一篇开始记录。</p>
                 </div>
                 <div id="padForm" class="hidden">
                   <div class="pad-editor-head">
-                    <input id="padTitle" class="title-input" placeholder="输入文档标题..." />
+                    <label for="padTitle" class="visually-hidden">文档标题</label><input id="padTitle" class="title-input" placeholder="输入文档标题..." />
                     <div class="pad-editor-actions">
                       <span id="saveState" class="badge muted">未修改</span>
-                      <button id="sharePadBtn" class="button ghost small" title="创建外链分享">🔗 分享</button>
-                      <button id="deletePadBtn" class="button danger small" title="移入回收站">🗑️ 删除</button>
+                      <button id="sharePadBtn" class="button ghost small" title="创建外链分享"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>分享</span></button>
+                      <button id="deletePadBtn" class="button danger small" title="移入回收站"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>删除</span></button>
                     </div>
                   </div>
+                  <label for="padContent" class="visually-hidden">文档正文</label>
                   <textarea id="padContent" rows="22" placeholder="支持 Markdown 格式，开始编辑协同文档...（Ctrl+S 立即保存）"></textarea>
                   <div class="editor-footer">
                     <span id="padMeta" class="muted-text"></span>
-                    <button id="savePadBtn" class="button primary">💾 立即保存</button>
+                    <button id="savePadBtn" class="button primary"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg><span>保存</span></button>
                   </div>
                 </div>
               </article>
@@ -194,9 +274,9 @@
             <div class="list-toolbar">
               <div>
                 <h2>安全分享</h2>
-                <p class="muted-text">按内容生成独立匿名安全链接，可精准控制有效期与访问次数，无需暴露全局访问密钥</p>
+                <p class="muted-text">用独立链接分享指定内容，并设置有效期与访问次数。持有链接的人即可访问。</p>
               </div>
-              <button id="refreshSharesBtn" class="button ghost small">🔄 刷新</button>
+              <button id="refreshSharesBtn" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg><span>刷新</span></button>
             </div>
             <div id="sharesList" class="stack"></div>
           </section>
@@ -206,16 +286,16 @@
             <div class="list-toolbar">
               <div>
                 <h2>回收站</h2>
-                <p class="muted-text">删除内容自动进入回收站，支持随时一键恢复；超过保留期后自动永久清理</p>
+                <p class="muted-text">在保留期内恢复已删除的内容。到期或清空后将永久删除。</p>
               </div>
               <div class="inline-actions">
-                <select id="trashType">
+                <select id="trashType" aria-label="按内容类型筛选回收站">
                   <option value="">全部类型</option>
                   <option value="note">随手记</option>
                   <option value="file">文件</option>
                   <option value="pad">协同文档</option>
                 </select>
-                <button id="emptyTrashBtn" class="button danger small">🧹 清空回收站</button>
+                <button id="emptyTrashBtn" class="button danger small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>清空回收站</span></button>
               </div>
             </div>
             <div id="trashList" class="stack"></div>
@@ -226,155 +306,101 @@
             <div class="list-toolbar">
               <div>
                 <h2>活动审计日志</h2>
-                <p class="muted-text">基于 SHA-256 哈希链保证不可篡改的关键安全与操作审计流水</p>
+                <p class="muted-text">查看关键操作记录。哈希链用于校验记录的连续性，辅助检测篡改。</p>
               </div>
-              <button id="refreshAuditBtn" class="button ghost small">🔄 刷新</button>
+              <button id="refreshAuditBtn" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg><span>刷新</span></button>
             </div>
             <div id="auditList" class="timeline"></div>
           </section>
-        </section>
-
-        <aside class="sidebar">
-          <article class="card">
-            <div class="card-title">
-              <div>
-                <h2>设备与网络</h2>
-                <p>局域网、Tailscale 与手动节点</p>
-              </div>
-              <button id="refreshDevicesBtn" class="icon-button" title="刷新设备列表">↻</button>
-            </div>
-            <div id="deviceList" class="device-list"></div>
-          </article>
-
-          <article class="card storage-card">
-            <div class="card-title">
-              <div>
-                <h2>存储概览</h2>
-                <p id="dataDirText">本机私有存储（路径未通过 API 暴露）</p>
-              </div>
-            </div>
-            <div class="storage-meter" title="当前版本未设置磁盘总容量配额">
-              <div id="storageBar"></div>
-            </div>
-            <div class="storage-footer">
-              <span id="storageUsed">已用 0 B</span>
-              <span id="uploadLimit">单文件上限 —</span>
-            </div>
-          </article>
-
-          <article class="card tips">
-            <h2>💡 快速访问与组网</h2>
-            <p>同一局域网设备在浏览器中打开上方发现的节点地址即可实时互联互通。跨公网或 Tailscale 场景可在系统设置中添加 MagicDNS 或 100.x 节点地址。</p>
-          </article>
-        </aside>
+        </main>
       </div>
-    </main>
+    </div>
   </div>
 
   <!-- 系统设置对话框 -->
-  <dialog id="settingsDialog" class="modal">
+  <dialog id="settingsDialog" class="modal settings-modal" aria-labelledby="settingsTitle">
     <form method="dialog" class="modal-card" id="settingsForm">
       <div class="modal-head">
         <div>
-          <h2>系统设置</h2>
-          <p>网络拓扑与安全防护设置保存后需重启服务生效</p>
+          <h2 id="settingsTitle">设置</h2>
+          <p>管理当前节点与此设备的使用偏好。</p>
         </div>
-        <button value="cancel" class="icon-button" aria-label="关闭">×</button>
+        <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
-      <div class="settings-grid">
-        <label>
-          节点名称
-          <input id="cfgNodeName" required placeholder="如：My-MacBook / Office-Server" />
-        </label>
-        <label>
-          界面主题
-          <select id="cfgTheme">
-            <option value="system">跟随系统</option>
-            <option value="light">浅色（白天）</option>
-            <option value="dark">深色（黑夜）</option>
-          </select>
-          <small>立即生效，并保存在当前设备。</small>
-        </label>
-        <label>
-          默认保留天数
-          <input id="cfgRetention" type="number" min="0" max="36500" />
-          <small>0 表示不自动清理</small>
-        </label>
-        <label>
-          回收站保留天数
-          <input id="cfgTrashRetention" type="number" min="1" max="36500" />
-          <small>到期后永久删除，默认 30 天</small>
-        </label>
-        <label>
-          单文件上传上限（MB）
-          <input id="cfgMaxUpload" type="number" min="1" max="1048576" />
-        </label>
-        <label>
-          备份上限（MB）
-          <input id="cfgBackupMax" type="number" min="1" max="1048576" />
-          <small>导出与恢复共用这一上限，默认 16384 MB。</small>
-        </label>
-        <label class="switch-row">
-          <span>启动时自动打开浏览器</span>
-          <input id="cfgAutoOpen" type="checkbox" />
-        </label>
-        <label class="switch-row">
-          <span>允许局域网访问</span>
-          <input id="cfgAllowLAN" type="checkbox" />
-          <small>开启前必须设置至少 16 字节访问密钥。</small>
-        </label>
-        <label>
-          监听地址
-          <input id="cfgListenAddress" placeholder="127.0.0.1" />
-          <small>本机使用 127.0.0.1；局域网通常使用 0.0.0.0。</small>
-        </label>
-        <label class="full">
-          公开基础地址
-          <input id="cfgPublicBaseURL" type="url" placeholder="https://share.example.com:8081" />
-          <small>用于生成分享链接；留空时仅接受可信 Host。</small>
-        </label>
-        <label class="full">
-          允许的跨域来源
-          <input id="cfgAllowedOrigins" placeholder="https://app.example.com, https://admin.example.com" />
-          <small>默认不允许跨域；仅填写完整可信 Origin。</small>
-        </label>
-        <label class="full">
-          访问密钥
-          <input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="留空保持不变；输入 CLEAR 清除" />
-          <small>密钥只保存在当前浏览器会话，不写入 URL 或长期存储。</small>
-        </label>
-        <label class="full hidden" id="cfgInitTokenRow">
-          初始化令牌（仅首次配置需要）
-          <input id="cfgInitToken" autocomplete="off" placeholder="粘贴 data 目录下 init-token 文件中的令牌" />
-          <small>未设置访问密钥时，保存配置必须携带这个一次性令牌；设置密钥成功后令牌文件会被自动删除。</small>
-        </label>
-      </div>
-      <div class="peer-section">
-        <div class="card-title">
-          <div>
-            <h3>手动设备节点</h3>
-            <p>适用于 Tailscale / 跨网段，填写完整目标节点 HTTP/HTTPS 地址</p>
+      <div class="settings-sections">
+        <section class="settings-section" aria-labelledby="settingsGeneral">
+          <div class="settings-section-head"><span class="section-number">01</span><div><h3 id="settingsGeneral">常规与外观</h3><p>为这个节点命名，并选择适合你的显示方式。</p></div></div>
+          <div class="settings-grid">
+            <label>节点名称<input id="cfgNodeName" required placeholder="如：书房电脑 / 工作节点" /></label>
+            <label>界面主题<select id="cfgTheme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><small>立即生效，保存在当前设备。</small></label>
+            <label class="switch-row full"><span>启动时自动打开浏览器</span><input id="cfgAutoOpen" type="checkbox" /></label>
           </div>
-          <button id="addPeerBtn" type="button" class="button ghost small">＋ 添加节点</button>
-        </div>
-        <div id="peerRows" class="peer-rows"></div>
+        </section>
+        <section class="settings-section" aria-labelledby="settingsSecurity">
+          <div class="settings-section-head"><span class="section-number">02</span><div><h3 id="settingsSecurity">访问与网络</h3><p>控制谁可以连接。网络设置保存后需重启服务。</p></div></div>
+          <div class="settings-grid">
+            <label class="full">访问密钥<input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="留空保持不变；输入 CLEAR 清除" /><small>浏览器中的密钥只保留在当前会话，不写入链接或长期存储。</small></label>
+            <label class="full hidden" id="cfgInitTokenRow">初始化令牌<input id="cfgInitToken" autocomplete="off" placeholder="粘贴 data 目录下 init-token 文件中的令牌" /><small>未设置访问密钥时，首次配置需要此令牌。设置密钥成功后令牌文件会被删除。</small></label>
+            <label class="switch-row full"><span>允许局域网访问</span><input id="cfgAllowLAN" type="checkbox" /><small>开启前，请设置至少 16 字节的访问密钥。</small></label>
+            <label class="full">监听地址<input id="cfgListenAddress" placeholder="127.0.0.1" /><small>127.0.0.1 仅供本机使用；0.0.0.0 监听全部 IPv4 网络接口。</small></label>
+            <label class="full">公开基础地址<input id="cfgPublicBaseURL" type="url" placeholder="https://share.example.com:8081" /><small>用于生成分享链接；留空时仅接受可信 Host。</small></label>
+            <label class="full">允许的跨域来源<input id="cfgAllowedOrigins" placeholder="https://app.example.com" /><small>默认不允许跨域。仅填写完整、可信的来源地址，多个地址用逗号分隔。</small></label>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="settingsStorage">
+          <div class="settings-section-head"><span class="section-number">03</span><div><h3 id="settingsStorage">存储与保留</h3><p>设置内容保留时间和单次传输上限。</p></div></div>
+          <div class="settings-grid">
+            <label>默认保留天数<input id="cfgRetention" type="number" min="0" max="36500" /><small>0 表示不自动清理。</small></label>
+            <label>回收站保留天数<input id="cfgTrashRetention" type="number" min="1" max="36500" /><small>默认 30 天，到期后永久删除。</small></label>
+            <label>单文件上传上限（MB）<input id="cfgMaxUpload" type="number" min="1" max="1048576" /></label>
+            <label>备份上限（MB）<input id="cfgBackupMax" type="number" min="1" max="1048576" /><small>导出与恢复共用，默认 16384 MB。</small></label>
+          </div>
+          <div class="backup-settings">
+            <div><h4>备份与恢复</h4><p>导出时可设置口令生成加密备份。恢复将覆盖当前数据。</p></div>
+            <div class="inline-actions">
+              <button id="backupBtn" type="button" class="button ghost" title="导出 ZIP 备份，或设置口令生成加密 OSB 备份"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-download"></use></svg><span>导出备份</span></button>
+              <button id="restoreBtn" type="button" class="button ghost" title="从 ZIP 或 OSB 备份恢复，覆盖当前数据"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-restore"></use></svg><span>从备份恢复</span></button>
+            </div>
+          </div>
+        </section>
+        <section class="settings-section peer-section" aria-labelledby="settingsPeers">
+          <div class="settings-section-head"><span class="section-number">04</span><div><h3 id="settingsPeers">手动设备节点</h3><p>添加 Tailscale 或跨网段的节点地址。每个节点需要独立验证。</p></div></div>
+          <div id="peerRows" class="peer-rows"></div>
+          <button id="addPeerBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>添加节点</span></button>
+        </section>
       </div>
       <div class="modal-actions">
-        <button value="cancel" class="button ghost">取消</button>
+        <button value="cancel" formnovalidate class="button ghost">取消</button>
         <button id="saveSettingsBtn" type="button" class="button primary">保存设置</button>
       </div>
     </form>
   </dialog>
 
+  <!-- 剪贴板内容只在用户确认后发送 -->
+  <dialog id="clipboardDialog" class="modal clipboard-modal" aria-labelledby="clipboardTitle" aria-describedby="clipboardPrivacy">
+    <div class="modal-card">
+      <div class="modal-head"><div><span class="dialog-kicker">确认内容与去向</span><h2 id="clipboardTitle">从剪贴板发送</h2><p id="clipboardPrivacy">确认后发送到当前节点；不会自动同步剪贴板。</p></div></div>
+      <p id="clipboardPreviewMeta" class="clipboard-meta"></p>
+      <div class="clipboard-preview">
+        <label for="clipboardPreviewText" class="visually-hidden">待发送的纯文本预览</label>
+        <textarea id="clipboardPreviewText" class="hidden" rows="8" readonly spellcheck="false"></textarea>
+        <img id="clipboardPreviewImage" class="hidden" alt="待发送的剪贴板图片预览" />
+      </div>
+      <label class="clipboard-retention">保留时长<select id="clipboardTTL"><option value="3600">1 小时</option><option value="86400" selected>24 小时</option><option value="604800">7 天</option></select></label>
+      <p id="clipboardPreviewStatus" class="clipboard-status" role="status" aria-live="polite"></p>
+      <div class="modal-actions"><button id="clipboardCancelBtn" type="button" class="button ghost" autofocus>取消</button><button id="clipboardConfirmBtn" type="button" class="button primary" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg><span>确认发送</span></button></div>
+    </div>
+  </dialog>
+
   <!-- 从备份恢复对话框 -->
-  <dialog id="restoreDialog" class="modal">
+  <dialog id="restoreDialog" class="modal" aria-labelledby="restoreTitle">
     <form method="dialog" class="modal-card">
       <div class="modal-head">
         <div>
-          <h2>从备份恢复</h2>
+          <h2 id="restoreTitle">从备份恢复</h2>
           <p>恢复会用备份中的状态、配置和文件覆盖当前数据，完成后建议重启程序。</p>
         </div>
-        <button value="cancel" class="icon-button" aria-label="关闭">×</button>
+        <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
       <label>
         备份文件（.zip 或 .osb）
@@ -389,29 +415,29 @@
         <input id="restoreConfirm" type="checkbox" />
         我确认恢复会覆盖当前数据
       </label>
-      <progress id="restoreProgress" class="progress-track hidden" max="100" value="0"></progress>
-      <p id="restoreStatus" class="error-text"></p>
+      <progress aria-label="备份恢复进度" id="restoreProgress" class="progress-track hidden" max="100" value="0"></progress>
+      <p id="restoreStatus" class="error-text" role="status" aria-live="polite"></p>
       <div class="modal-actions">
-        <button value="cancel" class="button ghost">取消</button>
+        <button value="cancel" formnovalidate class="button ghost">取消</button>
         <button id="restoreSubmitBtn" type="button" class="button primary">开始恢复</button>
       </div>
     </form>
   </dialog>
 
   <!-- 鉴权登录对话框 -->
-  <dialog id="authDialog" class="modal auth-modal">
+  <dialog id="authDialog" class="modal auth-modal" aria-labelledby="authTitle">
     <form method="dialog" class="modal-card">
       <div class="modal-head">
         <div>
-          <h2>需要访问密钥</h2>
+          <h2 id="authTitle">需要访问密钥</h2>
           <p>该 OmniShare 节点已开启会话级访问防护，请输入密钥继续</p>
         </div>
       </div>
       <label>
         访问密钥
-        <input id="authKey" type="password" autocomplete="current-password" placeholder="输入预设的 Access Key" />
+        <input id="authKey" type="password" autocomplete="current-password" placeholder="输入此节点的访问密钥" />
       </label>
-      <p id="authError" class="error-text"></p>
+      <p id="authError" class="error-text" role="status" aria-live="polite"></p>
       <div class="modal-actions">
         <button id="authSubmitBtn" type="button" class="button primary">验证并进入</button>
       </div>
@@ -419,15 +445,16 @@
   </dialog>
 
   <!-- 编辑随手记对话框 -->
-  <dialog id="editNoteDialog" class="modal">
+  <dialog id="editNoteDialog" class="modal" aria-labelledby="editNoteTitle">
     <form method="dialog" class="modal-card">
       <div class="modal-head">
         <div>
-          <h2>编辑随手记</h2>
+          <h2 id="editNoteTitle">编辑随手记</h2>
           <p id="editNoteId"></p>
         </div>
-        <button value="cancel" class="icon-button" aria-label="关闭">×</button>
+        <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
+      <label for="editNoteContent" class="visually-hidden">随手记正文</label>
       <textarea id="editNoteContent" rows="10" placeholder="随手记正文..."></textarea>
       <label>
         标签
@@ -448,21 +475,21 @@
         <input id="editNoteMaxReads" type="number" min="0" max="1000000" value="0" />
       </label>
       <div class="modal-actions">
-        <button value="cancel" class="button ghost">取消</button>
+        <button value="cancel" formnovalidate class="button ghost">取消</button>
         <button id="saveEditNoteBtn" type="button" class="button primary">保存更新</button>
       </div>
     </form>
   </dialog>
 
   <!-- 创建分享对话框 -->
-  <dialog id="shareDialog" class="modal auth-modal">
+  <dialog id="shareDialog" class="modal auth-modal" aria-labelledby="shareTitle">
     <form method="dialog" class="modal-card">
       <div class="modal-head">
         <div>
-          <h2>创建安全外链分享</h2>
+          <h2 id="shareTitle">创建安全外链分享</h2>
           <p id="shareObjectName">—</p>
         </div>
-        <button value="cancel" class="icon-button" aria-label="关闭">×</button>
+        <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
       <input id="shareObjectType" type="hidden" />
       <input id="shareObjectId" type="hidden" />
@@ -482,21 +509,21 @@
         <small>0 表示不限制访问次数</small>
       </label>
       <div class="modal-actions">
-        <button value="cancel" class="button ghost">取消</button>
+        <button value="cancel" formnovalidate class="button ghost">取消</button>
         <button id="createShareBtn" type="button" class="button primary">创建并复制链接</button>
       </div>
     </form>
   </dialog>
 
   <!-- 查看受限速记对话框 -->
-  <dialog id="viewNoteDialog" class="modal">
+  <dialog id="viewNoteDialog" class="modal" aria-labelledby="viewNoteTitle">
     <div class="modal-card">
       <div class="modal-head">
         <div>
-          <h2>查看受限随手记</h2>
+          <h2 id="viewNoteTitle">查看受限随手记</h2>
           <p id="viewNoteMeta">—</p>
         </div>
-        <button id="closeViewNoteBtn" class="icon-button" aria-label="关闭">×</button>
+        <button id="closeViewNoteBtn" class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
       <pre id="viewNoteContent" class="view-note-content"></pre>
       <div class="modal-actions">
@@ -507,11 +534,11 @@
   </dialog>
 
   <!-- 视频播放对话框 -->
-  <dialog id="videoDialog" class="modal video-modal">
+  <dialog id="videoDialog" class="modal video-modal" aria-labelledby="videoTitle">
     <div class="video-card">
       <div class="modal-head">
         <h2 id="videoTitle">视频播放</h2>
-        <button id="closeVideoBtn" class="icon-button" aria-label="关闭">×</button>
+        <button id="closeVideoBtn" class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
       <video id="videoPlayer" controls playsinline></video>
     </div>
