@@ -25,11 +25,14 @@ import (
 )
 
 const (
-	defaultPort          = 8081
-	defaultUploadMB      = 4096
-	defaultTrashDays     = 30
-	defaultKeyIterations = 210_000
-	maxPeers             = 32
+	defaultPort           = 8081
+	defaultUploadMB       = 4096
+	defaultBackupMB       = 16384
+	defaultTrashDays      = 30
+	defaultAuditDays      = 90
+	defaultAuditMaxEvents = 100000
+	defaultKeyIterations  = 210_000
+	maxPeers              = 32
 )
 
 type Manager struct {
@@ -63,7 +66,10 @@ func New(dataDir string, port int, nodeName string) (*Manager, error) {
 			ListenAddress:       "127.0.0.1",
 			AutoOpenBrowser:     true,
 			MaxUploadMB:         defaultUploadMB,
+			BackupMaxMB:         defaultBackupMB,
 			TrashRetentionDays:  defaultTrashDays,
+			AuditRetentionDays:  defaultAuditDays,
+			AuditMaxEvents:      defaultAuditMaxEvents,
 			AccessKeyIterations: defaultKeyIterations,
 			AllowedOrigins:      []string{},
 			Peers:               []model.PeerConfig{},
@@ -120,8 +126,17 @@ func (m *Manager) applyDefaults(abs string) {
 	if m.cfg.MaxUploadMB <= 0 {
 		m.cfg.MaxUploadMB = defaultUploadMB
 	}
+	if m.cfg.BackupMaxMB <= 0 {
+		m.cfg.BackupMaxMB = defaultBackupMB
+	}
 	if m.cfg.TrashRetentionDays <= 0 {
 		m.cfg.TrashRetentionDays = defaultTrashDays
+	}
+	if m.cfg.AuditRetentionDays <= 0 {
+		m.cfg.AuditRetentionDays = defaultAuditDays
+	}
+	if m.cfg.AuditMaxEvents <= 0 {
+		m.cfg.AuditMaxEvents = defaultAuditMaxEvents
 	}
 	if m.cfg.AccessKeyIterations < 100_000 {
 		m.cfg.AccessKeyIterations = defaultKeyIterations
@@ -250,8 +265,11 @@ func (m *Manager) Public() model.PublicConfig {
 		PublicBaseURL:      cfg.PublicBaseURL,
 		AutoOpenBrowser:    cfg.AutoOpenBrowser,
 		MaxUploadMB:        cfg.MaxUploadMB,
+		BackupMaxMB:        cfg.BackupMaxMB,
 		RetentionDays:      cfg.RetentionDays,
 		TrashRetentionDays: cfg.TrashRetentionDays,
+		AuditRetentionDays: cfg.AuditRetentionDays,
+		AuditMaxEvents:     cfg.AuditMaxEvents,
 		HasAccessKey:       cfg.AccessKeyHash != "",
 		TLSEnabled:         cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
 		AllowedOrigins:     append([]string(nil), cfg.AllowedOrigins...),
@@ -360,11 +378,20 @@ func (m *Manager) Update(req model.AppConfig) error {
 	if req.MaxUploadMB > 0 {
 		candidate.MaxUploadMB = req.MaxUploadMB
 	}
+	if req.BackupMaxMB > 0 {
+		candidate.BackupMaxMB = req.BackupMaxMB
+	}
 	if req.RetentionDays >= 0 {
 		candidate.RetentionDays = req.RetentionDays
 	}
 	if req.TrashRetentionDays > 0 {
 		candidate.TrashRetentionDays = req.TrashRetentionDays
+	}
+	if req.AuditRetentionDays > 0 {
+		candidate.AuditRetentionDays = req.AuditRetentionDays
+	}
+	if req.AuditMaxEvents > 0 {
+		candidate.AuditMaxEvents = req.AuditMaxEvents
 	}
 	candidate.AutoOpenBrowser = req.AutoOpenBrowser
 	if req.AccessKey != "__KEEP__" {
@@ -472,8 +499,17 @@ func (m *Manager) RestoreJSON(data []byte) error {
 	if candidate.MaxUploadMB <= 0 {
 		candidate.MaxUploadMB = defaultUploadMB
 	}
+	if candidate.BackupMaxMB <= 0 {
+		candidate.BackupMaxMB = defaultBackupMB
+	}
 	if candidate.TrashRetentionDays <= 0 {
 		candidate.TrashRetentionDays = defaultTrashDays
+	}
+	if candidate.AuditRetentionDays <= 0 {
+		candidate.AuditRetentionDays = defaultAuditDays
+	}
+	if candidate.AuditMaxEvents <= 0 {
+		candidate.AuditMaxEvents = defaultAuditMaxEvents
 	}
 	if candidate.AccessKeyIterations < 100_000 {
 		candidate.AccessKeyIterations = defaultKeyIterations
@@ -562,8 +598,14 @@ func validateConfig(cfg model.AppConfig) error {
 	if cfg.MaxUploadMB < 1 || cfg.MaxUploadMB > 1024*1024 {
 		return errors.New("max upload size is out of range")
 	}
+	if cfg.BackupMaxMB < 1 || cfg.BackupMaxMB > 1024*1024 {
+		return errors.New("backup size limit is out of range")
+	}
 	if cfg.RetentionDays < 0 || cfg.RetentionDays > 36500 || cfg.TrashRetentionDays < 1 || cfg.TrashRetentionDays > 36500 {
 		return errors.New("retention setting is out of range")
+	}
+	if cfg.AuditRetentionDays < 1 || cfg.AuditRetentionDays > 36500 || cfg.AuditMaxEvents < 1 || cfg.AuditMaxEvents > 10_000_000 {
+		return errors.New("audit retention setting is out of range")
 	}
 	if cfg.AllowLAN && cfg.AccessKeyHash == "" {
 		return errors.New("LAN access requires an access key")

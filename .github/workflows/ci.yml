@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22.12'
+          go-version: '1.26.5'
           cache-dependency-path: backend/go.mod
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -37,6 +37,22 @@ jobs:
           go vet ./...
       - name: Go tests
         run: cd backend && go test ./... -count=1 -race
+      - name: Real HTTP process integration
+        run: |
+          (cd backend && go build -trimpath -o "$RUNNER_TEMP/omnishare-http-test" ./cmd/omnishare)
+          python3 scripts/test-http-integration.py "$RUNNER_TEMP/omnishare-http-test"
+      - name: Go coverage gate
+        run: |
+          cd backend
+          go test ./... -count=1 -coverprofile=coverage.out
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')
+          echo "total statement coverage: ${total}% (floor 53.1%)"
+          awk -v total="$total" 'BEGIN { exit !(total + 0 >= 53.1) }'
+      - name: Staticcheck
+        run: |
+          cd backend
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          "$(go env GOPATH)/bin/staticcheck" ./...
 
   cross-build:
     runs-on: ubuntu-latest
@@ -67,7 +83,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22.12'
+          go-version: '1.26.5'
           cache: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

@@ -38,7 +38,20 @@ func newTestServer(t *testing.T) (*Server, http.Handler, *config.Manager) {
 		t.Fatal(err)
 	}
 	s := New(store, cfg)
+	testAuthToken = s.initToken
 	return s, s.Handler(), cfg
+}
+
+// testAuthToken lets the shared helpers act like the first-run browser, which
+// is handed a loopback-only init token. Raw requests (security tests) bypass
+// this and control their own headers.
+var testAuthToken string
+
+func applyTestAuth(r *http.Request) {
+	if testAuthToken == "" || r.Header.Get("X-OmniShare-Key") != "" || r.Header.Get("X-OmniShare-Init-Token") != "" {
+		return
+	}
+	r.Header.Set("X-OmniShare-Init-Token", testAuthToken)
 }
 func request(t *testing.T, h http.Handler, method, path string, body io.Reader, key, contentType string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -47,6 +60,8 @@ func request(t *testing.T, h http.Handler, method, path string, body io.Reader, 
 	r.RemoteAddr = "127.0.0.1:12345"
 	if key != "" {
 		r.Header.Set("X-OmniShare-Key", key)
+	} else {
+		applyTestAuth(r)
 	}
 	if contentType != "" {
 		r.Header.Set("Content-Type", contentType)
@@ -367,6 +382,7 @@ func TestBackupRestoreIncludesConfigStateAndWorksWithoutFiles(t *testing.T) {
 	r.RemoteAddr = "127.0.0.1:55"
 	r.Header.Set("Content-Type", mw.FormDataContentType())
 	r.Header.Set("X-OmniShare-Confirm", "RESTORE-BACKUP")
+	applyTestAuth(r)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
@@ -424,10 +440,16 @@ func TestConfigHidesDataDirAndPadListOmitsContent(t *testing.T) {
 }
 
 func TestConfigAPIActuallySetsWriteOnlyAccessKey(t *testing.T) {
-	_, h, cfg := newTestServer(t)
+	s, h, cfg := newTestServer(t)
 	secret := "0123456789abcdef-secure"
 	payload := `{"node_name":"secured-node","listen_address":"127.0.0.1","allow_lan":false,"max_upload_mb":128,"retention_days":30,"trash_retention_days":14,"auto_open_browser":false,"access_key":"` + secret + `","peers":[],"allowed_origins":[]}`
-	w := request(t, h, http.MethodPut, "/api/v1/config", strings.NewReader(payload), "", "application/json")
+	r := httptest.NewRequest(http.MethodPut, "/api/v1/config", strings.NewReader(payload))
+	r.Host = "127.0.0.1:8081"
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-OmniShare-Init-Token", s.initToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("set key=%d %s", w.Code, w.Body.String())
 	}

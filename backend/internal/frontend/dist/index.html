@@ -32,7 +32,8 @@
         <span id="healthBadge" class="badge muted"><i></i>连接中</span>
         <button id="installBtn" class="button ghost hidden">📲 安装到桌面</button>
         <button id="themeToggle" type="button" class="button ghost theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题">☀ 白天</button>
-        <button id="backupBtn" class="button ghost" title="导出全系统加密备份压缩包">📦 导出备份</button>
+        <button id="backupBtn" class="button ghost" title="导出全系统备份压缩包（未加密 ZIP，请妥善保管）">📦 导出备份</button>
+        <button id="restoreBtn" class="button ghost" title="从备份压缩包恢复数据（会覆盖当前数据）">♻️ 从备份恢复</button>
         <button id="settingsBtn" class="button" title="节点网络与安全设置">⚙️ 系统设置</button>
       </div>
     </header>
@@ -116,6 +117,7 @@
               <span id="noteCount" class="muted-text"></span>
             </div>
             <div id="notesList" class="stack"></div>
+            <button id="loadMoreNotes" class="button ghost hidden" style="width:100%;margin-top:10px">加载更多</button>
           </section>
 
           <!-- 文件与视频 Panel -->
@@ -147,6 +149,7 @@
               <span id="fileCount" class="muted-text"></span>
             </div>
             <div id="filesList" class="file-grid"></div>
+            <button id="loadMoreFiles" class="button ghost hidden" style="width:100%;margin-top:10px">加载更多</button>
           </section>
 
           <!-- 协同文档 Panel -->
@@ -223,7 +226,7 @@
             <div class="list-toolbar">
               <div>
                 <h2>活动审计日志</h2>
-                <p class="muted-text">基于 SHA-256 加密哈希链保证不可篡改的关键安全与操作审计流水</p>
+                <p class="muted-text">基于 SHA-256 哈希链保证不可篡改的关键安全与操作审计流水</p>
               </div>
               <button id="refreshAuditBtn" class="button ghost small">🔄 刷新</button>
             </div>
@@ -306,6 +309,11 @@
           单文件上传上限（MB）
           <input id="cfgMaxUpload" type="number" min="1" max="1048576" />
         </label>
+        <label>
+          备份上限（MB）
+          <input id="cfgBackupMax" type="number" min="1" max="1048576" />
+          <small>导出与恢复共用这一上限，默认 16384 MB。</small>
+        </label>
         <label class="switch-row">
           <span>启动时自动打开浏览器</span>
           <input id="cfgAutoOpen" type="checkbox" />
@@ -335,6 +343,11 @@
           <input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="留空保持不变；输入 CLEAR 清除" />
           <small>密钥只保存在当前浏览器会话，不写入 URL 或长期存储。</small>
         </label>
+        <label class="full hidden" id="cfgInitTokenRow">
+          初始化令牌（仅首次配置需要）
+          <input id="cfgInitToken" autocomplete="off" placeholder="粘贴 data 目录下 init-token 文件中的令牌" />
+          <small>未设置访问密钥时，保存配置必须携带这个一次性令牌；设置密钥成功后令牌文件会被自动删除。</small>
+        </label>
       </div>
       <div class="peer-section">
         <div class="card-title">
@@ -349,6 +362,38 @@
       <div class="modal-actions">
         <button value="cancel" class="button ghost">取消</button>
         <button id="saveSettingsBtn" type="button" class="button primary">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 从备份恢复对话框 -->
+  <dialog id="restoreDialog" class="modal">
+    <form method="dialog" class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2>从备份恢复</h2>
+          <p>恢复会用备份中的状态、配置和文件覆盖当前数据，完成后建议重启程序。</p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="关闭">×</button>
+      </div>
+      <label>
+        备份文件（.zip 或 .osb）
+        <input id="restoreFile" type="file" accept=".zip,.osb,application/zip,application/x-zip-compressed,application/octet-stream" />
+        <small>支持未加密 ZIP 与 AES-256-GCM 加密包；上传大小受“备份上限”限制。</small>
+      </label>
+      <label>
+        备份口令（仅 .osb 加密包需要）
+        <input id="restorePassword" type="password" autocomplete="off" placeholder="未加密 ZIP 留空即可" />
+      </label>
+      <label class="switch-row">
+        <input id="restoreConfirm" type="checkbox" />
+        我确认恢复会覆盖当前数据
+      </label>
+      <progress id="restoreProgress" class="progress-track hidden" max="100" value="0"></progress>
+      <p id="restoreStatus" class="error-text"></p>
+      <div class="modal-actions">
+        <button value="cancel" class="button ghost">取消</button>
+        <button id="restoreSubmitBtn" type="button" class="button primary">开始恢复</button>
       </div>
     </form>
   </dialog>

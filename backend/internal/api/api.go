@@ -37,20 +37,20 @@ import (
 )
 
 const (
-	Version                  = buildinfo.Version
-	maxJSONBody              = 1 << 20
-	maxTTLSeconds            = 10 * 365 * 24 * 60 * 60
-	shareSessionDuration     = 30 * time.Minute
-	maxAuthEntries           = 4096
-	maxRestoreZIPEntries     = 10000
-	maxRestoreManifestFiles  = 5000
-	maxRestoreSingleFileSize = 4 << 30
-	maxRestoreTotalSize      = 16 << 30
-	maxRestoreCompressedSize = 8 << 30
+	Version                 = buildinfo.Version
+	maxJSONBody             = 1 << 20
+	maxTTLSeconds           = 10 * 365 * 24 * 60 * 60
+	shareSessionDuration    = 30 * time.Minute
+	maxAuthEntries          = 4096
+	maxRestoreZIPEntries    = 10000
+	maxRestoreManifestFiles = 5000
+	// multipartOverheadMB is head-room for the multipart envelope around an
+	// archive that is itself capped by the configured backup limit.
+	multipartOverheadMB = 64
 )
 
 type Server struct {
-	store    *storage.Store
+	store    storage.Backend
 	cfg      *config.Manager
 	dataDir  string
 	started  time.Time
@@ -63,6 +63,30 @@ type Server struct {
 	requestIP map[string]int
 	shareIP   map[string]int
 	counted   map[string]time.Time
+
+	// initToken guards the first configuration write before any access key
+	// exists; see init_token.go.
+	initToken     string
+	initTokenPath string
+	// dataMu keeps each data request on one generation of state/config/blobs.
+	// Ordinary requests share the read lock; only the final restore swap takes
+	// the write lock. Uploading and validating an archive do not block requests.
+	dataMu sync.RWMutex
+
+	storageMu    sync.RWMutex
+	storageState StorageState
+
+	// Unauthorized requests are aggregated per client and time window instead
+	// of writing one audit row each. A brute-force storm therefore costs one
+	// commit per window, not one per request.
+	deniedMu     sync.Mutex
+	denied       map[string]*deniedBucket
+	deniedWindow time.Duration
+
+	// restorePreSwapHook is test-only: it runs after extraction and before the
+	// short exclusive swap, so tests can prove uploads are not blocked during
+	// the long part of a restore.
+	restorePreSwapHook func()
 
 	// requestTotal mirrors the sum of requestIP so the global concurrency check
 	// is O(1) instead of iterating every client on each request.
@@ -103,6 +127,28 @@ type authState struct {
 	BlockedTill time.Time
 }
 
+// StorageState reports which engine is serving and the outcome of a pending
+// legacy JSON import. It is surfaced through /api/v1/health so operators can
+// see "not migrated" without reading logs.
+type StorageState struct {
+	Engine           string `json:"engine"`
+	MigrationPending bool   `json:"migration_pending,omitempty"`
+	MigrationFailed  bool   `json:"migration_failed,omitempty"`
+	MigrationError   string `json:"migration_error,omitempty"`
+}
+
+// SetStorageState is called once during startup.
+func (s *Server) SetStorageState(st StorageState) {
+	s.storageMu.Lock()
+	s.storageState = st
+	s.storageMu.Unlock()
+}
+
+type deniedBucket struct {
+	windowStart time.Time
+	count       int
+}
+
 type mediaTicket struct {
 	FileID      string `json:"file_id"`
 	Disposition string `json:"disposition"`
@@ -115,7 +161,7 @@ type shareSession struct {
 	ExpiresUnix int64  `json:"expires_unix"`
 }
 
-func New(store *storage.Store, cfg *config.Manager, registries ...*discovery.Registry) *Server {
+func New(store storage.Backend, cfg *config.Manager, registries ...*discovery.Registry) *Server {
 	var registry *discovery.Registry
 	if len(registries) > 0 {
 		registry = registries[0]
@@ -130,10 +176,15 @@ func New(store *storage.Store, cfg *config.Manager, registries ...*discovery.Reg
 			return http.ErrUseLastResponse
 		},
 	}
-	return &Server{
+	server := &Server{
 		store: store, cfg: cfg, dataDir: cfg.Get().DataDir, started: time.Now(), client: client, registry: registry,
 		ticketKey: key, auth: map[string]*authState{}, requestIP: map[string]int{}, shareIP: map[string]int{}, counted: map[string]time.Time{},
+		denied: map[string]*deniedBucket{}, deniedWindow: time.Minute,
 	}
+	if err := server.ensureInitToken(); err != nil {
+		panic(fmt.Sprintf("initialize first-run token: %v", err))
+	}
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
@@ -209,6 +260,11 @@ func (s *Server) common(next http.Handler) http.Handler {
 			return
 		}
 		defer s.leaveRequest(ip)
+		if r.URL.Path != "/api/v1/restore" && r.URL.Path != "/api/v1/health" &&
+			(strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/media/") || strings.HasPrefix(r.URL.Path, "/n/")) {
+			s.dataMu.RLock()
+			defer s.dataMu.RUnlock()
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -355,7 +411,17 @@ func (s *Server) leaveRequest(ip string) {
 func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorized(r) {
-			_ = s.store.AddAudit("auth_denied", "security", "", "authorization denied", requestMetadata(r))
+			s.recordDenied(r)
+			if !s.cfg.HasAccessKey() {
+				// First-run writes keep the explicit 403 "init token required"
+				// contract; reads default-deny with a 401 that explains the flow.
+				if r.Method == http.MethodGet || r.Method == http.MethodHead {
+					respond(w, http.StatusUnauthorized, 401, "instance is not initialised: use the token-bearing local URL printed at startup or the X-OmniShare-Init-Token header", nil)
+				} else {
+					respond(w, http.StatusForbidden, 403, "init token required", nil)
+				}
+				return
+			}
 			respond(w, http.StatusUnauthorized, 401, "access key required", nil)
 			return
 		}
@@ -363,15 +429,99 @@ func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// recordDenied aggregates 401s per source inside a time window. A single
+// denied request must not open a write transaction, otherwise a brute-force
+// storm can turn every connection attempt into a WAL commit.
+func (s *Server) recordDenied(r *http.Request) {
+	ip := clientIP(r)
+	now := time.Now().UTC()
+	var pending *deniedBucket
+	s.deniedMu.Lock()
+	b, ok := s.denied[ip]
+	switch {
+	case !ok:
+		s.denied[ip] = &deniedBucket{windowStart: now, count: 1}
+	case now.Sub(b.windowStart) >= s.deniedWindow:
+		pending = b
+		s.denied[ip] = &deniedBucket{windowStart: now, count: 1}
+	default:
+		b.count++
+	}
+	if len(s.denied) > 2048 {
+		pendingBatches := s.denied
+		s.denied = map[string]*deniedBucket{}
+		s.deniedMu.Unlock()
+		for source, bucket := range pendingBatches {
+			s.writeDeniedAudit(source, bucket)
+		}
+	} else {
+		s.deniedMu.Unlock()
+	}
+	if pending != nil {
+		s.writeDeniedAudit(ip, pending)
+	}
+}
+
+func (s *Server) writeDeniedAudit(source string, b *deniedBucket) {
+	if b == nil || b.count == 0 {
+		return
+	}
+	_ = s.store.AddAudit("auth_denied", "security", "", "aggregated authorization denials", map[string]interface{}{
+		"source":         source,
+		"count":          b.count,
+		"window_seconds": int(s.deniedWindow.Seconds()),
+		"window_start":   b.windowStart.Format(time.RFC3339),
+	})
+}
+
+// FlushDeniedAudits writes every open bucket. Called on shutdown and by tests
+// that need a deterministic write count.
+func (s *Server) FlushDeniedAudits() {
+	s.deniedMu.Lock()
+	pending := s.denied
+	s.denied = map[string]*deniedBucket{}
+	s.deniedMu.Unlock()
+	for source, bucket := range pending {
+		s.writeDeniedAudit(source, bucket)
+	}
+}
+
 func (s *Server) authorized(r *http.Request) bool {
 	if !s.cfg.HasAccessKey() {
-		return !s.cfg.Get().AllowLAN
+		// Uninitialised instances deny every protected endpoint by default, both
+		// reads and writes. The loopback-only one-time token is the only way in,
+		// so a local process cannot claim the node by racing the first config
+		// write and the user still gets a first-run path.
+		return s.initTokenValid(r)
 	}
 	return s.cfg.VerifyAccessKey(r.Header.Get("X-OmniShare-Key"))
 }
 
+// InitToken exposes the current one-time token so startup can hand a
+// token-bearing local URL to the browser. It is empty after initialisation.
+func (s *Server) InitToken() string {
+	if s.cfg.HasAccessKey() {
+		return ""
+	}
+	return s.initToken
+}
+
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	respond(w, http.StatusOK, 0, "ok", map[string]interface{}{"status": "ok", "version": Version})
+	s.storageMu.RLock()
+	state := s.storageState
+	s.storageMu.RUnlock()
+	data := map[string]interface{}{"status": "ok", "version": Version}
+	if state.Engine != "" {
+		data["storage"] = state.Engine
+		data["storage_migrated"] = !state.MigrationPending && !state.MigrationFailed
+	}
+	if state.MigrationPending || state.MigrationFailed {
+		data["migration"] = "not_migrated"
+	}
+	if state.MigrationError != "" {
+		data["migration_error"] = state.MigrationError
+	}
+	respond(w, http.StatusOK, 0, "ok", data)
 }
 
 func (s *Server) verifyAuth(w http.ResponseWriter, r *http.Request) {
@@ -482,6 +632,13 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
+	// Before a key exists every loopback process could otherwise claim this
+	// instance by writing the first config. The token is readable only by the
+	// account that owns the data directory.
+	if !s.cfg.HasAccessKey() && !s.initTokenValid(r) {
+		respond(w, http.StatusForbidden, 403, "first-run setup requires X-OmniShare-Init-Token (see the init-token file in the data directory)", nil)
+		return
+	}
 	var req model.AppConfig
 	if err := decodeJSON(r, &req); err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
@@ -500,6 +657,7 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
 	}
+	s.finishInitialization()
 	_ = s.store.AddAudit("config_update", "config", "", "configuration updated", map[string]interface{}{
 		"source_ip": clientIP(r), "node_name_changed": current.NodeName != s.cfg.Get().NodeName, "lan_enabled": s.cfg.Get().AllowLAN,
 	})
@@ -690,6 +848,7 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
+	allowLongTransfer(w)
 	cfg := s.cfg.Get()
 	maxBytes := cfg.MaxUploadMB * 1024 * 1024
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+2*1024*1024)
@@ -940,8 +1099,11 @@ func (s *Server) markTicketCounted(nonce string, expires time.Time) bool {
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, asset model.FileAsset, inline, count bool) {
-	path := filepath.Join(s.dataDir, asset.StoragePath)
-	f, err := os.Open(path)
+	if err := storage.ValidateStoragePath(asset.StoragePath); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(filepath.Join(s.dataDir, filepath.FromSlash(asset.StoragePath)))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1542,6 +1704,7 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
+	allowLongTransfer(w)
 	tmp, err := os.CreateTemp(s.dataDir, "omnishare-backup-*.zip")
 	if err != nil {
 		respond(w, 500, 500, err.Error(), nil)
@@ -1550,7 +1713,8 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 	name := tmp.Name()
 	_ = tmp.Close()
 	defer os.Remove(name)
-	if err := s.generateBackup(name); err != nil {
+	manifest, err := s.generateBackup(name)
+	if err != nil {
 		respond(w, 500, 500, err.Error(), nil)
 		return
 	}
@@ -1560,19 +1724,42 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	info, _ := f.Stat()
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="omnishare-backup-`+time.Now().Format("20060102-150405")+`.zip"`)
-	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+
+	// A password turns the archive into a real AES-256-GCM encrypted package.
+	// Both paths stream from the temporary ZIP, so a multi-gigabyte backup never
+	// has to fit in memory.
+	password := r.Header.Get("X-OmniShare-Backup-Password")
+	stamp := time.Now().Format("20060102-150405")
+	if password == "" {
+		info, _ := f.Stat()
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="omnishare-backup-`+stamp+`.zip"`)
+		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="omnishare-backup-`+stamp+`.osb"`)
+	encoder, err := NewBackupEncryptWriter(w, password, manifest)
+	if err != nil {
+		respond(w, 500, 500, err.Error(), nil)
+		return
+	}
+	if _, err := io.Copy(encoder, f); err != nil {
+		return
+	}
+	if err := encoder.Close(); err != nil {
+		return
+	}
 }
 
-func (s *Server) generateBackup(path string) error {
+func (s *Server) generateBackup(path string) (model.BackupManifest, error) {
 	configJSON, err := s.cfg.BackupJSON()
 	if err != nil {
-		return err
+		return model.BackupManifest{}, err
 	}
-	return s.store.WithSnapshot(func(stateJSON []byte, files []model.FileAsset) error {
-		manifest := model.BackupManifest{FormatVersion: 1, AppVersion: Version, CreatedAt: time.Now().UTC(), StateSHA256: hexDigest(stateJSON), ConfigSHA256: hexDigest(configJSON), Files: []model.BackupFileManifest{}}
+	var manifest model.BackupManifest
+	err = s.store.WithSnapshot(func(stateJSON []byte, files []model.FileAsset) error {
+		manifest = model.BackupManifest{FormatVersion: 1, AppVersion: Version, CreatedAt: time.Now().UTC(), StateSHA256: hexDigest(stateJSON), ConfigSHA256: hexDigest(configJSON), Files: []model.BackupFileManifest{}}
 		unique := map[string]model.FileAsset{}
 		for _, f := range files {
 			if f.StoragePath != "" {
@@ -1584,6 +1771,8 @@ func (s *Server) generateBackup(path string) error {
 			paths = append(paths, p)
 		}
 		sort.Strings(paths)
+		limit := s.cfg.Get().BackupMaxMB * 1024 * 1024
+		var total int64
 		for _, p := range paths {
 			f := unique[p]
 			full := filepath.Join(s.dataDir, p)
@@ -1593,6 +1782,12 @@ func (s *Server) generateBackup(path string) error {
 			}
 			if info.Size() != f.FileSize || !fileHashMatches(full, f.FileHash) {
 				return fmt.Errorf("backup integrity failure for %s", f.ID)
+			}
+			total += info.Size()
+			if total > limit {
+				// Producing an archive restore would refuse is worse than failing
+				// here with an actionable message.
+				return fmt.Errorf("backup exceeds the configured %d MB limit; raise backup_max_mb first", s.cfg.Get().BackupMaxMB)
 			}
 			manifest.Files = append(manifest.Files, model.BackupFileManifest{ID: f.ID, ArchivePath: filepath.ToSlash(p), Size: info.Size(), SHA256: f.FileHash})
 		}
@@ -1658,15 +1853,26 @@ func (s *Server) generateBackup(path string) error {
 		}
 		return out.Close()
 	})
+	return manifest, err
 }
 
 func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
+	allowLongTransfer(w)
 	if r.Header.Get("X-OmniShare-Confirm") != "RESTORE-BACKUP" {
 		respond(w, 400, 400, "restore requires X-OmniShare-Confirm: RESTORE-BACKUP", nil)
 		return
 	}
-	max := s.cfg.Get().MaxUploadMB*1024*1024 + 64*1024*1024
+	// Restore accepts a backup no larger than the export allows; the old
+	// MaxUploadMB-derived cap silently rejected archives the server had just
+	// produced.
+	max := s.cfg.Get().BackupMaxMB*1024*1024 + multipartOverheadMB*1024*1024
 	r.Body = http.MaxBytesReader(w, r.Body, max)
+	// A restore may upload for hours on a slow link, but a dead connection must
+	// still be reclaimed. Reset an idle timer on every successful read instead
+	// of using a fixed total timeout.
+	idleBody := newIdleTimeoutBody(r.Body, restoreIdleTimeout, w)
+	defer idleBody.Stop()
+	r.Body = idleBody
 	reader, err := r.MultipartReader()
 	if err != nil {
 		respond(w, 400, 400, "multipart backup upload required", nil)
@@ -1707,7 +1913,43 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(archive)
-	if err := s.applyRestore(archive); err != nil {
+
+	// Restore accepts both the encrypted .osb container and the legacy plain
+	// ZIP, so upgrades do not strand older backups.
+	var expected *model.BackupManifest
+	if encrypted, err := IsEncryptedBackup(archive); err != nil {
+		respond(w, 400, 400, "could not inspect backup", nil)
+		return
+	} else if encrypted {
+		password := r.Header.Get("X-OmniShare-Backup-Password")
+		if password == "" {
+			respond(w, 400, 400, "this backup is encrypted; a password is required", nil)
+			return
+		}
+		decrypted, err := os.CreateTemp(s.dataDir, "restore-decrypted-*.zip")
+		if err != nil {
+			respond(w, 500, 500, err.Error(), nil)
+			return
+		}
+		decryptedPath := decrypted.Name()
+		defer os.Remove(decryptedPath)
+		src, err := os.Open(archive)
+		if err != nil {
+			_ = decrypted.Close()
+			respond(w, 400, 400, "could not read backup", nil)
+			return
+		}
+		header, decErr := DecryptBackup(src, decrypted, password)
+		_ = src.Close()
+		closeErr := decrypted.Close()
+		if decErr != nil || closeErr != nil {
+			respond(w, 400, 400, "backup password is wrong or the package is corrupted", nil)
+			return
+		}
+		expected = &header.Manifest
+		archive = decryptedPath
+	}
+	if err := s.applyRestore(archive, expected); err != nil {
 		respond(w, 409, 409, err.Error(), nil)
 		return
 	}
@@ -1715,7 +1957,7 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, 0, "backup restored; restart is recommended", nil)
 }
 
-func (s *Server) applyRestore(archive string) error {
+func (s *Server) applyRestore(archive string, expected *model.BackupManifest) error {
 	zr, err := zip.OpenReader(archive)
 	if err != nil {
 		return err
@@ -1725,6 +1967,7 @@ func (s *Server) applyRestore(archive string) error {
 		return errors.New("backup contains too many ZIP entries")
 	}
 	entries := map[string]*zip.File{}
+	limit := uint64(s.cfg.Get().BackupMaxMB) << 20
 	var compressedTotal, uncompressedTotal uint64
 	for _, f := range zr.File {
 		clean := filepath.ToSlash(filepath.Clean(f.Name))
@@ -1737,14 +1980,14 @@ func (s *Server) applyRestore(archive string) error {
 		entries[clean] = f
 		compressedTotal += uint64(f.CompressedSize64)
 		uncompressedTotal += f.UncompressedSize64
-		if uncompressedTotal > maxRestoreTotalSize {
-			return errors.New("backup uncompressed size exceeds limit")
+		if uncompressedTotal > limit {
+			return errors.New("backup uncompressed size exceeds the configured backup limit")
 		}
-		if f.UncompressedSize64 > maxRestoreSingleFileSize {
+		if f.UncompressedSize64 > limit {
 			return fmt.Errorf("backup file exceeds size limit: %s", clean)
 		}
-		if compressedTotal > maxRestoreCompressedSize {
-			return errors.New("backup compressed size exceeds limit")
+		if compressedTotal > limit {
+			return errors.New("backup compressed size exceeds the configured backup limit")
 		}
 	}
 	manifestFile, stateFile, configFile := entries["backup-manifest.json"], entries["omnishare.json"], entries["config.json"]
@@ -1770,6 +2013,23 @@ func (s *Server) applyRestore(archive string) error {
 	if manifest.FormatVersion != 1 {
 		return errors.New("unsupported backup format")
 	}
+	// The encrypted header is authenticated and carries a copy of the manifest.
+	// Both copies must agree, which catches truncation or a container/archive
+	// mismatch before anything is extracted.
+	if expected != nil {
+		if manifest.StateSHA256 != expected.StateSHA256 || manifest.ConfigSHA256 != expected.ConfigSHA256 || len(manifest.Files) != len(expected.Files) {
+			return errors.New("encrypted header manifest does not match the archive")
+		}
+		expectedFiles := map[string]model.BackupFileManifest{}
+		for _, item := range expected.Files {
+			expectedFiles[item.ArchivePath] = item
+		}
+		for _, item := range manifest.Files {
+			if other, ok := expectedFiles[item.ArchivePath]; !ok || other.Size != item.Size || other.SHA256 != item.SHA256 || other.ID != item.ID {
+				return errors.New("encrypted header file manifest does not match the archive")
+			}
+		}
+	}
 	if len(manifest.Files) > maxRestoreManifestFiles {
 		return errors.New("backup manifest contains too many files")
 	}
@@ -1777,19 +2037,19 @@ func (s *Server) applyRestore(archive string) error {
 	var manifestTotal uint64
 	for _, item := range manifest.Files {
 		clean := filepath.ToSlash(filepath.Clean(item.ArchivePath))
-		if clean != item.ArchivePath || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || clean == "." {
+		if err := storage.ValidateStoragePath(clean); err != nil {
 			return fmt.Errorf("backup contains unsafe manifest path: %s", item.ArchivePath)
 		}
 		if _, exists := manifestPaths[clean]; exists {
 			return fmt.Errorf("backup manifest contains duplicate path: %s", clean)
 		}
 		manifestPaths[clean] = struct{}{}
-		if item.Size < 0 || uint64(item.Size) > maxRestoreSingleFileSize {
+		if item.Size < 0 || uint64(item.Size) > limit {
 			return fmt.Errorf("backup file exceeds size limit: %s", clean)
 		}
 		manifestTotal += uint64(item.Size)
-		if manifestTotal > maxRestoreTotalSize {
-			return errors.New("backup manifest size exceeds limit")
+		if manifestTotal > limit {
+			return errors.New("backup manifest size exceeds the configured backup limit")
 		}
 		if entries[clean] == nil {
 			return fmt.Errorf("backup file missing: %s", item.ArchivePath)
@@ -1843,6 +2103,30 @@ func (s *Server) applyRestore(archive string) error {
 			return fmt.Errorf("backup file checksum mismatch: %s", item.ArchivePath)
 		}
 	}
+	newUploads := filepath.Join(stage, "uploads")
+	if err := os.MkdirAll(newUploads, 0o700); err != nil {
+		return err
+	}
+
+	// Everything above (unzip and checksum verification) runs
+	// without the exclusive lock, so uploads and downloads keep flowing while a
+	// multi-gigabyte archive is extracted.
+	if s.restorePreSwapHook != nil {
+		s.restorePreSwapHook()
+	}
+	return s.commitRestore(newUploads, stateJSON, configJSON)
+}
+
+// commitRestore is the short critical section: it swaps the staged uploads
+// directory, replaces the state and restores config. Only this window blocks
+// concurrent data requests, not the whole extraction.
+func (s *Server) commitRestore(newUploads string, stateJSON, configJSON []byte) error {
+	s.dataMu.Lock()
+	defer s.dataMu.Unlock()
+
+	// Capture rollback state only after all in-flight data requests finish.
+	// A snapshot taken during extraction can predate successful writes, making
+	// a failed restore silently discard them while returning their blobs.
 	oldState, err := s.store.Snapshot()
 	if err != nil {
 		return err
@@ -1851,10 +2135,7 @@ func (s *Server) applyRestore(archive string) error {
 	if err != nil {
 		return err
 	}
-	newUploads := filepath.Join(stage, "uploads")
-	if err := os.MkdirAll(newUploads, 0o700); err != nil {
-		return err
-	}
+
 	oldUploads := filepath.Join(s.dataDir, "uploads.pre-restore")
 	_ = os.RemoveAll(oldUploads)
 	currentUploads := filepath.Join(s.dataDir, "uploads")
@@ -1884,16 +2165,58 @@ func (s *Server) applyRestore(archive string) error {
 		_ = s.store.ReplaceStateJSON(oldState)
 		return err
 	}
+	// A crafted archive can carry a state file whose references are absent from
+	// the manifest, so check every referenced blob before declaring success.
+	if err := s.verifyReferencedBlobs(stateJSON); err != nil {
+		restoreUploads()
+		_ = s.store.ReplaceStateJSON(oldState)
+		return err
+	}
 	if err := s.cfg.RestoreJSON(configJSON); err != nil {
 		restoreUploads()
 		_ = s.store.ReplaceStateJSON(oldState)
 		_ = s.cfg.RestoreJSON(oldConfig)
 		return err
 	}
+	s.finishInitialization()
 	if err := os.RemoveAll(oldUploads); err != nil {
 		_ = s.store.AddAudit("restore_warning", "backup", "", "old uploads cleanup failed", map[string]interface{}{"error": err.Error()})
 	}
 	return os.MkdirAll(filepath.Join(currentUploads, ".staging"), 0o700)
+}
+
+// allowLongTransfer clears the server's global 30 minute read/write deadlines
+// for the three endpoints that legitimately move gigabytes. Without this a
+// slow link still fails no matter what budget the client allows itself.
+func allowLongTransfer(w http.ResponseWriter) {
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Time{})
+	_ = controller.SetWriteDeadline(time.Time{})
+}
+
+// verifyReferencedBlobs confirms that every file the restored state points at
+// actually exists after the swap. Without this a tampered archive can leave a
+// library full of dangling records while the restore reports success.
+func (s *Server) verifyReferencedBlobs(stateJSON []byte) error {
+	var snapshot struct {
+		Files []model.FileAsset `json:"files"`
+	}
+	if err := json.Unmarshal(stateJSON, &snapshot); err != nil {
+		return err
+	}
+	for _, f := range snapshot.Files {
+		if f.StoragePath == "" {
+			continue
+		}
+		if err := storage.ValidateStoragePath(f.StoragePath); err != nil {
+			return err
+		}
+		info, err := os.Stat(filepath.Join(s.dataDir, filepath.FromSlash(f.StoragePath)))
+		if err != nil || info.IsDir() {
+			return fmt.Errorf("restored state references a missing blob for file %s", f.ID)
+		}
+	}
+	return nil
 }
 
 func networkType(ip string) string {

@@ -14,6 +14,7 @@ pub struct BackendProcess {
     attached: bool,
     port: u16,
     log_path: Option<PathBuf>,
+    managed_data_dir: Option<PathBuf>,
     last_exit: Option<String>,
 }
 
@@ -30,6 +31,7 @@ impl BackendProcess {
             attached: false,
             port,
             log_path: None,
+            managed_data_dir: None,
             last_exit: None,
         }
     }
@@ -52,12 +54,21 @@ impl BackendProcess {
         }
         self.port = port;
         self.attached = true;
+        self.managed_data_dir = None;
         self.last_exit = None;
         Ok(())
     }
 
     pub fn url(&self) -> String {
         format!("http://{}:{}", DEFAULT_BACKEND_HOST, self.port)
+    }
+
+    pub fn managed_data_dir(&self) -> Option<&Path> {
+        if self.child.is_some() && !self.attached {
+            self.managed_data_dir.as_deref()
+        } else {
+            None
+        }
     }
 
     pub fn is_running(&mut self) -> bool {
@@ -82,7 +93,7 @@ impl BackendProcess {
         }
     }
 
-    pub fn start(&mut self, executable: &Path, log_path: &Path) -> io::Result<()> {
+    pub fn start(&mut self, executable: &Path, log_path: &Path, data_dir: &Path) -> io::Result<()> {
         if self.is_running() {
             return Ok(());
         }
@@ -108,6 +119,8 @@ impl BackendProcess {
         let mut command = Command::new(executable);
         command
             .arg("--no-browser")
+            .arg("--data-dir")
+            .arg(data_dir)
             .arg("--listen")
             .arg(DEFAULT_BACKEND_HOST)
             .arg("--port")
@@ -126,6 +139,7 @@ impl BackendProcess {
         self.child = Some(child);
         self.attached = false;
         self.log_path = Some(log_path.to_path_buf());
+        self.managed_data_dir = Some(data_dir.to_path_buf());
         self.last_exit = None;
         Ok(())
     }
@@ -174,6 +188,7 @@ impl BackendProcess {
             let _ = child.wait();
         }
         self.attached = false;
+        self.managed_data_dir = None;
     }
 }
 

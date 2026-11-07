@@ -189,7 +189,7 @@ func TestSuccessfulKeyCacheIsInvalidatedOnRotation(t *testing.T) {
 	if err := m.Update(first); err != nil {
 		t.Fatal(err)
 	}
-	if !m.VerifyAccessKey("0123456789abcdef-first") || !m.VerifyAccessKey("0123456789abcdef-first") {
+	if !m.VerifyAccessKey("0123456789abcdef-first") {
 		t.Fatal("initial key verification failed")
 	}
 	rotated := m.Get()

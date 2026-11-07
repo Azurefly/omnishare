@@ -5,7 +5,7 @@ use tauri::{AppHandle, State};
 use crate::{
     config::settings::{self, DesktopSettingsView},
     runtime::{
-        manager::{BackendState, BackendStatus},
+        manager::{BackendNavigation, BackendState, BackendStatus},
         startup,
     },
 };
@@ -22,9 +22,10 @@ pub fn desktop_boot(
     app: AppHandle,
     state: State<'_, BackendState>,
     requested_port: Option<u16>,
-) -> Result<BackendStatus, String> {
+) -> Result<BackendNavigation, String> {
     let preferred = requested_port.unwrap_or_else(|| settings::resolve(&app).port);
-    startup::initialize(&app, state.inner(), preferred)
+    startup::initialize(&app, state.inner(), preferred)?;
+    state.inner().navigation()
 }
 
 #[tauri::command]

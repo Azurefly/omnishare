@@ -67,3 +67,28 @@ On Windows:
 $env:OMNISHARE_BACKEND_BIN = 'C:\path\to\omnishare.exe'
 npm --prefix desktop run dev
 ```
+
+### Native installer version mapping
+
+The application, Cargo, package.json and Tauri source version remain the same
+SemVer (for example `1.3.0-rc2`). Use `npm run build`, not a direct `tauri build`,
+to apply native package-manager version rules:
+
+- MSI uses `major.minor.(patch * 1000 + rank)`. Alpha rank is `100 + N`, beta is
+  `300 + N`, RC is `600 + N`, and stable is `999`. Thus `1.3.0-rc2` installs as
+  MSI version `1.3.602`, followed by stable `1.3.999`. This intentionally uses
+  three fields: Windows Installer ignores a fourth field for upgrade ordering.
+  Existing older stable installers such as `1.2.0` sort before the new series.
+  Major/minor must be at most 255, patch at most 64, and prerelease sequence at
+  most 99. Supported prereleases are alphaN/betaN/rcN (also alpha.N, etc.).
+  Unsupported versions fail before compilation rather than colliding silently.
+- Linux builds DEB/AppImage using the original SemVer. RPM is bundled separately
+  from the same compiled executable with the numeric core as RPM Version and
+  `0.rc2` (or the corresponding alpha/beta suffix) as Release. Stable uses Release
+  `1`, so prerelease RPMs upgrade to stable correctly. The application binary
+  still reports the original version. Build metadata is not an upgrade counter.
+- macOS keeps the original version and build flow.
+
+The release workflow's existing policy of not publishing desktop bundles for
+RC/alpha/beta tags is unchanged. Pull requests still validate native installers.
+Run `npm run test:contracts` to check version mapping and platform build plans.

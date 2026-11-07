@@ -1,11 +1,46 @@
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
+
+// Storage may be disabled or full. Keep this page usable without persisting
+// credentials beyond its lifetime, and never fall back to stale stored values.
+const sessionValues = new Map()
+function sessionGet(key) {
+  if (sessionValues.has(key)) return sessionValues.get(key)
+  try { return sessionStorage.getItem(key) } catch { return null }
+}
+function sessionSet(key, value) {
+  sessionValues.set(key, String(value))
+  try { sessionStorage.setItem(key, String(value)) } catch { /* page memory only */ }
+}
+function sessionRemove(key) {
+  sessionValues.set(key, null)
+  try { sessionStorage.removeItem(key) } catch { /* page memory only */ }
+}
+
+// First run: the backend prints a loopback-only URL carrying this token. Keep it
+// in sessionStorage and strip it from the address bar so it does not leak into
+// history or referrers.
+const INIT_TOKEN_KEY = 'omnishare.initToken'
+const urlInitToken = new URLSearchParams(location.search).get('init_token') || ''
+if (urlInitToken) {
+  sessionSet(INIT_TOKEN_KEY, urlInitToken)
+  const clean = new URL(location.href)
+  clean.searchParams.delete('init_token')
+  history.replaceState(null, '', clean.pathname + clean.search + clean.hash)
+}
+
 const state = {
   activeTab: 'dashboard', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
   currentPad: null, currentPadDirty: false, padSaveBlocked: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
-  accessKey: sessionStorage.getItem('omnishare.accessKey') || '', deferredInstall: null, editingNote: null,
-  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve()
+  accessKey: sessionGet('omnishare.accessKey') || '', initToken: sessionGet(INIT_TOKEN_KEY) || '',
+  deferredInstall: null, editingNote: null,
+  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
+  noteTotal: 0, fileTotal: 0, restoreInFlight: false
 }
+
+// Server default is 100; ask explicitly so the response can be paged instead of
+// silently truncated.
+const PAGE_SIZE = 100
 
 const escapeHTML = (value = '') => String(value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))
 const formatBytes = (bytes = 0) => { if (!bytes) return '0 B'; const units=['B','KB','MB','GB','TB']; const i=Math.min(Math.floor(Math.log(bytes)/Math.log(1024)),units.length-1); return `${(bytes/1024**i).toFixed(i ? 1 : 0)} ${units[i]}` }
@@ -20,7 +55,10 @@ const toast = (message, error=false) => {
   el._timer = setTimeout(() => { el.className = 'toast' }, 2800)
 }
 
-const headers = (extra={}) => ({ ...(state.accessKey ? {'X-OmniShare-Key':state.accessKey} : {}), ...extra })
+const authHeaders = () => state.accessKey
+  ? {'X-OmniShare-Key': state.accessKey}
+  : (state.initToken ? {'X-OmniShare-Init-Token': state.initToken} : {})
+const headers = (extra={}) => ({ ...authHeaders(), ...extra })
 
 async function api(path, options={}) {
   const res = await fetch(path, {...options, headers: headers(options.headers || {})})
@@ -41,6 +79,19 @@ async function api(path, options={}) {
     throw err
   }
   return payload.data
+}
+
+// api() returns only data; paged lists also need X-Total-Count to know whether
+// the server truncated the result instead of silently dropping the rest.
+async function apiPage(path) {
+  const res = await fetch(path, {headers: headers()})
+  if (res.status === 401) {
+    showAuth()
+    throw new Error('需要访问密钥')
+  }
+  const payload = await res.json()
+  if (!res.ok) throw new Error(payload.message || `HTTP ${res.status}`)
+  return {items: payload.data || [], total: Number(res.headers.get('X-Total-Count') || 0)}
 }
 
 async function apiBlob(path, options={}) {
@@ -79,7 +130,7 @@ async function verifyAuth() {
     const res = await fetch('/api/v1/auth/verify', {method:'POST', headers:{'X-OmniShare-Key':key}})
     if (!res.ok) throw new Error('密钥不正确')
     state.accessKey = key
-    sessionStorage.setItem('omnishare.accessKey', key)
+    sessionSet('omnishare.accessKey', key)
     $('#authError').textContent = ''
     $('#authDialog').close()
     await loadAll()
@@ -176,12 +227,15 @@ function fillSettings() {
   $('#cfgRetention').value = state.config.retention_days ?? 0
   $('#cfgTrashRetention').value = state.config.trash_retention_days ?? 30
   $('#cfgMaxUpload').value = state.config.max_upload_mb || 4096
+  $('#cfgBackupMax').value = state.config.backup_max_mb || 16384
   $('#cfgAutoOpen').checked = !!state.config.auto_open_browser
   $('#cfgAllowLAN').checked = !!state.config.allow_lan
   $('#cfgListenAddress').value = state.config.listen_address || '127.0.0.1'
   $('#cfgPublicBaseURL').value = state.config.public_base_url || ''
   $('#cfgAllowedOrigins').value = (state.config.allowed_origins || []).join(', ')
   $('#cfgAccessKey').value = ''
+  $('#cfgInitToken').value = ''
+  $('#cfgInitTokenRow').classList.toggle('hidden', !!state.config.has_access_key)
   renderPeers(state.config.peers || [])
 }
 
@@ -216,6 +270,7 @@ async function saveSettings() {
   const payload = {
     node_name: $('#cfgNodeName').value.trim(),
     max_upload_mb: Number($('#cfgMaxUpload').value),
+    backup_max_mb: Number($('#cfgBackupMax').value),
     retention_days: Number($('#cfgRetention').value),
     trash_retention_days: Number($('#cfgTrashRetention').value),
     auto_open_browser: $('#cfgAutoOpen').checked,
@@ -228,16 +283,20 @@ async function saveSettings() {
   }
   const requestHeaders = { 'Content-Type': 'application/json' }
   if (secret === 'CLEAR') requestHeaders['X-OmniShare-Confirm']='CLEAR-ACCESS-KEY'
+  // Before any key exists the server only accepts config writes carrying the
+  // one-time token from <data-dir>/init-token.
+  const initToken = $('#cfgInitToken').value.trim()
+  if (!state.config?.has_access_key && initToken) requestHeaders['X-OmniShare-Init-Token'] = initToken
 
   try {
     state.config = await api('/api/v1/config', {method:'PUT', headers:requestHeaders, body:JSON.stringify(payload)})
     if (secret && secret !== 'CLEAR') {
       state.accessKey = secret
-      sessionStorage.setItem('omnishare.accessKey', secret)
+      sessionSet('omnishare.accessKey', secret)
     }
     if (secret === 'CLEAR') {
       state.accessKey = ''
-      sessionStorage.removeItem('omnishare.accessKey')
+      sessionRemove('omnishare.accessKey')
     }
     $('#settingsDialog').close()
     toast('设置已保存；网络设置需重启服务生效')
@@ -247,14 +306,16 @@ async function saveSettings() {
   }
 }
 
-async function loadNotes(strict=false) {
+async function loadNotes(strict=false, append=false) {
   const seq = ++state.requestSeq.notes
   const q = encodeURIComponent($('#noteSearch').value.trim())
   const tag = encodeURIComponent($('#noteTagFilter').value)
+  const offset = append ? state.notes.length : 0
   try {
-    const notes = await api(`/api/v1/notes?q=${q}&tag=${tag}`)
+    const page = await apiPage(`/api/v1/notes?q=${q}&tag=${tag}&limit=${PAGE_SIZE}&offset=${offset}`)
     if (seq !== state.requestSeq.notes) return
-    state.notes = notes
+    state.notes = append ? [...state.notes, ...page.items] : page.items
+    state.noteTotal = page.total
     renderNotes()
   } catch (err) {
     if (seq === state.requestSeq.notes) reportLoadError(err, strict)
@@ -262,7 +323,10 @@ async function loadNotes(strict=false) {
 }
 
 function renderNotes() {
-  $('#noteCount').textContent = `${state.notes.length} 条速记`
+  $('#noteCount').textContent = state.noteTotal > state.notes.length
+    ? `${state.notes.length} / ${state.noteTotal} 条速记`
+    : `${state.notes.length} 条速记`
+  $('#loadMoreNotes').classList.toggle('hidden', state.notes.length >= state.noteTotal)
   const tags = [...new Set(state.notes.flatMap(n => n.tags || []))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
   const filter = $('#noteTagFilter')
   const signature = tags.join('\u0000')
@@ -421,14 +485,16 @@ async function saveEditNote() {
   }
 }
 
-async function loadFiles(strict=false) {
+async function loadFiles(strict=false, append=false) {
   const seq = ++state.requestSeq.files
   const q = encodeURIComponent($('#fileSearch').value.trim())
   const type = encodeURIComponent($('#fileType').value)
+  const offset = append ? state.files.length : 0
   try {
-    const files = await api(`/api/v1/files?q=${q}&type=${type}`)
+    const page = await apiPage(`/api/v1/files?q=${q}&type=${type}&limit=${PAGE_SIZE}&offset=${offset}`)
     if (seq !== state.requestSeq.files) return
-    state.files = files
+    state.files = append ? [...state.files, ...page.items] : page.items
+    state.fileTotal = page.total
     renderFiles()
   } catch (err) {
     if (seq === state.requestSeq.files) reportLoadError(err, strict)
@@ -444,7 +510,10 @@ function fileIcon(f) {
 }
 
 function renderFiles() {
-  $('#fileCount').textContent = `${state.files.length} 个文件`
+  $('#fileCount').textContent = state.fileTotal > state.files.length
+    ? `${state.files.length} / ${state.fileTotal} 个文件`
+    : `${state.files.length} 个文件`
+  $('#loadMoreFiles').classList.toggle('hidden', state.files.length >= state.fileTotal)
   $('#filesList').innerHTML = state.files.length ? state.files.map(f => `
     <article class="card file-card" data-file-id="${escapeHTML(f.id)}">
       <div class="file-info">
@@ -612,8 +681,10 @@ function uploadOne({file, ttl}) {
       attempt++
       xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/v1/files/upload')
-      xhr.timeout = 120000
-      if (state.accessKey) xhr.setRequestHeader('X-OmniShare-Key', state.accessKey)
+      // 120 s used to fail any upload below ~35 MB of bandwidth. Budget by size
+      // with a 64 KB/s floor and a 5 minute minimum instead of a fixed clock.
+      xhr.timeout = Math.max(5 * 60 * 1000, Math.ceil(file.size / (64 * 1024)) * 1000)
+      Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value))
       pct.textContent = attempt > 1 ? `重试 ${attempt - 1}` : '0%'
       progress.value = 0
       setActions()
@@ -736,6 +807,15 @@ function padSnapshot() {
   }
 }
 
+function preservePadDraft(snapshot = padSnapshot()) {
+  if (!snapshot) return
+  // An autosave may fail after the user has typed more. Preserve the editor's
+  // latest contents instead of overwriting them with the older request body.
+  const draft = state.currentPad?.id === snapshot.id && state.currentPadDirty
+    ? padSnapshot() : snapshot
+  sessionSet(`omnishare.padDraft.${draft.id}`, JSON.stringify(draft))
+}
+
 function markPadDirty() {
   if (!state.currentPad) return
   state.currentPadDirty = true
@@ -781,7 +861,7 @@ async function performPadSave(snapshot, showToast=true) {
       $('#saveState').textContent = unchanged ? '已保存' : '待保存'
       $('#saveState').className = `badge${unchanged ? '' : ' muted'}`
       $('#padMeta').textContent = `${p.id} · 版本 v${p.version} · 更新于 ${formatDate(p.updated_at)}`
-      if (unchanged) sessionStorage.removeItem(`omnishare.padDraft.${p.id}`)
+      if (unchanged) sessionRemove(`omnishare.padDraft.${p.id}`)
     }
     renderPads()
     if (showToast) toast('文档已保存')
@@ -815,7 +895,7 @@ async function deletePad() {
   const id = state.currentPad.id
   try {
     await api(`/api/v1/pads/${encodeURIComponent(id)}`, {method:'DELETE'})
-    sessionStorage.removeItem(`omnishare.padDraft.${id}`)
+    sessionRemove(`omnishare.padDraft.${id}`)
     state.currentPad = null
     state.currentPadDirty = false
     $('#padForm').classList.add('hidden')
@@ -1016,7 +1096,7 @@ function renderAudit() {
     <div class="empty">
       <div class="empty-icon">⚡</div>
       <h3>暂无活动记录</h3>
-      <p>所有内容修改、文件上传与分享访问均会通过加密链记录于此</p>
+      <p>所有内容修改、文件上传与分享访问均会通过 SHA-256 哈希链记录于此</p>
     </div>
   `
 }
@@ -1090,15 +1170,181 @@ function switchTab(tab) {
 }
 
 async function exportBackup() {
+  // Backups can take minutes. Passing our own signal keeps the request out of
+  // the runtime bridge's 6 s abort watchdog; it only ends on network failure.
+  const password = window.prompt('设置备份口令（留空则导出未加密 ZIP；加密包只能用同一口令恢复）', '')
+  if (password === null) return
+  const controller = new AbortController()
+  const suggested = `omnishare-backup-${new Date().toISOString().slice(0, 10)}${password ? '.osb' : '.zip'}`
   try {
-    const blob = await apiBlob('/api/v1/backup')
+    // The picker needs the click's transient user activation. Awaiting the
+    // backup response first can exhaust it, especially for a large archive.
+    // Cancelling here also avoids generating a backup the user does not want.
+    const handle = window.showSaveFilePicker
+      ? await window.showSaveFilePicker({ suggestedName: suggested }) : null
+    toast('正在生成备份，请稍候…')
+    const extra = password ? { 'X-OmniShare-Backup-Password': password } : {}
+    const res = await fetch('/api/v1/backup', {signal: controller.signal, headers: headers(extra)})
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`
+      try {
+        const payload = await res.json()
+        message = payload.message || message
+      } catch { /* non-JSON error */ }
+      throw new Error(message)
+    }
+    const disposition = res.headers.get('content-disposition') || ''
+    const total = Number(res.headers.get('content-length') || 0)
+
+    // Prefer the File System Access API so a 16 GB backup is written chunk by
+    // chunk instead of being materialised as one Blob in memory.
+    if (handle) {
+      const writable = await handle.createWritable()
+      let loaded = 0
+      let lastShown = -10
+      try {
+        const reader = res.body.getReader()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          await writable.write(value)
+          loaded += value.length
+          if (total) {
+            const percent = Math.floor((loaded / total) * 100)
+            if (percent >= lastShown + 10) {
+              lastShown = percent
+              toast(`正在写入备份文件 ${percent}%`)
+            }
+          }
+        }
+        await writable.close()
+      } catch (err) {
+        try { await writable.abort() } catch { /* already closed */ }
+        throw err
+      }
+      toast(disposition.includes('.osb') ? '加密备份已保存' : '备份已保存')
+      return
+    }
+
+    // Fallback browsers have to buffer the whole response. Refuse instead of
+    // silently exhausting memory on multi-gigabyte archives.
+    const MAX_BUFFERED = 2 * 1024 * 1024 * 1024
+    if (total > MAX_BUFFERED) {
+      throw new Error('当前浏览器不支持流式下载，备份超过 2 GB。请使用 Chrome/Edge，或降低“备份上限”')
+    }
+    const reader = res.body.getReader()
+    const chunks = []
+    let received = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      received += value.length
+      if (received > MAX_BUFFERED) {
+        controller.abort()
+        throw new Error('备份超过 2 GB 且浏览器不支持流式下载，已中止')
+      }
+    }
+    const blob = new Blob(chunks, { type: 'application/octet-stream' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = `omnishare-backup-${new Date().toISOString().slice(0, 10)}.zip`
+    a.download = suggested
     a.click()
     setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   } catch (err) {
-    toast(err.message, true)
+    // Abort even when rejecting the response by Content-Length or failing to
+    // open/write the destination, so its body does not keep downloading.
+    controller.abort()
+    if (err.name !== 'AbortError') toast(err.message, true)
+  }
+}
+
+function openRestoreDialog() {
+  if (state.restoreInFlight) {
+    if (!$('#restoreDialog').open) $('#restoreDialog').showModal()
+    return
+  }
+  $('#restoreFile').value = ''
+  $('#restorePassword').value = ''
+  $('#restoreConfirm').checked = false
+  $('#restoreProgress').classList.add('hidden')
+  $('#restoreProgress').value = 0
+  $('#restoreStatus').textContent = ''
+  $('#restoreSubmitBtn').disabled = false
+  $('#restoreDialog').showModal()
+}
+
+function restoreBackup() {
+  if (state.restoreInFlight) return
+  const file = $('#restoreFile').files?.[0]
+  const status = $('#restoreStatus')
+  const progress = $('#restoreProgress')
+  const submit = $('#restoreSubmitBtn')
+  if (!file) {
+    status.textContent = '请先选择备份文件'
+    return
+  }
+  if (!$('#restoreConfirm').checked) {
+    status.textContent = '请先勾选确认覆盖当前数据'
+    return
+  }
+  const restoreHeaders = { 'X-OmniShare-Confirm': 'RESTORE-BACKUP' }
+  Object.assign(restoreHeaders, authHeaders())
+  const restorePassword = $('#restorePassword').value
+  if (restorePassword) restoreHeaders['X-OmniShare-Backup-Password'] = restorePassword
+  const form = new FormData()
+  form.append('backup', file)
+  submit.disabled = true
+  progress.classList.remove('hidden')
+  progress.value = 0
+  status.textContent = '正在上传并校验备份…'
+  const xhr = new XMLHttpRequest()
+  // Backups are capped by the server's backup limit, not by a fixed duration;
+  // a slow link must not turn a valid restore into a timeout.
+  // 0 means "no total deadline". The server enforces an idle timeout instead,
+  // so a dead connection can still be reclaimed while a slow upload completes.
+  xhr.timeout = 0
+  xhr.open('POST', '/api/v1/restore')
+  Object.entries(restoreHeaders).forEach(([name, value]) => xhr.setRequestHeader(name, value))
+  xhr.upload.onprogress = event => {
+    if (event.lengthComputable) progress.value = Math.round((event.loaded / event.total) * 100)
+  }
+  const finishRestore = () => {
+    state.restoreInFlight = false
+    submit.disabled = false
+  }
+  xhr.onerror = () => {
+    status.textContent = '网络错误，恢复未完成'
+    finishRestore()
+  }
+  xhr.onabort = () => {
+    status.textContent = '恢复请求已中止'
+    finishRestore()
+  }
+  xhr.onload = () => {
+    finishRestore()
+    let payload = {}
+    try { payload = JSON.parse(xhr.responseText) } catch { /* non-JSON error page */ }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      status.textContent = '恢复完成，正在刷新数据…'
+      toast('备份已恢复，建议重启程序')
+      $('#restoreDialog').close()
+      loadAll()
+      return
+    }
+    if (xhr.status === 401) {
+      status.textContent = '需要访问密钥'
+      showAuth()
+    } else {
+      status.textContent = payload.message || ('恢复失败：HTTP ' + xhr.status)
+    }
+  }
+  state.restoreInFlight = true
+  try {
+    xhr.send(form)
+  } catch (err) {
+    status.textContent = err.message
+    finishRestore()
   }
 }
 
@@ -1217,6 +1463,10 @@ function bindEvents() {
     $('#settingsDialog').showModal()
   })
   $('#backupBtn').addEventListener('click', exportBackup)
+  $('#loadMoreNotes').addEventListener('click', () => loadNotes(false, true))
+  $('#loadMoreFiles').addEventListener('click', () => loadFiles(false, true))
+  $('#restoreBtn').addEventListener('click', openRestoreDialog)
+  $('#restoreSubmitBtn').addEventListener('click', restoreBackup)
   $('#saveSettingsBtn').addEventListener('click', saveSettings)
   $('#addPeerBtn').addEventListener('click', () => addPeerRow())
   $('#peerRows').addEventListener('click', e => {

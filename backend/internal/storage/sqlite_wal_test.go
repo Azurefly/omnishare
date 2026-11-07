@@ -438,8 +438,12 @@ func TestWAL_SingleTxMigrationRollbackAndCleanup(t *testing.T) {
 		t.Fatalf("migrated audit count mismatch: got %d, want %d", auditsVerified, len(st.Audits))
 	}
 
-	if _, err := os.Stat(jsonPath + ".bak"); err != nil {
-		t.Fatalf("expected omnishare.json.bak to exist: %v", err)
+	backups, err := filepath.Glob(jsonPath + ".*.migrated.bak")
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("expected a timestamped *.migrated.bak backup next to the source json: %v", err)
+	}
+	if _, err := os.Stat(jsonPath); err != nil {
+		t.Fatalf("source omnishare.json must stay in place as the rollback path: %v", err)
 	}
 }
 
