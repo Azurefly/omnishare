@@ -1,200 +1,67 @@
 # OmniShare
 
-OmniShare 是面向个人、家庭、小团队和内网环境的私有化多设备内容中枢。它将随手记、文件与视频、受控分享、轻量协作文档、设备发现、审计、备份恢复和回收站整合为可自托管的产品，并同时提供 Web、单二进制后端和 Tauri 2 桌面端。
+OmniShare 是面向个人、家庭、小团队和内网环境的自托管内容工作区。随手记、文件与视频、受控分享、轻量协作文档、设备发现、审计、备份恢复和回收站集中在同一个界面中，可通过浏览器、单二进制后端或 Tauri 2 桌面端使用。
 
-## 当前状态
+## 当前版本：0.1.0
 
-| 组成 | 版本或分支 | 状态 |
-|---|---:|---|
-| 后端与 Web | `v1.3.0-rc4` | Release Candidate，Windows/Linux/macOS 的 AMD64/ARM64 便携包 |
-| Windows/Linux 桌面 | `v1.3.0-rc4` | 同版本预发布，Tauri x64 安装包 |
-| macOS Tauri 桌面 | 源码与 CI 验证 | Universal 构建可用；公开签名、公证分发待完成 |
-| `main` 主分支 | 统一开发基线 | 统一源码与发布，包含安全备份、工作区改版、剪贴板确认与传输队列 |
+`0.1.0` 是当前统一的产品版本，包含已完成的存储、安全、桌面可靠性和界面更新。后端、Web 与 Windows/Linux 桌面使用同一版本号，下载以 [v0.1.0 Release](https://github.com/Azurefly/omnishare/releases/tag/v0.1.0) 的实际附件为准。
 
-> **版本边界：** `v1.3.0-rc4` 将后端、Web 和 Windows/Linux 桌面统一为一个候选版本。下载内容以该 Release 的实际附件为准。旧 `v1.0.1-desktop` 不包含下述整合更新，已有用户升级前应先备份并核对数据目录。升级步骤和已知限制见 [RC4 发布说明](docs/RELEASE_NOTES_v1.3.0-rc4.md)。
+**这是一次版本号重置。** `0.1.0` 在安装器和包管理器的版本顺序中低于此前的 `1.x`，不能按自动升级处理。已有用户请先备份、退出旧进程，必要时卸载旧应用但保留数据目录，再安装 `0.1.0` 并沿用原目录。应用版本重置不会把备份格式改回旧版：新加密备份仍使用 v3，继续读取 v2 和 ZIP。完整步骤见[安装与迁移](#安装与迁移)及 [0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md)。
 
-### RC4 更新
+## 主要功能
 
-| 范围 | 使用上的变化 |
-|---|---|
-| 工作区布局 | 桌面左侧集中导航、设备与存储，右侧保留一个主工作区；移动端保留连接状态和可滚动导航。 |
-| 剪贴板发送 | 点击读取纯文本或 PNG，预览内容、目标节点和保留时长后再确认发送；默认保留 24 小时。不会在后台监控或自动同步剪贴板。 |
-| 传输队列 | 所有排队任务立即可见；支持取消、手动重试和清理记录。重试也受最多 3 个并发限制，错误保留在任务行内。 |
-| 设备状态 | 按当前节点、在线和离线分组；发现设备仅表示可找到节点，打开其他节点仍需独立验证。 |
-| 视觉与交互 | 统一图标、间距、卡片和焦点样式，设置按用途分组，改善浅色主题状态文字与危险按钮的对比度。 |
-| 发布校验 | 服务器 DEB 使用独立的 `omnishare-server_` 文件名前缀，内部 Debian 版本仍使用 `~rc4`；上传前拒绝大小写重名，发布后核对公开附件名称与 SHA-256。 |
+| 功能 | 使用方式 |
+| --- | --- |
+| 内容工作区 | 桌面左侧集中导航、设备与存储，右侧显示当前模块；窄屏保留连接状态和可滚动导航。 |
+| 随手记与剪贴板 | 保存纯文本，设置保留时长、阅读次数或阅后即焚；剪贴板内容先预览，再确认发送到当前节点。 |
+| 文件与视频 | 多文件排队上传、取消和手动重试；下载与视频播放支持 HTTP Range。 |
+| 受控分享 | 为内容创建带有效期、访问限制等约束的分享，管理内容生命周期与回收站。 |
+| 轻量协作文档 | 自动保存、版本冲突检测与会话草稿保留，适合跨设备继续编辑。 |
+| 设备与连接 | 按当前节点、在线和离线分组；打开其他节点后使用该节点自己的访问凭据。 |
+| 数据与备份 | 默认 SQLite WAL，支持旧 JSON 迁移、完整备份、v3 加密备份及校验后恢复。 |
+| 外观与设置 | 浅色、深色和跟随系统主题，设置按用途分组，提供键盘焦点和减少动态效果支持。 |
 
-本轮参考 Oink 的设备组织、剪贴板入口和任务状态设计独立实现，未引入其源码、品牌素材、键鼠驱动或音频组件。具体实现、安全边界和参考版本见 [Oink 功能与界面吸收记录](docs/OINK_ADOPTION.md)。此前的 SQLite、v3 加密备份和桌面可靠性更新继续保留，见 [分支整合记录](docs/INTEGRATION_2026-11-07.md)。
+剪贴板、设备和传输的具体行为见[安全共享与使用边界](docs/SECURE_SHARING.md)。
 
-## 下载与版本选择
+## 下载
 
-- [OmniShare v1.3.0-rc4：服务器便携包与 Windows/Linux 桌面安装包](https://github.com/Azurefly/omnishare/releases/tag/v1.3.0-rc4)
-- [RC4 更新、升级与备份兼容说明](docs/RELEASE_NOTES_v1.3.0-rc4.md)
-- [全部 Releases](https://github.com/Azurefly/omnishare/releases)
+| 平台与使用方式 | v0.1.0 附件 |
+| --- | --- |
+| Windows x64 桌面 | `OmniShare_0.1.0_x64-setup.exe` 或 `OmniShare_0.1.0_x64_en-US.msi` |
+| Linux x64 桌面 | `OmniShare_0.1.0_amd64.AppImage`、`OmniShare_0.1.0_amd64.deb` 或 `OmniShare-0.1.0-1.x86_64.rpm` |
+| Windows 后端与 Web | `OmniShare-v0.1.0-windows-amd64.zip` / `OmniShare-v0.1.0-windows-arm64.zip` |
+| Linux 后端与 Web | `OmniShare-v0.1.0-linux-amd64.tar.gz` / `OmniShare-v0.1.0-linux-arm64.tar.gz`，或 `omnishare-server_0.1.0_{amd64,arm64}.deb` |
+| macOS 后端与 Web | `OmniShare-v0.1.0-macos-amd64.zip` / `OmniShare-v0.1.0-macos-arm64.zip` |
 
-Windows x64 桌面用户优先选择：
+在 [v0.1.0 Release](https://github.com/Azurefly/omnishare/releases/tag/v0.1.0) 下载对应架构的文件，并用同页的 SHA-256 清单核对。Windows ARM64 使用后端便携包。Linux 的 `omnishare-server_` 文件是服务器包，`OmniShare_` 文件是桌面包，请按所需运行方式选择。服务器 DEB 的内部软件包名为 `omnishare`。
 
-```text
-OmniShare_1.3.0-rc4_x64-setup.exe
-```
+**macOS ZIP 是未签名的 Go 后端 `.app` 启动包装，不是 Tauri 桌面安装器。** macOS Tauri Universal 构建能力已具备，公开桌面分发仍需 Apple Developer ID 签名、公证和 Gatekeeper 验收。未签名的后端程序也可能受到 Gatekeeper 限制。Windows 安装包尚未提供商业代码签名。
 
-需要 MSI 部署时选择：
+## 安装与迁移
 
-```text
-OmniShare_1.3.0-rc4_x64_en-US.msi
-```
+### 首次安装
 
-Linux x64 桌面根据发行版选择 `OmniShare` AppImage、DEB 或 RPM。Windows/Linux/macOS 的 AMD64、ARM64 便携包名称以 `OmniShare-v1.3.0-rc4-` 开头，提供单后端进程和浏览器界面；Linux `omnishare-server_1.3.0-rc4_*.deb` 属于服务器包。Windows ARM64 使用对应便携包。RC4 的公开附件名称以当前 Release 为准，原 tag 和二进制保留首次验证的内容，发布命名修复见 [RC4 发布说明](docs/RELEASE_NOTES_v1.3.0-rc4.md#发布附件命名修复)。
+Windows x64 桌面用户下载 NSIS 安装器或 MSI，安装后启动 OmniShare；桌面端会启动内置后端并打开界面。关闭主窗口后应用继续驻留系统托盘，使用托盘菜单可重新打开窗口或完全退出。
 
-Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清单，以及 Windows 安装布局与后端自动恢复测试的 JUnit/JSON 证据。
+Linux x64 桌面用户按发行版选择 AppImage、DEB 或 RPM。后端便携包通过浏览器使用；Windows ZIP 解压后运行 `start-omnishare.cmd`，Linux tar.gz 可直接运行后端或使用包内的用户级 `install.sh`。
 
-> **macOS 说明：** 本 Release 的 macOS ZIP 是未签名的后端 `.app` 启动包装，不是 Tauri Universal 桌面安装包。Tauri Universal 构建和双架构检查可用，但公开桌面分发仍需完成 Apple Developer ID 签名、公证和 Gatekeeper 验收。未签名的后端程序也可能受到 Gatekeeper 限制。
+首次启动默认仅监听本机。请先完成[首次配置](#首次配置与网络访问)，再按需要开放局域网。
 
-## 已包含的桌面可靠性修复
+### 从已有安装迁移到 0.1.0
 
-- 后端进程异常退出时由桌面 watchdog 自动恢复，不再持续停留在 `Failed to fetch`。
-- 前端对短暂断线进行有限重试、错误节流和恢复后刷新。
-- 本机按一台产品设备展示，不再按 loopback、Tailscale、虚拟网卡和 APIPA 地址重复生成设备卡。
-- Windows MSI 安装布局测试会强制终止后端并验证新进程恢复，同时校验本机设备条目恰好为 1。
-- npm、Cargo 与 Tauri bundle 版本必须一致，否则发布契约失败。
+1. **确认并备份原数据。** 在旧程序中导出备份并保存口令，记录实际数据目录；需要目录副本时，先完全停止服务，再复制整个目录，包括数据库、文件和配置。
+2. **退出旧程序及后端。** 桌面窗口关闭后可能仍在托盘运行，应选择完全退出；确认没有其他进程继续使用该数据目录。
+3. **按版本重置安装。** `0.1.0` 低于旧 `1.x`，安装器或包管理器可能拒绝覆盖。必要时先卸载旧应用，保留数据目录与独立备份，再安装 `0.1.0`；不要使用会清除用户数据的选项。
+4. **沿用原目录。** 同一平台的桌面安装包、便携脚本和直接运行后端可能使用不同默认目录。可通过 `OMNISHARE_DATA_DIR` 或后端的 `--data-dir` 指定原目录的绝对路径，不要让两个实例同时操作同一目录。
+5. **核对内容后继续使用。** 检查随手记、文件、文档、分享和访问配置。已设置的访问密钥继续使用；没有密钥的环境通过本次启动提供的初始化入口配置。
 
-## 剪贴板与文件传输
+本次版本号重置不降低 SQLite 数据格式或备份容器版本。不要仅凭应用版本号判断备份兼容性。恢复备份会替换当前数据和配置，详见[备份与恢复](#备份与恢复)。
 
-在“随手记”点击“从剪贴板发送”，浏览器会请求相应读取权限。预览确认框展示内容、当前节点地址与保留时长；确认后，纯文本保存为随手记，PNG 图片进入文件传输队列。取消会清空预览，内容不会自动上传，也不会保存到浏览器长期存储。剪贴板读取通常需要 HTTPS 或本机地址；不支持的浏览器仍可手动粘贴文本或选择文件。
+旧 `omnishare.json` 可导入当前 SQLite 格式。若数据来自早期写入 `backend/data` 的 SQLite 原型，当前没有自动转换工具；请保留原程序和完整目录，在数据副本上另行转换与验证，不要直接覆盖唯一副本。
 
-剪贴板预览限制为 256 KB 纯文本或 16 MB PNG，图片还受节点上传上限和解码尺寸限制；HTML、SVG 等富内容不会作为活动页面导入。发送目标是当前打开的 OmniShare 节点，其他设备通过该节点访问内容；这不是后台点对点剪贴板同步。
+## Web 与后端快速运行
 
-文件区显示排队、上传、服务端处理中、完成、失败和取消状态。取消排队任务不会发出请求；取消正在上传的任务会停止当前连接，但无法撤回服务端已经保存的数据。发生连接中断时，应先检查文件列表再手动重试，以免重复创建逻辑文件。上传不提供分片断点续传；下载和视频播放继续支持 HTTP Range。
-
-## 界面主题
-
-主题功能已经合并到 `main`，适用于 Web、PWA 和 Tauri 桌面端。
-
-### 快速切换
-
-页面顶部工具栏提供主题按钮：
-
-```text
-浅色
-深色
-```
-
-点击后会在浅色与深色之间立即切换，无需刷新页面或重启桌面程序。
-
-### 系统设置
-
-进入：
-
-```text
-设置 → 常规与外观 → 界面主题
-```
-
-可选择：
-
-- **跟随系统**：根据 Windows、macOS 或 Linux 桌面环境自动切换。
-- **浅色（白天）**：固定使用浅色界面。
-- **深色（黑夜）**：固定使用深色界面。
-
-### 保存与同步规则
-
-- 主题选择只保存在当前浏览器或桌面端本机。
-- 配置键为 `omnishare.theme`，使用浏览器本地存储保存。
-- 主题不会上传到 OmniShare 后端，也不会写入项目数据或备份内容。
-- 不同浏览器、不同设备之间不会自动同步主题。
-- 清除站点数据或应用 WebView 数据后，主题会恢复为“跟随系统”。
-
-### 加载与系统联动
-
-- 页面在主样式加载前恢复主题，避免启动时先显示深色再切换浅色的闪烁。
-- “跟随系统”模式监听 `prefers-color-scheme`，操作系统主题变化后会即时更新。
-- 浏览器顶部主题色、表单控件、对话框、卡片、列表、提示框和代码区域会同步变化。
-- 启用“减少动态效果”时，主题过渡动画会自动关闭。
-
-### PWA 与离线使用
-
-`theme.js` 和 `theme.css` 已加入 Service Worker 静态资源白名单，因此安装为 PWA 或离线启动时仍可恢复主题。Web 源码和 Go 后端内嵌前端保持同步，桌面安装包不会使用另一套主题实现。
-
-## 桌面端能力
-
-- **Tauri 2 桌面壳**：复用现有 Go 后端和 Web 前端，不另造业务系统。
-- **原生后端生命周期**：Rust 负责启动、停止、健康检查、端口选择和错误诊断；首次启动为自有后端交接初始化令牌。
-- **后端 watchdog**：托管后端意外退出后自动恢复，并限制重启频率。
-- **端口冲突避让**：首选端口被非 OmniShare 服务占用时自动选择备用端口。
-- **已有服务接管**：发现已有 OmniShare 后端时直接连接，不重复创建后端。
-- **单实例**：重复启动会唤醒已有窗口，保持一个桌面进程。
-- **系统托盘**：关闭主窗口后继续驻留，可重新打开、隐藏或完全退出。
-- **主题切换**：支持跟随系统、白天和黑夜三种模式。
-- **安装包**：Windows MSI/NSIS；Linux AppImage/DEB/RPM；macOS Universal 构建能力。
-- **诊断证据**：启动失败时记录后端路径、端口、退出状态、日志路径和最近日志。
-
-## 核心产品能力
-
-- **默认安全**：首次启动仅监听 `127.0.0.1`；开启局域网必须先设置至少 16 字节访问密钥。
-- **密钥保护**：管理密钥不接受 URL 参数，不写入浏览器长期存储；服务端只保存 PBKDF2-HMAC-SHA256 派生值。
-- **内容票据**：下载、视频与 Raw 内容使用短时签名票据，不传播全局密钥。
-- **分享边界**：HEAD 不消耗次数；短时浏览器会话避免 Range 请求重复扣减；HTML/SVG/XML 强制下载。
-- **浏览器隔离**：严格 CSP、`no-store`、`no-referrer`；Service Worker 只缓存固定静态资源。
-- **数据可靠性**：SQLite WAL 默认存储，支持旧 JSON 数据迁移；配置与 JSON 回退状态保留上一代备份，文件写入执行文件同步和原子替换。
-- **后端单实例**：同一数据目录使用跨平台进程锁，拒绝第二个写实例。
-- **文件模型**：同内容复用物理 Blob，但每次上传保留独立逻辑文件、文件名与生命周期。
-- **完整备份恢复**：备份包含状态、配置、文件及 SHA-256 校验清单；支持 v3 AES-256-GCM 加密包与明文 ZIP，恢复先校验、分阶段替换并支持失败回滚。
-- **受限阅读**：阅读次数上限和阅后即焚在并发请求下统一判断、消费并持久化，避免在计数刷盘窗口内被重复读取。
-- **发现协议**：局域网公告使用稳定 Ed25519 身份和签名，校验时间、端口、字段长度并确定性去重排序。
-- **协作保护**：文档自动保存按文档快照串行执行；切换前保存；冲突时保留本地草稿。
-
-### 备份与恢复
-
-1. 在“设置 → 存储与保留”点击“导出备份”，设置口令可生成加密 `.osb`；留空生成明文 ZIP。口令不会写入数据目录，恢复加密包需要相同口令。
-2. 支持 File System Access API 的浏览器先选择保存位置，再生成并分块写入备份；取消选择不会开始导出，写入失败会停止下载。
-3. 不支持该 API 的浏览器使用内存缓冲下载，上限为 2 GB；即使响应没有提供文件长度，也会按实际接收字节限制。更大的备份需要支持流式保存的浏览器。
-4. 恢复时选择备份文件、填写加密口令并确认覆盖。一次恢复完成前不会重复提交；服务端先解压和校验，再切换数据。
-
-导出与恢复共用“备份上限”设置（`backup_max_mb`，默认 16384 MB）。成功恢复会用备份替换当前数据和配置，备份之后的新内容也会被替换；操作前应先导出当前数据。失败恢复会回滚到最终切换之前的状态，保留解压校验期间已经成功完成的写入。
-
-| 备份文件 | main 最新构建的支持情况 | 兼容边界 |
-|---|---|---|
-| v3 `.osb` | 新加密备份的默认格式，可导出和恢复 | 旧程序无法读取，恢复时需要本次整合更新或更新版本。 |
-| v2 `.osb` | 可恢复已有备份 | 保留旧格式的分块校验能力，不具有 v3 的完整包头和结束记录认证。 |
-| 未加密 ZIP | 可导出和恢复 | 文件内容未加密，请按其中的数据敏感程度保管。 |
-
-v3 使用 AES-256-GCM 与 PBKDF2-HMAC-SHA256：完整包头、分块顺序与结束记录都参与认证，读取时拒绝截断与尾随数据，并限制不可信包头指定的密钥派生计算量。包头中的版本、算法、创建时间和校验清单仍为可读元数据，备份的数据内容经过加密。
-
-### 会话与文档草稿
-
-访问密钥和初始化令牌使用会话存储，不写入浏览器长期存储。浏览器禁止访问会话存储，或存储空间不足时，当前页面改用内存继续工作；重新加载或关闭页面后，这部分内存数据会丢失，需要重新通过本机初始化链接或访问密钥进入。
-
-文档保存失败或发生版本冲突时，会保存编辑器的最新草稿，避免较早的自动保存请求覆盖之后的输入。草稿保存在当前会话；存储不可用时仅保留在当前页面内存中，重要内容应另行复制保存。文档采用版本冲突检测，不提供多人同时逐字编辑的实时合并。
-
-## Windows 桌面端使用
-
-1. 从 GitHub Release 下载 NSIS 安装器或 MSI。
-2. 完成安装并启动 OmniShare。
-3. 桌面端自动启动内置后端并打开主界面。
-4. 关闭主窗口后应用继续驻留系统托盘。
-5. 使用托盘菜单重新打开窗口或完全退出。
-
-正常情况下，任务管理器会看到两个不同职责的进程：
-
-- 一个 Tauri 桌面壳。
-- 一个由桌面壳管理的 Go 后端。
-
-重复启动不会创建第二个桌面壳。默认数据目录由桌面端管理；启动失败时，错误页面会显示后端日志路径和最近输出。
-
-旧版便携运行方式仍然可用。解压传统 Windows ZIP 后双击：
-
-```text
-start-omnishare.cmd
-```
-
-该启动器调用同目录的 `start-omnishare.ps1`，数据默认保存到：
-
-```text
-%APPDATA%\OmniShare
-```
-
-## Web/后端快速运行
-
-从 `main` 构建需要 **Go 1.26.0 或更新版本**、Node.js 与 npm；当前 CI 使用 Go 1.26.5 和 Node.js 22.23.1。前端构建不需要另装 npm 依赖；首次编译后端需要获取 Go 模块，离线构建需提前准备依赖缓存。
+源码构建需要 **Go 1.26.0 或更新版本**、Node.js 和 npm；CI 使用 Node.js 22。前端构建无需安装 npm 依赖，首次后端构建需要获取 Go 模块，离线构建应提前准备依赖缓存。
 
 在仓库根目录执行：
 
@@ -204,13 +71,7 @@ cd backend
 go run ./cmd/omnishare
 ```
 
-默认地址：
-
-```text
-http://127.0.0.1:8081
-```
-
-常用参数：
+默认地址为 `http://127.0.0.1:8081`。常用参数：
 
 ```text
 --port 8081
@@ -222,177 +83,130 @@ http://127.0.0.1:8081
 --no-browser
 ```
 
-桌面端使用用户配置和自动避让策略管理端口；直接运行后端时可以通过 `--port` 指定端口。
+### 首次配置与网络访问
 
-### 首次配置与初始化令牌
+未设置访问密钥时，在运行 OmniShare 的本机完成初始化：
 
-尚未设置访问密钥时，请在运行 OmniShare 的本机完成初始化：
+1. 直接运行后端时，使用程序自动打开的页面；指定 `--no-browser` 时，从启动日志复制带 `init_token` 的完整本机 URL。
+2. 桌面端会从自己启动的后端的实际数据目录读取初始化令牌并交给页面。连接已有后端时，仍需该后端自己的初始化链接或访问密钥。
+3. 在“设置 → 访问与网络”设置至少 16 字节的访问密钥。保存成功后，初始化令牌失效并从磁盘删除，后续访问使用访问密钥。
 
-1. **直接运行后端**：使用程序自动打开的页面。如果指定了 `--no-browser`，从启动日志复制带 `init_token` 的完整本机 URL 并打开。
-2. **从 main 构建的桌面端**：桌面程序会从自己启动的后端的实际数据目录读取初始化令牌，并交给首次打开的页面；无需手动寻找令牌文件。连接已有的其他后端时，仍需使用该后端的初始化链接或访问密钥。
-3. 进入“系统设置”，设置至少 16 字节的访问密钥。成功保存后，初始化令牌失效并从磁盘删除，后续访问使用访问密钥。
+令牌文件位于实际数据目录的 `init-token`。页面读取 URL 中的令牌后立即从地址栏移除，并保存在会话存储或当前页面内存中。未设置密钥时，管理与数据接口只接受携带正确令牌的回环请求，普通本机 URL 不会自动获得管理权限。
 
-令牌文件位于实际数据目录的 `init-token`，路径会写入启动日志；本机 URL 形式为 `http://127.0.0.1:<端口>/?init_token=...`。页面读取令牌后立即从地址栏移除，并保存在会话存储或当前页面内存中。未设置密钥时，管理与数据接口仅接受携带正确令牌的回环请求；直接打开不带令牌的地址不会获得管理权限。
+开启局域网前必须设置访问密钥；没有密钥时程序拒绝绑定非回环地址。跨不可信网络应使用 HTTPS、Tailscale 或可信 VPN。HTTPS 证书由用户提供，当前没有自动证书签发。
 
-从旧版本升级且原本没有访问密钥时，同样使用下一次启动提供的初始化链接。已经设置访问密钥的用户继续使用原密钥。
+## 数据目录与存储
 
-### 开启局域网
+| 启动方式 | 默认数据目录 |
+| --- | --- |
+| Windows Tauri 桌面或直接运行后端 | `%USERPROFILE%\.omnishare` |
+| Linux/macOS Tauri 桌面或直接运行后端 | `~/.omnishare` |
+| Windows ZIP 的启动或安装脚本 | `%APPDATA%\OmniShare` |
+| Linux tar.gz 的 `install.sh` | `${XDG_DATA_HOME:-$HOME/.local/share}/omnishare` |
+| Linux 服务器 DEB，直接运行 `/usr/bin/omnishare` | `~/.omnishare` |
+| macOS 后端 `.app` 包装 | `~/.omnishare` |
 
-先在本机设置不少于 16 字节的访问密钥，再启用“允许局域网访问”。没有访问密钥时，程序会拒绝绑定非回环地址。跨不可信网络应使用 HTTPS、Tailscale 或可信 VPN。
+桌面端和直接运行的后端支持 `OMNISHARE_DATA_DIR`，后端也可使用 `--data-dir`。安装脚本会显式传入自身的数据路径，切换启动方式时应核对实际启动参数。Linux 用户级安装的程序位于 `~/.local/lib/omnishare`，启动器位于 `~/.local/bin/omnishare`，状态与日志位于 `${XDG_STATE_HOME:-$HOME/.local/state}/omnishare`。Windows 和 Linux 包内卸载脚本保留用户数据；更换安装器或手动卸载前仍应独立备份。
 
-## 数据目录
+### SQLite 与旧 JSON 数据
 
-直接运行后端二进制，或由 Tauri 桌面端启动自有后端时，默认使用：
+默认存储为 `omnishare.db`，使用 SQLite WAL。同一数据目录有跨平台进程锁，拒绝第二个写实例。
 
-- Windows：`%USERPROFILE%\.omnishare`
-- Linux/macOS：`~/.omnishare`
+- 首次以 SQLite 启动且存在旧 `omnishare.json` 时，先复制原文件为带 UTC 时间戳的 `.migrated.bak`，再在单个事务中导入，核对各类条目数和审计哈希链。导入失败会回滚，并保留原 JSON 继续使用回退引擎；启动日志与健康接口显示迁移状态。
+- 可用 `omnishare --migrate-storage` 手动执行迁移。成功后原 JSON 仍然保留。
+- 已有 SQLite 数据库无法打开时，程序停止并报告原因，不会静默退回迁移前的旧 JSON。
+- `--storage-engine=json` 或 `OMNISHARE_STORAGE=json` 可显式选择 JSON 引擎。旧 JSON 不包含使用 SQLite 期间新增的内容，切换前须停止服务、备份并确认所需数据来源。
+- 受最大阅读次数限制和阅后即焚的笔记同步消费次数与持久化。普通阅读、下载计数每 5 秒批量落库，进程崩溃仍可能丢失最近几秒的普通计数；备份快照包含尚未刷盘的计数。
 
-Tauri 桌面端可通过 `OMNISHARE_DATA_DIR` 指定数据目录；直接运行后端可使用 `--data-dir`。切换启动方式前应核对原数据位置。
+同内容文件可复用物理 Blob，每次上传仍保留独立逻辑文件、名称和生命周期。SQLite 支持按配置裁剪审计，JSON 回退引擎不执行审计裁剪。审计哈希链用于校验链内一致性，不构成外部可信的防篡改证明。
 
-传统 Windows ZIP 内的 `start-omnishare.cmd` / `install.ps1` 使用：
+## 备份与恢复
 
-- 数据：`%APPDATA%\OmniShare`
+在“设置 → 存储与保留”导出备份。设置口令时生成加密 `.osb`，留空则生成明文 ZIP。备份包含状态、配置、文件与 SHA-256 校验清单；口令不写入数据目录，丢失口令将无法恢复对应加密包。
 
-Linux tar.gz 内的 `install.sh` 用户级安装使用 XDG 目录：
+| 格式 | 0.1.0 的支持情况 | 使用边界 |
+| --- | --- | --- |
+| v3 `.osb` | 新加密备份的默认格式，可导出和恢复 | 恢复程序必须支持 v3，不能仅按应用版本号判断。 |
+| v2 `.osb` | 可读取并恢复已有备份 | 保留旧格式的分块校验能力，没有 v3 的完整包头与结束记录认证。 |
+| 未加密 ZIP | 可导出和恢复 | 内容没有加密，应按数据敏感程度保管。 |
 
-- 程序：`~/.local/lib/omnishare`
-- 启动器：`~/.local/bin/omnishare`
-- 数据：`${XDG_DATA_HOME:-~/.local/share}/omnishare`
-- 状态与日志：`${XDG_STATE_HOME:-~/.local/state}/omnishare`
+v3 使用 AES-256-GCM 和 PBKDF2-HMAC-SHA256，认证完整包头、分块顺序与结束记录，拒绝截断和尾随数据，并限制不可信包头指定的密钥派生计算量。版本、算法、创建时间和校验清单等包头元数据仍可读。
 
-`omnishare-server_*.deb` 服务器包直接运行 `/usr/bin/omnishare`，数据默认仍在 `~/.omnishare`；Tauri 桌面 DEB 使用上面的桌面默认目录。包内 Debian 软件包名仍是 `omnishare`。
+支持 File System Access API 的浏览器先选择保存位置，再分块写入；取消文件选择不会开始导出，写入失败会停止下载。其他浏览器使用内存缓冲，按实际接收量限制为 2 GB；更大备份需要支持流式保存的浏览器。
 
-卸载程序默认保留用户数据。
+导出和恢复共用 `backup_max_mb` 上限，默认 16384 MB。恢复时选择文件、填写原口令并确认覆盖；服务端先在暂存目录解压校验，再短暂锁定并切换数据，失败时回滚到切换前的状态。
 
-### 存储引擎与升级（SQLite）
+**成功恢复会替换当前内容和配置，包括备份之后新增的数据。** 解压阶段仍可读写，但在最终切换前完成的新写入也可能被备份状态覆盖，应先暂停相关操作并导出当前备份。恢复请求防止重复提交，上传有默认 2 分钟的空闲超时。
 
-生产默认使用 SQLite（`omnishare.db`，WAL 模式），旧版单文件 JSON 实现保留为回退引擎。
+## 剪贴板、传输与会话
 
-- 自动迁移：首次以 SQLite 启动且数据目录存在 `omnishare.json` 时，先把原文件完整复制为 `omnishare.json.<UTC时间戳>.migrated.bak`，再在单个事务中导入并逐项校验 `notes/files/pads/shares/audits/trash` 条数与审计哈希链。任一不一致会回滚事务、保留原 JSON，并自动回退到 JSON 引擎继续运行；启动日志和 `/api/v1/health` 会显示 `"migration": "not_migrated"`。
-- 手动迁移：`omnishare --migrate-storage`，打印迁移条目数后退出。
-- 强制回退：`omnishare --storage-engine=json`（或环境变量 `OMNISHARE_STORAGE=json`）。迁移成功后原 `omnishare.json` 仍然保留，不会被删除或改名。
-- 已有 SQLite 数据库无法打开时，程序会停止并说明原因，不会自动选择迁移前的旧 JSON。旧 JSON 不包含 SQLite 使用期间新增的数据；只有明确决定使用旧数据时才手动选择 JSON 引擎。
-- 完整回滚：停止服务，把 `omnishare.db`、`omnishare.db-wal`、`omnishare.db-shm` 移出数据目录，再以 `--storage-engine=json` 启动即可回到旧数据。
-- 已知限制：普通笔记阅读数与文件下载数是内存累加、每 5 秒批量落库，进程崩溃会丢失最近几秒的计数；设置最大阅读次数的笔记逐次同步计数，`burn-after-read` / 达到最大阅读次数时同步销毁。备份快照包含尚未刷盘的计数，刷新失败会保留批次供下次重试。审计保留策略（`audit_retention_days` 默认 90、`audit_max_events` 默认 100000）只在 SQLite 引擎执行，裁剪以锚点分段进行；JSON 回退引擎不裁剪审计。
+点击“从剪贴板发送”才会请求读取权限。确认框展示纯文本或 PNG、目标节点和保留时长；默认保留 24 小时，可选择 1 小时或 7 天。确认后文本保存为随手记，PNG 进入文件队列。取消会清空预览，不上传内容，不在后台监控或自动同步剪贴板。
 
-## 构建桌面端
+文本最多 256 KB，PNG 最多 16 MB，图片同时受节点上传上限与解码尺寸限制。HTML、SVG 等富内容不作为活动页面导入。剪贴板读取通常需要 HTTPS 或本机地址；浏览器不支持时可手动粘贴或选择文件。
 
-先准备上述 Go、Node.js/npm 环境，以及 Rust 工具链和 Tauri 2 对应平台的编译依赖。Windows 使用 MSVC 构建环境，macOS 使用 Xcode Command Line Tools，Linux 需要相应的 WebKitGTK 开发依赖。推荐使用仓库脚本，按顺序构建前端、内置后端和桌面壳。
+传输队列显示排队、上传、服务端处理、完成、失败和取消，所有上传尝试共享最多 3 个并发名额。取消排队项不会发出请求；取消上传会终止当前连接，但不能撤回服务器已保存的内容。中断后先检查文件列表，再决定是否手动重试。上传当前不支持分片续传，下载和视频播放支持 HTTP Range。
 
-### Windows
+访问密钥和初始化令牌只保存在当前会话；会话存储被禁用或写满时，页面改用内存继续工作，重载后需要重新验证。文档保存失败或发生冲突时保留当前编辑草稿；草稿也仅属于当前会话，存储不可用时只在当前页面内存中，重要内容应另行复制保存。文档使用版本冲突检测，没有逐字实时协同合并。
+
+主题选择保存在当前浏览器的本地存储中，不上传至后端，也不随数据备份或跨设备同步；清除站点数据后恢复“跟随系统”。PWA 只缓存固定静态资源，离线启动不代表数据接口可以离线使用。
+
+## 桌面运行与构建
+
+桌面端复用同一 Go 后端和 Web 界面。Rust 管理后端启动、健康检查、端口避让和错误诊断；后端意外退出时 watchdog 会尝试恢复并限制重启频率。发现已有 OmniShare 后端时可连接已有服务，重复启动桌面应用会唤醒已有窗口。
+
+除上述 Go、Node.js/npm 环境外，还需 Rust 工具链与 Tauri 2 平台编译依赖：Windows 使用 MSVC，macOS 使用 Xcode Command Line Tools，Linux 需要 WebKitGTK 开发依赖。
+
+Windows：
 
 ```powershell
 ./scripts/build-tauri-desktop.ps1
 ```
 
-### Linux/macOS
+Linux/macOS：
 
 ```bash
 ./scripts/build-tauri-desktop.sh
 ```
 
-手动构建流程（Linux 本机示例；Windows 可执行文件名和 macOS Universal 双架构构建由上述脚本处理）：
+脚本按顺序构建前端、内置后端与桌面壳。普通构建产物位于 `desktop/src-tauri/target/release/bundle`，macOS Universal 产物位于 `desktop/src-tauri/target/universal-apple-darwin/release/bundle`。签名和公证要求见[桌面发布与签名](docs/DESKTOP_RELEASE.md)。
+
+## 验证
+
+常用本地检查：
 
 ```bash
+npm --prefix frontend run check
+npm --prefix frontend test
 npm --prefix frontend run build
-cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare
-cd ../desktop
-npm install
-npm run build
+npm --prefix desktop run test:contracts
+(cd backend && go test ./... && go vet ./...)
 ```
 
-从 `main` 构建会包含本文列出的 SQLite、v3 加密备份、恢复与阅读修复、桌面首次初始化及主题功能。构建产物位于 `desktop/src-tauri/target/release/bundle`；macOS Universal 使用 `desktop/src-tauri/target/universal-apple-darwin/release/bundle`。代码签名、公证和公开发布需另行完成，签名要求见 [桌面发布与签名](docs/DESKTOP_RELEASE.md)。
-
-## 完整测试过程
-
-桌面 Release 不是以“安装包成功生成”为完成标准。每次发布必须通过以下层级。
-
-### 1. 基础仓库 CI
-
-- 前端语法、静态契约及实际应用函数的 Node 行为回归，覆盖存储拒绝、草稿冲突、下载限制和恢复防重复提交。
-- 主题脚本语法、加载顺序和本地持久化契约。
-- 浅色主题变量和关键组件覆盖检查。
-- Service Worker 主题资源缓存检查。
-- Web 源码与 Go 内嵌前端同步检查。
-- Windows launcher 契约检查。
-- `gofmt`、`go vet`。
-- Go 单元和集成测试、Race Detector、覆盖率门禁与 staticcheck。
-- 独立后端进程的真实 HTTP 验证，覆盖初始化鉴权、中文内容、上传与 Range、加密备份恢复、错误口令和重启持久化。
-- Windows/Linux/macOS 的 amd64/arm64 后端交叉构建。
-
-### 2. 桌面契约与 Rust 门禁
+真实 Chromium 界面检查需要安装锁定的开发测试依赖和浏览器：
 
 ```bash
-npm --prefix desktop run test:contracts
-cd desktop/src-tauri
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+npm --prefix frontend ci --ignore-scripts
+(cd frontend && npx --no-install playwright install --with-deps chromium)
+npm --prefix frontend run test:browser
 ```
 
-### 3. Windows MSI 安装布局端到端测试
+CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查、六目标后端构建，以及 Windows 安装布局与 watchdog 验证。浏览器测试使用合成 API 数据，后端鉴权和持久化由 Go/HTTP 测试覆盖。发布前检查包名大小写冲突，发布后核对附件和 SHA-256。详细流程见[桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
 
-自动化测试会：
+## 当前限制
 
-- 管理提取 MSI。
-- 从真实安装布局启动桌面端。
-- 验证内置后端和 EXE 图标。
-- 使用非 OmniShare 服务制造端口冲突。
-- 验证自动切换端口且不会误连接其他服务。
-- 验证一个桌面进程和一个托管后端进程。
-- 验证已有后端接管且不重复启动。
-- 验证第二次启动退出并保持单实例。
-- 强制终止后端并验证 watchdog 自动恢复。
-- 验证本机设备接口只返回一个本机节点。
-- 生成 JSON、JUnit、启动日志和 SHA-256 证据。
-
-### 4. Linux 和 macOS
-
-- Linux 完成 contracts、fmt、clippy、unit、bundle 和 SHA-256。
-- macOS Universal 验证主程序和内置后端同时包含 `arm64` 与 `x86_64`。
-- 正式 macOS 发布还必须通过 Developer ID 签名、公证、`codesign` 和 Gatekeeper `spctl`。
-
-完整规范见 [桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
-
-## 测试发现并修复的 Windows 缺陷
-
-MSI 真实运行测试发现，后端在 Windows 上完成配置文件同步和原子重命名后，又执行 Unix 风格目录级 `fsync`。Windows 返回 `ERROR_ACCESS_DENIED`，导致后端将成功持久化误判为启动失败。
-
-修复后：
-
-- Windows 保留文件级 `fsync`。
-- 保留原子重命名和 `.bak`。
-- Windows 不再因不支持的目录级同步退出。
-- Linux/macOS 继续执行严格目录同步。
-
-同时，已配置环境的后端启动已经前移到 Tauri Rust 原生 `setup`，不再把 WebView JavaScript 作为服务启动的单点依赖。
-
-## 明确限制
-
-- 主存储已默认切到 SQLite（WAL），JSON 引擎用于首次迁移失败时回退或显式选择；JSON 路径在数据规模增大时仍有 O(N) 写放大，且不执行审计裁剪。
-- 恢复先在暂存目录解压并校验，只在最后切换目录/状态的短暂窗口内排他；恢复期间仍可上传下载，但切换前完成的并发上传会被目标备份状态覆盖。恢复上传带空闲超时（默认 2 分钟无数据即断开），不是固定总时长。
-- 当前只有单管理员密钥，没有只读、上传者、审计员等角色和作用域令牌。
-- HTTPS 需要用户提供证书；尚无自动证书签发和可信设备配对。
-- 上传是流式单请求，不是分片、断点续传或跨设备端到端加密。
-- 未设置口令时备份与恢复使用未加密 ZIP；设置口令后为 AES-256-GCM 加密包 `.osb`。口令不写入数据目录，丢失口令将无法恢复该备份。
-- 文档使用乐观锁，不是 CRDT/OT 实时协同。
-- 发布物尚未提供商业代码签名、完整 SBOM 和来源证明。
-- Windows 托盘物理可见性和点击行为仍需在 Windows 10/11 真机完成最终验收。
-- macOS 正式分发仍依赖 Apple Developer ID、公证和真机 Gatekeeper 验收。
-- 清除密钥或恢复无密钥配置后的初始化令牌续发、自动清理与恢复的文件协调、审计锚点在备份恢复中的完整保存仍属后续专项，详见[整合记录](docs/INTEGRATION_2026-11-07.md#后续专项)。
-- RC4 仍为候选版本，下载能力以对应 Release 的实际附件为准；旧 `v1.0.1-desktop` 不包含本轮整合更新。
+- 访问控制为单管理员密钥，没有只读、上传者、审计员等角色，也没有逐设备权限或可信配对。发现设备、网络在线和访问授权是不同状态。
+- 文件上传不提供分片续传或跨设备端到端加密，取消不能召回已保存的数据；协作文档不提供 CRDT/OT 实时合并。
+- JSON 回退引擎仍有随数据规模增长的整体写入开销，不执行 SQLite 的审计裁剪。
+- 清除访问密钥或恢复无密钥配置后的初始化令牌续发尚待完善；相关操作可能需要重启后使用新的本机初始化链接。自动清理与恢复之间的文件协调、审计锚点的完整备份恢复仍需后续改进。
+- Windows 托盘可见性和点击行为、macOS 权限与 Gatekeeper，以及 Safari 和各种触屏设备仍需对应真机验收。自动化检查不替代这些平台验收。
+- 发布物尚未提供商业代码签名、完整 SBOM 或来源证明；macOS Tauri 桌面尚未公开分发。
 
 ## 文档
 
-- [v1.3.0-rc4 发布与升级说明](docs/RELEASE_NOTES_v1.3.0-rc4.md)
-- [2026-11-07 分支整合与可靠性优化](docs/INTEGRATION_2026-11-07.md)
-- [Desktop v1.0.0 发布说明](docs/RELEASE_NOTES_v1.0.0-desktop.md)
+- [0.1.0 发布与迁移说明](docs/RELEASE_NOTES_v0.1.0.md)
+- [安全共享与使用边界](docs/SECURE_SHARING.md)
+- [架构与安全边界](docs/ARCHITECTURE.md)
 - [桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)
 - [桌面发布与签名](docs/DESKTOP_RELEASE.md)
-- [Tauri 迁移方案](docs/TAURI_MIGRATION_PLAN.md)
-- [v1.3.0-rc2 发布说明](docs/RELEASE_NOTES_v1.3.0-rc2.md)
-- [150 条评审整改映射](docs/REMEDIATION_v1.3.0-rc1.md)
-- [五轮测试报告](docs/TEST_REPORT_5_ROUNDS_v1.3.0-rc1.md)
-- [架构与安全边界](docs/ARCHITECTURE.md)
-- [v1.3 产品需求](docs/PRODUCT_REQUIREMENTS_v1.3.md)
 - [安全策略](SECURITY.md)
+- [参与开发](CONTRIBUTING.md)
