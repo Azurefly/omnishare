@@ -1,15 +1,22 @@
 {
-  "tag": "v1.0.0-desktop",
-  "name": "OmniShare Desktop v1.0.0",
-  "notes": "docs/RELEASE_NOTES_v1.0.0-desktop.md",
+  "tag": "v1.3.0-rc3",
+  "name": "OmniShare v1.3.0-rc3",
+  "notes": "docs/RELEASE_NOTES_v1.3.0-rc3.md",
   "prerelease": true,
   "platforms": [
-    "windows-x86_64",
-    "linux-x86_64"
+    "desktop-windows-x86_64",
+    "desktop-linux-x86_64",
+    "server-windows-amd64",
+    "server-windows-arm64",
+    "server-linux-amd64",
+    "server-linux-arm64",
+    "server-macos-amd64",
+    "server-macos-arm64"
   ],
   "macos": {
-    "published": false,
-    "reason": "Apple Developer ID signing and notarization credentials are not configured"
+    "tauri_published": false,
+    "server_zip_signed": false,
+    "reason": "Tauri desktop packages require Apple Developer ID signing and notarization; server ZIP wrappers remain unsigned"
   },
-  "published_at": "2026-08-04"
+  "release_date": "2026-11-07"
 }
