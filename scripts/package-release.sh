@@ -40,7 +40,9 @@ for arch in amd64 arm64; do
   (cd "$(dirname "$work")" && tar -czf "$PKG/OmniShare-v${VERSION}-linux-${arch}.tar.gz" OmniShare)
 
   deb="$(mktemp -d)"
-  deb_package="$PKG/omnishare_${VERSION}_${arch}.deb"
+  # Keep server packages distinct from Tauri's OmniShare_<version>_<arch>.deb
+  # even when release asset names are compared without case sensitivity.
+  deb_package="$PKG/omnishare-server_${VERSION}_${arch}.deb"
   mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/share/applications" "$deb/usr/share/doc/omnishare"
   chmod g-s "$deb" "$deb/DEBIAN" 2>/dev/null || true
   cp "$BIN/omnishare-linux-$arch" "$deb/usr/bin/omnishare"; chmod 0755 "$deb/usr/bin/omnishare"

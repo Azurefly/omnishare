@@ -33,16 +33,22 @@ RC4 在 RC3 的统一存储、安全备份和桌面可靠性基线上，更新�
 | Windows x64 桌面 | `OmniShare_1.3.0-rc4_x64-setup.exe` 或 `OmniShare_1.3.0-rc4_x64_en-US.msi` |
 | Linux x64 桌面 | `OmniShare_1.3.0-rc4_amd64.AppImage`、`OmniShare_1.3.0-rc4_amd64.deb`、`OmniShare-1.3.0-0.rc4.x86_64.rpm` |
 | Windows 后端 + Web | `OmniShare-v1.3.0-rc4-windows-amd64.zip` / `OmniShare-v1.3.0-rc4-windows-arm64.zip` |
-| Linux 后端 + Web | `OmniShare-v1.3.0-rc4-linux-amd64.tar.gz` / `OmniShare-v1.3.0-rc4-linux-arm64.tar.gz`，或小写 `omnishare_1.3.0-rc4_{amd64,arm64}.deb` |
+| Linux 后端 + Web | `OmniShare-v1.3.0-rc4-linux-amd64.tar.gz` / `OmniShare-v1.3.0-rc4-linux-arm64.tar.gz`，或 `omnishare-server_1.3.0-rc4_{amd64,arm64}.deb` |
 | macOS 后端 + Web | `OmniShare-v1.3.0-rc4-macos-amd64.zip` / `OmniShare-v1.3.0-rc4-macos-arm64.zip` |
 
 macOS ZIP 是未签名的 Go 后端启动包装，不是 Tauri Universal 桌面安装器。macOS Tauri 签名、公证与真机 Gatekeeper 验收仍待完成；Windows 安装包尚未提供商业代码签名。
 
-### 校验文件名修复
+### 发布附件命名修复
 
 RC3 发布时，GitHub 将服务器 DEB 的 `~rc3` 文件名改为 `.rc3`，导致原 SHA256 清单中的这两个名字与公开附件不一致。包字节和哈希没有变化；仓库提供 [RC3 更正清单](https://github.com/Azurefly/omnishare/blob/main/release/checksums/v1.3.0-rc3/SHA256SUMS.txt)，旧 tag 和二进制保持原样。
 
-RC4 的服务器 DEB 在打包阶段就使用 `-rc4` 文件名，内部 `Version` 仍是 `1.3.0~rc4`，保留 Debian 的候选版本升级顺序。发布前校验同一工作流的所有安装包与运行证据，发布后再核对公开附件名称和 SHA-256。
+RC4 首次发布时，服务器和桌面 AMD64 DEB 仅通过 `omnishare` / `OmniShare` 的大小写区分。上传动作失败后，22 个附件中缺少服务器 AMD64 DEB；此前的构建、运行验证及聚合验包均成功。现在服务器 DEB 使用独立的 `omnishare-server_1.3.0-rc4_*.deb` 名称，内部 `Package: omnishare` 与 `Version: 1.3.0~rc4` 保持不变。
+
+本次发布修复绑定原 [构建运行 42350497115](https://github.com/Azurefly/omnishare/actions/runs/42350497115) 的已验证产物：补齐缺失包、重命名已上传的 ARM64 服务器包，并更正 README、本文和 SHA256 清单。全部二进制字节保持原样，`v1.3.0-rc4` 标签继续指向 [`c96c102`](https://github.com/Azurefly/omnishare/commit/c96c102e7eb0c327b2c8a8248416be12f614d4d3)。原标签下的说明及包内嵌入的 README 因此仍可能使用首次发布名称；下载和校验应使用当前 Release 的附件与清单。
+
+[修复工作流](https://github.com/Azurefly/omnishare/actions/workflows/repair-rc4-release.yml) 先只读校验来源、压缩包 SHA-256、现有附件和具体修改计划，再在 main 上执行白名单内的修复；遇到未知附件或内容变化会停止。修复后逐个核对全部 22 个公开附件的名称、大小和 SHA-256。常规发布仍保留原有标签目标检查，并增加上传前的大小写重名拒绝。
+
+修复支持已完成写入后的重复执行，以及文本附件删除与重新上传之间的中断恢复。若 GitHub 留下 `starter` 状态、零字节或没有摘要的未完成附件，流程会停止并要求单独核对，不会自动删除二进制占位物或覆盖未知内容。
 
 ## 升级与兼容性
 
