@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased — integrated stability improvements
+## 1.3.0-rc3 — 2026-11-07
+
+### Unified release
+
+- 后端、Web 与 Windows/Linux 桌面统一为 `1.3.0-rc3` 候选版本；同一发布流程构建六目标服务器包、桌面安装包和测试证据。
+- 默认 SQLite WAL 存储、旧 JSON 迁移、加密备份与此前安全修复全部整合到 `main`，更新下载、升级、备份兼容性和首次配置说明。
+- 发布清单与根版本必须一致，服务器包和桌面测试全部通过后才创建预发布；macOS Tauri 正式分发仍要求签名与公证。
+
+### Reliability and security
 
 - 整合 `fix/security-and-backup-hardening` 与 `feat/sqlite-encrypted-backup`，保留两条分支的全部提交和依赖关系。
 - 新导出的加密备份使用 v3 容器，认证完整包头、每个数据分块和结束记录，拒绝截断及尾随数据；继续读取旧版 v2 `.osb` 和 ZIP。

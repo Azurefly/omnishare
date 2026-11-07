@@ -6,6 +6,14 @@ on:
       - main
     paths:
       - 'release/desktop-release.json'
+  pull_request:
+    paths:
+      - 'release/desktop-release.json'
+      - '.github/workflows/publish-desktop-prerelease.yml'
+      - 'scripts/build-release.sh'
+      - 'scripts/package-release.sh'
+      - 'scripts/check-version.sh'
+      - 'scripts/test-release-contract.mjs'
   workflow_dispatch:
 
 permissions:
@@ -16,6 +24,7 @@ jobs:
     name: Read release metadata
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.metadata.outputs.version }}
       tag: ${{ steps.metadata.outputs.tag }}
       name: ${{ steps.metadata.outputs.name }}
       notes: ${{ steps.metadata.outputs.notes }}
@@ -29,16 +38,68 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('fs');
+          const version = fs.readFileSync('VERSION', 'utf8').trim();
           const manifest = JSON.parse(fs.readFileSync('release/desktop-release.json', 'utf8'));
           for (const key of ['tag', 'name', 'notes']) {
-            if (!manifest[key] || typeof manifest[key] !== 'string') {
+            if (typeof manifest[key] !== 'string' || !manifest[key].trim() || /[\r\n]/.test(manifest[key])) {
               throw new Error(`release/desktop-release.json is missing string field: ${key}`);
             }
           }
+          if (!/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.?\d+)?$/.test(version)) {
+            throw new Error(`Unsupported release version: ${version}`);
+          }
+          if (manifest.tag !== `v${version}`) {
+            throw new Error(`Release tag ${manifest.tag} does not match VERSION ${version}`);
+          }
+          if (manifest.notes !== `docs/RELEASE_NOTES_v${version}.md` || !fs.statSync(manifest.notes).isFile()) {
+            throw new Error('Release notes must exist and match VERSION');
+          }
+          if (manifest.prerelease !== true) {
+            throw new Error('This publishing workflow requires prerelease: true');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${manifest.tag}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `name=${manifest.name}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${manifest.notes}\n`);
           NODE
+
+      - name: Release workflow contracts
+        run: node scripts/test-release-contract.mjs
+
+  build-server:
+    name: Build and test server release packages
+    needs: release-metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+
+      - name: Build and test all six server targets
+        run: ./scripts/build-release.sh
+
+      - name: Verify server package checksums
+        working-directory: dist/packages
+        run: sha256sum -c SHA256SUMS.txt
+
+      # macOS ZIPs contain the portable Go server, not a signed Tauri desktop app.
+      - name: Upload verified server release packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-Server
+          path: dist/packages/*
+          if-no-files-found: error
 
   build-and-test:
     name: Build and test ${{ matrix.name }} release assets
@@ -74,13 +135,13 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26.5'
           cache-dependency-path: backend/go.sum
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.23.1'
           cache: npm
           cache-dependency-path: |
             frontend/package.json
@@ -194,6 +255,8 @@ jobs:
             ForEach-Object { Copy-Item $_.FullName -Destination release-assets -Force }
           Copy-Item "$env:EVIDENCE_DIR/bundle-sha256.json" release-assets/omnishare-windows-sha256.json -Force
           Copy-Item "$env:EVIDENCE_DIR/windows-runtime-smoke.junit.xml" release-assets/omnishare-windows-runtime.junit.xml -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-watchdog-recovery.junit.xml" release-assets/omnishare-windows-watchdog.junit.xml -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-watchdog-recovery.json" release-assets/omnishare-windows-watchdog.json -Force
 
       - name: Stage Linux release files
         if: runner.os == 'Linux'
@@ -220,10 +283,11 @@ jobs:
           path: ${{ env.EVIDENCE_DIR }}/**
           if-no-files-found: warn
 
-  publish:
-    name: Create GitHub prerelease
+  verify-assets:
+    name: Verify combined server and desktop assets
     needs:
       - release-metadata
+      - build-server
       - build-and-test
     runs-on: ubuntu-latest
     steps:
@@ -239,14 +303,134 @@ jobs:
 
       - name: Verify staged assets
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
         run: |
-          find release-assets -type f -maxdepth 2 -print
-          test -n "$(find release-assets -type f -name '*.msi' -print -quit)"
-          test -n "$(find release-assets -type f -name '*setup.exe' -print -quit)"
-          test -n "$(find release-assets -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -print -quit)"
-          test -f release-assets/omnishare-windows-sha256.json
-          test -f release-assets/omnishare-linux-sha256.txt
-          test -f release-assets/omnishare-windows-runtime.junit.xml
+          set -euo pipefail
+          (cd release-assets && sha256sum -c SHA256SUMS.txt)
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const version = process.env.RELEASE_VERSION;
+          const root = 'release-assets';
+          const names = fs.readdirSync(root);
+          const read = name => fs.readFileSync(path.join(root, name));
+          const text = name => read(name).toString('utf8').replace(/^\uFEFF/, '');
+          const requireFile = name => {
+            const stat = fs.statSync(path.join(root, name));
+            if (!stat.isFile() || stat.size === 0) throw new Error(`Missing or empty release asset: ${name}`);
+          };
+          const requireMatches = (label, pattern) => {
+            const matches = names.filter(name => pattern.test(name));
+            if (!matches.length) throw new Error(`Missing release asset: ${label}`);
+            matches.forEach(requireFile);
+            return matches;
+          };
+          const parseHashes = name => {
+            const hashes = new Map();
+            for (const line of text(name).trim().split(/\r?\n/)) {
+              const match = /^([0-9a-fA-F]{64}) [ *](.+)$/.exec(line);
+              if (!match) throw new Error(`Malformed checksum record in ${name}`);
+              hashes.set(path.posix.basename(match[2]), match[1].toLowerCase());
+            }
+            return hashes;
+          };
+          const verifyHash = (name, hashes) => {
+            requireFile(name);
+            const actual = crypto.createHash('sha256').update(read(name)).digest('hex');
+            if (hashes.get(name) !== actual) throw new Error(`Missing or incorrect SHA256 for ${name}`);
+          };
+
+          const serverHashes = parseHashes('SHA256SUMS.txt');
+          const debVersion = version.replace('-rc', '~rc');
+          for (const arch of ['amd64', 'arm64']) {
+            for (const name of [
+              `OmniShare-v${version}-windows-${arch}.zip`,
+              `OmniShare-v${version}-linux-${arch}.tar.gz`,
+              `omnishare_${debVersion}_${arch}.deb`,
+              `OmniShare-v${version}-macos-${arch}.zip`
+            ]) verifyHash(name, serverHashes);
+          }
+
+          const windows = [
+            ...requireMatches('Windows MSI', /^OmniShare_.+_x64_en-US\.msi$/),
+            ...requireMatches('Windows NSIS installer', /^OmniShare_.+_x64-setup\.exe$/)
+          ];
+          const windowsRecords = JSON.parse(text('omnishare-windows-sha256.json'));
+          const windowsHashes = new Map([].concat(windowsRecords).map(record => [
+            path.posix.basename(String(record.Path).replace(/\\/g, '/')),
+            String(record.SHA256).toLowerCase()
+          ]));
+          windows.forEach(name => verifyHash(name, windowsHashes));
+          const linux = ['AppImage', 'deb', 'rpm'].flatMap(ext =>
+            requireMatches(`Linux desktop ${ext}`, new RegExp(`^OmniShare[_.-].+\\.${ext}$`))
+          );
+          const linuxHashes = parseHashes('omnishare-linux-sha256.txt');
+          linux.forEach(name => verifyHash(name, linuxHashes));
+
+          for (const name of ['omnishare-windows-runtime.junit.xml', 'omnishare-windows-watchdog.junit.xml']) {
+            const report = text(name);
+            if (!/<testsuite\b[^>]*\btests=["'][1-9]\d*["']/.test(report) ||
+                /\b(?:failures|errors)=["'][1-9]\d*["']|<(?:failure|error)\b/.test(report)) {
+              throw new Error(`Missing or unsuccessful runtime evidence: ${name}`);
+            }
+          }
+          if (JSON.parse(text('omnishare-windows-watchdog.json')).success !== true) {
+            throw new Error('Windows watchdog recovery did not pass');
+          }
+          if (names.some(name => /\.dmg$/i.test(name))) {
+            throw new Error('This prerelease does not publish unsigned macOS Tauri installers');
+          }
+          console.log(`Verified server and Windows/Linux desktop release assets for ${version}`);
+          NODE
+
+      - name: Upload combined verified assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-prerelease-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Create GitHub prerelease
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs:
+      - release-metadata
+      - verify-assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download combined verified assets
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-prerelease-assets
+          path: release-assets
+
+      - name: Verify existing tag target
+        shell: bash
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if refs="$(git ls-remote --exit-code --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}")"; then
+            target="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/${TAG}^{}" '$2 == ref { print $1 }')"
+            if [ -z "$target" ]; then
+              target="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/${TAG}" '$2 == ref { print $1 }')"
+            fi
+            if [ "$target" != "$GITHUB_SHA" ]; then
+              echo "::error::Existing tag ${TAG} points to ${target}, expected ${GITHUB_SHA}; refusing to replace its release assets."
+              exit 1
+            fi
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              echo "::error::Unable to verify the existing tag target."
+              exit "$status"
+            fi
+          fi
 
       - name: Publish GitHub prerelease
         uses: softprops/action-gh-release@v2

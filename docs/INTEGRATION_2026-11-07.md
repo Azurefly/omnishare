@@ -1,6 +1,6 @@
 # OmniShare 分支整合与可靠性优化
 
-日期：2026-11-07。交付分支：`fix/integrated-stability-20261107`。
+日期：2026-11-07。整合改动已经通过 [PR #26](https://github.com/Azurefly/omnishare/pull/26) 合入 `main`，合并提交为 `38cd4e91e56f30284ba63f30b01b94bf61af235a`。原工作分支仅用于本次整合，后续开发以 `main` 为基线；对应候选版本为 `v1.3.0-rc3`。
 
 ## 整合范围
 
@@ -62,7 +62,7 @@ python3 scripts/test-http-integration.py ./omnishare-http-test
 (cd desktop/src-tauri && cargo test --all-features)
 ```
 
-CI 已加入真实 HTTP 进程验证。统一 PR 仍须运行仓库 CI 的六目标 Go 交叉构建，以及 Linux、Windows、macOS Universal 的完整桌面构建与测试；其最终状态以该 PR 的 Checks 为准。
+CI 已加入真实 HTTP 进程验证。[统一 PR CI](https://github.com/Azurefly/omnishare/actions/runs/42342840384) 的质量检查与六目标 Go 交叉构建、[三平台桌面验证](https://github.com/Azurefly/omnishare/actions/runs/42342840425)，以及[合并后的 main CI](https://github.com/Azurefly/omnishare/actions/runs/42343816381) 均已通过。Windows 完成安装布局与 watchdog 运行测试；macOS 为未签名 Universal 构建验证。RC3 发布构建的最终结果以该 Release 对应 Actions 为准。
 
 ## 兼容性与验证边界
 
