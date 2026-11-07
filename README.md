@@ -22,7 +22,7 @@ OmniShare 是面向个人、家庭、小团队和内网环境的私有化多设�
 | 传输队列 | 所有排队任务立即可见；支持取消、手动重试和清理记录。重试也受最多 3 个并发限制，错误保留在任务行内。 |
 | 设备状态 | 按当前节点、在线和离线分组；发现设备仅表示可找到节点，打开其他节点仍需独立验证。 |
 | 视觉与交互 | 统一图标、间距、卡片和焦点样式，设置按用途分组，改善浅色主题状态文字与危险按钮的对比度。 |
-| 发布校验 | 服务器 DEB 的公开文件名采用 `-rc4`，内部 Debian 版本仍使用 `~rc4`；发布后再次核对公开附件名称与 SHA-256。 |
+| 发布校验 | 服务器 DEB 使用独立的 `omnishare-server_` 文件名前缀，内部 Debian 版本仍使用 `~rc4`；上传前拒绝大小写重名，发布后核对公开附件名称与 SHA-256。 |
 
 本轮参考 Oink 的设备组织、剪贴板入口和任务状态设计独立实现，未引入其源码、品牌素材、键鼠驱动或音频组件。具体实现、安全边界和参考版本见 [Oink 功能与界面吸收记录](docs/OINK_ADOPTION.md)。此前的 SQLite、v3 加密备份和桌面可靠性更新继续保留，见 [分支整合记录](docs/INTEGRATION_2026-11-07.md)。
 
@@ -44,7 +44,7 @@ OmniShare_1.3.0-rc4_x64-setup.exe
 OmniShare_1.3.0-rc4_x64_en-US.msi
 ```
 
-Linux x64 桌面根据发行版选择 `OmniShare` AppImage、DEB 或 RPM。Windows/Linux/macOS 的 AMD64、ARM64 便携包名称以 `OmniShare-v1.3.0-rc4-` 开头，提供单后端进程和浏览器界面；Linux 小写 `omnishare_1.3.0-rc4_*.deb` 属于服务器包。Windows ARM64 使用对应便携包。
+Linux x64 桌面根据发行版选择 `OmniShare` AppImage、DEB 或 RPM。Windows/Linux/macOS 的 AMD64、ARM64 便携包名称以 `OmniShare-v1.3.0-rc4-` 开头，提供单后端进程和浏览器界面；Linux `omnishare-server_1.3.0-rc4_*.deb` 属于服务器包。Windows ARM64 使用对应便携包。RC4 的公开附件名称以当前 Release 为准，原 tag 和二进制保留首次验证的内容，发布命名修复见 [RC4 发布说明](docs/RELEASE_NOTES_v1.3.0-rc4.md#发布附件命名修复)。
 
 Release 同时提供服务器包 SHA-256 清单、Windows/Linux 桌面校验清单，以及 Windows 安装布局与后端自动恢复测试的 JUnit/JSON 证据。
 
@@ -260,7 +260,7 @@ Linux tar.gz 内的 `install.sh` 用户级安装使用 XDG 目录：
 - 数据：`${XDG_DATA_HOME:-~/.local/share}/omnishare`
 - 状态与日志：`${XDG_STATE_HOME:-~/.local/state}/omnishare`
 
-小写 `omnishare_*.deb` 服务器包直接运行 `/usr/bin/omnishare`，数据默认仍在 `~/.omnishare`；Tauri 桌面 DEB 使用上面的桌面默认目录。
+`omnishare-server_*.deb` 服务器包直接运行 `/usr/bin/omnishare`，数据默认仍在 `~/.omnishare`；Tauri 桌面 DEB 使用上面的桌面默认目录。包内 Debian 软件包名仍是 `omnishare`。
 
 卸载程序默认保留用户数据。
 

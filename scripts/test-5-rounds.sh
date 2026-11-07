@@ -176,7 +176,7 @@ round5() {
   for arch in amd64 arm64; do
     unzip -t "$release/packages/OmniShare-v${VERSION}-windows-${arch}.zip" >/dev/null
     tar -tzf "$release/packages/OmniShare-v${VERSION}-linux-${arch}.tar.gz" >/dev/null
-    dpkg-deb -I "$release/packages/omnishare_${VERSION}_${arch}.deb" >/dev/null
+    dpkg-deb -I "$release/packages/omnishare-server_${VERSION}_${arch}.deb" >/dev/null
     unzip -t "$release/packages/OmniShare-v${VERSION}-macos-${arch}.zip" >/dev/null
   done
 

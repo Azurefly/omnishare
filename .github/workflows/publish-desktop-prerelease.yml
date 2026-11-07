@@ -315,6 +315,16 @@ jobs:
           const version = process.env.RELEASE_VERSION;
           const root = 'release-assets';
           const names = fs.readdirSync(root);
+          // Server and desktop filenames must remain distinct on systems that
+          // compare release asset names without case sensitivity.
+          const foldedNames = new Map();
+          for (const name of names) {
+            const folded = name.toLowerCase();
+            if (foldedNames.has(folded)) {
+              throw new Error(`Release asset names must be unique ignoring case: ${foldedNames.get(folded)} and ${name}`);
+            }
+            foldedNames.set(folded, name);
+          }
           const read = name => fs.readFileSync(path.join(root, name));
           const text = name => read(name).toString('utf8').replace(/^\uFEFF/, '');
           const requireFile = name => {
@@ -347,7 +357,7 @@ jobs:
             for (const name of [
               `OmniShare-v${version}-windows-${arch}.zip`,
               `OmniShare-v${version}-linux-${arch}.tar.gz`,
-              `omnishare_${version}_${arch}.deb`,
+              `omnishare-server_${version}_${arch}.deb`,
               `OmniShare-v${version}-macos-${arch}.zip`
             ]) verifyHash(name, serverHashes);
           }

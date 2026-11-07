@@ -83,7 +83,7 @@ function writeAssets(root) {
   const server = ['amd64', 'arm64'].flatMap(arch => [
     `OmniShare-v${version}-windows-${arch}.zip`,
     `OmniShare-v${version}-linux-${arch}.tar.gz`,
-    `omnishare_${version}_${arch}.deb`,
+    `omnishare-server_${version}_${arch}.deb`,
     `OmniShare-v${version}-macos-${arch}.zip`
   ]);
   const windows = [`OmniShare_${version}_x64_en-US.msi`, `OmniShare_${version}_x64-setup.exe`];
@@ -134,6 +134,24 @@ test('complete server and desktop assets pass hash and runtime verification', ()
   expectSuccess(execute(assetsScript, root));
 }));
 
+for (const [label, existing, collision, source] of [
+  ['legacy server and desktop Debian basenames', `OmniShare_${version}_amd64.deb`, `omnishare_${version}_amd64.deb`, `omnishare-server_${version}_amd64.deb`],
+  ['checksum filenames differing only by case', 'SHA256SUMS.txt', 'sha256sums.TXT', 'SHA256SUMS.txt']
+]) {
+  test(`asset verification rejects ${label}`, () => fixture(root => {
+    const { assets, put } = writeAssets(root);
+    // Keep every required package intact. Only the extra case-variant filename
+    // is invalid, so a missing target or checksum cannot hide a broken guard.
+    put(collision, readFileSync(join(assets, source)));
+    expectSuccess(spawnSync('sha256sum', ['-c', 'SHA256SUMS.txt'], { cwd: assets, encoding: 'utf8' }));
+    const result = execute(assetsScript, root);
+    expectFailure(result);
+    assert.match(result.stderr, /Release asset names must be unique ignoring case:/);
+    assert.ok(result.stderr.includes(existing), result.stderr);
+    assert.ok(result.stderr.includes(collision), result.stderr);
+  }));
+}
+
 for (const [label, mutate] of [
   ['missing server target', ({ assets, server }) => rmSync(join(assets, server[0]))],
   ['server package omitted from checksum list', ({ assets, put }) => put('SHA256SUMS.txt', readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8').split('\n').slice(1).join('\n'))],
@@ -168,7 +186,7 @@ test('publication waits for every build and only runs on main push or dispatch',
   assert.ok(publish.indexOf('- name: Verify published release assets') > publish.indexOf('- name: Publish GitHub prerelease'));
 });
 
-test('packager keeps Debian prerelease ordering while using portable public filenames', () => fixture(root => {
+test('packager separates server filenames while preserving Debian package identity and prerelease ordering', () => fixture(root => {
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'docs'));
   mkdirSync(join(root, 'binaries'));
@@ -178,14 +196,21 @@ test('packager keeps Debian prerelease ordering while using portable public file
   for (const name of ['windows-amd64.exe', 'windows-arm64.exe', 'linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64']) {
     writeFileSync(join(root, 'binaries', `omnishare-${name}`), 'binary fixture\n', { mode: 0o755 });
   }
-  for (const candidate of ['1.3.0-alpha1', '1.3.0-beta1', version]) {
+  for (const candidate of ['1.3.0-alpha1', '1.3.0-beta1', version, '1.3.0-rc4']) {
     writeFileSync(join(root, 'VERSION'), `${candidate}\n`);
     writeFileSync(join(root, `docs/RELEASE_NOTES_v${candidate}.md`), '# Packaging fixture\n');
     expectSuccess(spawnSync('bash', [join(root, 'scripts/package-release.sh'), join(root, 'binaries'), join(root, 'dist')], { encoding: 'utf8' }));
     const packages = join(root, 'dist/packages');
-    assert.ok(readdirSync(packages).every(name => !name.includes('~')), 'public filenames must not require GitHub normalization');
+    const names = readdirSync(packages);
+    assert.ok(names.every(name => !name.includes('~')), 'public filenames must not require GitHub normalization');
+    const combined = [...names, `OmniShare_${candidate}_amd64.deb`];
+    assert.equal(new Set(combined.map(name => name.toLowerCase())).size, combined.length,
+      'server and desktop assets must have distinct names even without case sensitivity');
     for (const arch of ['amd64', 'arm64']) {
-      const deb = join(packages, `omnishare_${candidate}_${arch}.deb`);
+      const deb = join(packages, `omnishare-server_${candidate}_${arch}.deb`);
+      const packageName = spawnSync('dpkg-deb', ['-f', deb, 'Package'], { encoding: 'utf8' });
+      expectSuccess(packageName);
+      assert.equal(packageName.stdout.trim(), 'omnishare');
       const control = spawnSync('dpkg-deb', ['-f', deb, 'Version'], { encoding: 'utf8' });
       expectSuccess(control);
       assert.equal(control.stdout.trim(), candidate.replace('-', '~'));
@@ -235,7 +260,7 @@ test('public verification checks uploaded files without requiring internal Linux
 }));
 
 for (const [label, mutate] of [
-  ['a filename rewritten by GitHub', release => { release.assets.find(asset => asset.name.startsWith('omnishare_')).name = 'omnishare_1.3.0.rc3_amd64.deb'; }],
+  ['a filename rewritten by GitHub', release => { release.assets.find(asset => asset.name.startsWith('omnishare-server_')).name = 'omnishare-server_1.3.0.rc3_amd64.deb'; }],
   ['a missing published asset', release => { release.assets.pop(); }],
   ['an unexpected published asset', release => { release.assets.push({ name: 'unexpected.zip', state: 'uploaded', size: 1, digest: `sha256:${'0'.repeat(64)}` }); }],
   ['an unfinished upload', release => { release.assets[0].state = 'starter'; }],
