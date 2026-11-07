@@ -16,7 +16,7 @@ function requireMatch(name, content, pattern, message) {
   }
 }
 
-const [cargo, main, tray, startup, manager, health, config, packageJson] = await Promise.all([
+const [cargo, main, tray, startup, manager, health, config, packageJson, commands, process, frontend] = await Promise.all([
   text(join(desktopRoot, 'src-tauri', 'Cargo.toml')),
   text(join(desktopRoot, 'src-tauri', 'src', 'main.rs')),
   text(join(desktopRoot, 'src-tauri', 'src', 'tray', 'mod.rs')),
@@ -24,7 +24,10 @@ const [cargo, main, tray, startup, manager, health, config, packageJson] = await
   text(join(desktopRoot, 'src-tauri', 'src', 'runtime', 'manager.rs')),
   text(join(desktopRoot, 'src-tauri', 'src', 'runtime', 'health.rs')),
   text(join(desktopRoot, 'src-tauri', 'tauri.conf.json')),
-  text(join(desktopRoot, 'package.json'))
+  text(join(desktopRoot, 'package.json')),
+  text(join(desktopRoot, 'src-tauri', 'src', 'commands', 'backend.rs')),
+  text(join(desktopRoot, 'src-tauri', 'src', 'process', 'backend.rs')),
+  text(join(desktopRoot, 'frontend', 'index.html'))
 ]);
 
 requireMatch('Cargo.toml', cargo, /tauri-plugin-single-instance\s*=\s*"2"/, 'single-instance plugin dependency is required');
@@ -44,6 +47,13 @@ requireMatch('runtime/startup.rs', startup, /diagnostics/, 'startup failures mus
 requireMatch('runtime/startup.rs', startup, /OMNISHARE_DESKTOP_LOG_DIR/, 'test and managed deployments must be able to capture backend logs deterministically');
 requireMatch('runtime/manager.rs', manager, /desired_running:\s*AtomicBool/, 'backend state must distinguish an intentional stop from an unexpected exit');
 requireMatch('runtime/manager.rs', manager, /pub fn should_run/, 'watchdog must be able to respect intentional backend stops');
+requireMatch('commands/backend.rs', commands, /pub fn desktop_boot[\s\S]*?Result<BackendNavigation, String>[\s\S]*?startup::initialize[^;]+\?;\s*state\.inner\(\)\.navigation\(\)/, 'boot must return the navigation credential even when native startup already started the backend');
+requireMatch('commands/backend.rs', commands, /pub fn backend_status[^}]+state\.inner\(\)\.status\(\)/, 'ordinary status responses must not include initialization credentials');
+requireMatch('runtime/manager.rs', manager, /#\[derive\(Serialize\)\]\s*pub struct BackendNavigation/, 'credential-bearing navigation responses must not derive Debug');
+requireMatch('runtime/manager.rs', manager, /bootstrap::navigation_url\(&process\.url\(\), process\.managed_data_dir\(\)\)/, 'navigation must use only the managed backend data directory');
+requireMatch('process/backend.rs', process, /pub fn managed_data_dir[^}]+self\.child\.is_some\(\)\s*&&\s*!self\.attached/, 'attached services must never receive a guessed initialization token');
+requireMatch('process/backend.rs', process, /\.arg\("--data-dir"\)\s*\.arg\(data_dir\)/, 'the token directory must match the actual child process data directory');
+requireMatch('frontend/index.html', frontend, /window\.location\.replace\(backend\.url\)/, 'the WebView must consume the navigation URL returned by desktop boot');
 requireMatch('runtime/health.rs', health, /<title>OmniShare<\/title>/, 'health probe must identify OmniShare rather than any open TCP port');
 requireMatch('tauri.conf.json', config, /"resources"\s*:\s*\[/, 'backend resources must be bundled');
 requireMatch('tauri.conf.json', config, /"icons\/icon\.ico"/, 'Windows application icon must be bundled');

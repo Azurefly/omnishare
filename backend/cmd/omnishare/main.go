@@ -180,10 +180,24 @@ func openStorage(dataDir, engine string) (storage.Backend, api.StorageState, err
 		}
 		return store, api.StorageState{Engine: "json"}, nil
 	}
+	if engine != "sqlite" {
+		return nil, api.StorageState{}, fmt.Errorf("unknown storage engine %q: use sqlite or json", engine)
+	}
+	_, statErr := os.Stat(filepath.Join(dataDir, "omnishare.db"))
+	hadSQLite := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, api.StorageState{}, fmt.Errorf("inspect SQLite database: %w", statErr)
+	}
 	store, err := storage.NewSQLite(dataDir)
 	if err == nil {
-		report := store.MigrationInfo()
-		return store, api.StorageState{Engine: "sqlite", MigrationPending: !report.Migrated}, nil
+		// NewSQLite either completes a required import or returns an error. A
+		// fresh database and a reopened database have no migration pending.
+		return store, api.StorageState{Engine: "sqlite"}, nil
+	}
+	if hadSQLite {
+		// The retained JSON is a migration source, not a synchronized replica.
+		// Falling back here can hide every write made since migration.
+		return nil, api.StorageState{}, fmt.Errorf("existing SQLite database could not be opened; refusing automatic fallback to stale JSON (restore the database or explicitly select --storage-engine=json): %w", err)
 	}
 	jsonPath := filepath.Join(dataDir, "omnishare.json")
 	if _, statErr := os.Stat(jsonPath); statErr != nil {

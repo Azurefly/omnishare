@@ -68,9 +68,10 @@ type Server struct {
 	// exists; see init_token.go.
 	initToken     string
 	initTokenPath string
-	// uploadsMu serialises whole-request consumers of the uploads directory.
-	// Restore takes the write lock, uploads and downloads take the read lock.
-	uploadsMu sync.RWMutex
+	// dataMu keeps each data request on one generation of state/config/blobs.
+	// Ordinary requests share the read lock; only the final restore swap takes
+	// the write lock. Uploading and validating an archive do not block requests.
+	dataMu sync.RWMutex
 
 	storageMu    sync.RWMutex
 	storageState StorageState
@@ -259,6 +260,11 @@ func (s *Server) common(next http.Handler) http.Handler {
 			return
 		}
 		defer s.leaveRequest(ip)
+		if r.URL.Path != "/api/v1/restore" && r.URL.Path != "/api/v1/health" &&
+			(strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/media/") || strings.HasPrefix(r.URL.Path, "/n/")) {
+			s.dataMu.RLock()
+			defer s.dataMu.RUnlock()
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -842,10 +848,6 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
-	// Uploads and restores both mutate uploads/; the read lock keeps a restore
-	// from replacing the directory mid-request.
-	s.uploadsMu.RLock()
-	defer s.uploadsMu.RUnlock()
 	allowLongTransfer(w)
 	cfg := s.cfg.Get()
 	maxBytes := cfg.MaxUploadMB * 1024 * 1024
@@ -1097,10 +1099,6 @@ func (s *Server) markTicketCounted(nonce string, expires time.Time) bool {
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, asset model.FileAsset, inline, count bool) {
-	// Downloads hold a read lock for their whole duration so a restore cannot
-	// swap the uploads directory out from under an open blob.
-	s.uploadsMu.RLock()
-	defer s.uploadsMu.RUnlock()
 	if err := storage.ValidateStoragePath(asset.StoragePath); err != nil {
 		http.NotFound(w, r)
 		return
@@ -1872,7 +1870,7 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	// A restore may upload for hours on a slow link, but a dead connection must
 	// still be reclaimed. Reset an idle timer on every successful read instead
 	// of using a fixed total timeout.
-	idleBody := newIdleTimeoutBody(r.Body, restoreIdleTimeout)
+	idleBody := newIdleTimeoutBody(r.Body, restoreIdleTimeout, w)
 	defer idleBody.Stop()
 	r.Body = idleBody
 	reader, err := r.MultipartReader()
@@ -2110,9 +2108,25 @@ func (s *Server) applyRestore(archive string, expected *model.BackupManifest) er
 		return err
 	}
 
-	// Everything above (unzip, checksum verification, rollback snapshots) runs
+	// Everything above (unzip and checksum verification) runs
 	// without the exclusive lock, so uploads and downloads keep flowing while a
 	// multi-gigabyte archive is extracted.
+	if s.restorePreSwapHook != nil {
+		s.restorePreSwapHook()
+	}
+	return s.commitRestore(newUploads, stateJSON, configJSON)
+}
+
+// commitRestore is the short critical section: it swaps the staged uploads
+// directory, replaces the state and restores config. Only this window blocks
+// concurrent data requests, not the whole extraction.
+func (s *Server) commitRestore(newUploads string, stateJSON, configJSON []byte) error {
+	s.dataMu.Lock()
+	defer s.dataMu.Unlock()
+
+	// Capture rollback state only after all in-flight data requests finish.
+	// A snapshot taken during extraction can predate successful writes, making
+	// a failed restore silently discard them while returning their blobs.
 	oldState, err := s.store.Snapshot()
 	if err != nil {
 		return err
@@ -2121,18 +2135,6 @@ func (s *Server) applyRestore(archive string, expected *model.BackupManifest) er
 	if err != nil {
 		return err
 	}
-	if s.restorePreSwapHook != nil {
-		s.restorePreSwapHook()
-	}
-	return s.commitRestore(newUploads, stateJSON, configJSON, oldState, oldConfig)
-}
-
-// commitRestore is the short critical section: it swaps the staged uploads
-// directory, replaces the state and restores config. Only this window blocks
-// concurrent uploads/downloads, not the whole extraction.
-func (s *Server) commitRestore(newUploads string, stateJSON, configJSON, oldState, oldConfig []byte) error {
-	s.uploadsMu.Lock()
-	defer s.uploadsMu.Unlock()
 
 	oldUploads := filepath.Join(s.dataDir, "uploads.pre-restore")
 	_ = os.RemoveAll(oldUploads)

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,22 +21,25 @@ import (
 
 // Encrypted backups use a small self-describing container:
 //
-//	magic(16) | header length(4, BE) | header JSON | chunk...
+//	magic | header length(4, BE) | header JSON | chunk...
 //
-// Each chunk is length(4, BE) | AES-256-GCM ciphertext. A zero length marks the
-// end of the stream, so the reader never needs the plaintext size in advance.
-// The header is used as additional authenticated data and carries the KDF
-// parameters, nonce prefix, creation time and the same manifest that is stored
-// inside the ZIP, so a truncated or tampered package fails before extraction.
+// Each chunk is length(4, BE) | AES-256-GCM ciphertext. Version 3 binds the
+// complete header digest, sequence number and record type to every GCM tag.
+// A zero length followed by an authenticated empty final record ends the
+// stream; EOF is required immediately afterwards. Version 2 remains readable
+// for existing backups, but only new v3 packages authenticate all metadata and
+// the end of the stream.
 var backupMagic = []byte("OMNISHARE-ENC-BK")
 
 const (
-	backupFormatVersion = 2
-	backupChunkSize     = 1 << 20
-	backupKDFIterations = 210_000
-	backupSaltSize      = 16
-	backupNoncePrefix   = 8
-	backupMaxHeaderSize = 8 << 20
+	backupFormatVersion       = 3
+	legacyBackupFormatVersion = 2
+	backupChunkSize           = 1 << 20
+	backupKDFIterations       = 210_000
+	backupMaxKDFIterations    = 1_000_000
+	backupSaltSize            = 16
+	backupNoncePrefix         = 8
+	backupMaxHeaderSize       = 8 << 20
 )
 
 type BackupHeader struct {
@@ -52,35 +55,17 @@ type BackupHeader struct {
 	Manifest      model.BackupManifest `json:"manifest"`
 }
 
-// pbkdf2SHA256 implements PBKDF2-HMAC-SHA256 without pulling in a new module.
-func pbkdf2SHA256(password, salt []byte, iterations, keyLen int) []byte {
-	hashLen := sha256.Size
-	blocks := (keyLen + hashLen - 1) / hashLen
-	out := make([]byte, 0, blocks*hashLen)
-	var counter [4]byte
-	for block := 1; block <= blocks; block++ {
-		binary.BigEndian.PutUint32(counter[:], uint32(block))
-		mac := hmac.New(sha256.New, password)
-		mac.Write(salt)
-		mac.Write(counter[:])
-		u := mac.Sum(nil)
-		t := make([]byte, len(u))
-		copy(t, u)
-		for i := 1; i < iterations; i++ {
-			mac = hmac.New(sha256.New, password)
-			mac.Write(u)
-			u = mac.Sum(nil)
-			for j := range t {
-				t[j] ^= u[j]
-			}
-		}
-		out = append(out, t...)
+func backupAEAD(password string, salt []byte, iterations int) (cipher.AEAD, error) {
+	key, err := pbkdf2.Key(sha256.New, password, salt, iterations, 32)
+	if err != nil {
+		return nil, err
 	}
-	return out[:keyLen]
-}
-
-func deriveBackupKey(password string, salt []byte, iterations int) []byte {
-	return pbkdf2SHA256([]byte(password), salt, iterations, 32)
+	defer clear(key)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }
 
 func chunkNonce(prefix []byte, index uint32) []byte {
@@ -91,13 +76,33 @@ func chunkNonce(prefix []byte, index uint32) []byte {
 }
 
 type backupEncryptWriter struct {
-	w          io.Writer
-	aead       cipher.AEAD
-	prefix     []byte
-	buf        []byte
-	index      uint32
-	closed     bool
-	headerSize int
+	w            io.Writer
+	aead         cipher.AEAD
+	prefix       []byte
+	buf          []byte
+	index        uint32
+	closed       bool
+	err          error
+	headerDigest [sha256.Size]byte
+}
+
+func backupRecordAAD(digest [sha256.Size]byte, index uint32, final bool) []byte {
+	aad := append([]byte("omnishare-backup-v3:"), digest[:]...)
+	var sequence [4]byte
+	binary.BigEndian.PutUint32(sequence[:], index)
+	aad = append(aad, sequence[:]...)
+	if final {
+		return append(aad, 1)
+	}
+	return append(aad, 0)
+}
+
+func writeBackupBytes(w io.Writer, data []byte) error {
+	n, err := w.Write(data)
+	if err == nil && n != len(data) {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 // NewBackupEncryptWriter writes the header immediately and encrypts subsequent
@@ -135,33 +140,32 @@ func NewBackupEncryptWriter(w io.Writer, password string, manifest model.BackupM
 	}
 	var length [4]byte
 	binary.BigEndian.PutUint32(length[:], uint32(len(headerJSON)))
-	if _, err := w.Write(backupMagic); err != nil {
-		return nil, err
-	}
-	if _, err := w.Write(length[:]); err != nil {
-		return nil, err
-	}
-	if _, err := w.Write(headerJSON); err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(deriveBackupKey(password, salt, header.Iterations))
+	headerBytes := append([]byte(nil), backupMagic...)
+	headerBytes = append(headerBytes, length[:]...)
+	headerBytes = append(headerBytes, headerJSON...)
+	aead, err := backupAEAD(password, salt, header.Iterations)
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
+	if err := writeBackupBytes(w, headerBytes); err != nil {
 		return nil, err
 	}
 	return &backupEncryptWriter{
-		w:          w,
-		aead:       aead,
-		prefix:     prefix,
-		buf:        make([]byte, 0, backupChunkSize),
-		headerSize: len(backupMagic) + 4 + len(headerJSON),
+		w:            w,
+		aead:         aead,
+		prefix:       prefix,
+		buf:          make([]byte, 0, backupChunkSize),
+		headerDigest: sha256.Sum256(headerBytes),
 	}, nil
 }
 
 func (b *backupEncryptWriter) Write(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	if b.closed {
+		return 0, io.ErrClosedPipe
+	}
 	written := 0
 	for len(p) > 0 {
 		space := backupChunkSize - len(b.buf)
@@ -173,6 +177,7 @@ func (b *backupEncryptWriter) Write(p []byte) (int, error) {
 		written += space
 		if len(b.buf) == backupChunkSize {
 			if err := b.flushChunk(); err != nil {
+				b.err = err
 				return written, err
 			}
 		}
@@ -184,33 +189,44 @@ func (b *backupEncryptWriter) flushChunk() error {
 	if len(b.buf) == 0 {
 		return nil
 	}
-	aad := []byte(fmt.Sprintf("omnishare-backup-chunk:%d:%d", b.headerSize, b.index))
+	// Reserve the final nonce for the authenticated end record.
+	if b.index == ^uint32(0) {
+		return errors.New("encrypted backup contains too many chunks")
+	}
+	aad := backupRecordAAD(b.headerDigest, b.index, false)
 	sealed := b.aead.Seal(nil, chunkNonce(b.prefix, b.index), b.buf, aad)
 	b.index++
 	var length [4]byte
 	binary.BigEndian.PutUint32(length[:], uint32(len(sealed)))
-	if _, err := b.w.Write(length[:]); err != nil {
+	if err := writeBackupBytes(b.w, length[:]); err != nil {
 		return err
 	}
-	if _, err := b.w.Write(sealed); err != nil {
+	if err := writeBackupBytes(b.w, sealed); err != nil {
 		return err
 	}
 	b.buf = b.buf[:0]
 	return nil
 }
 
-// Close flushes the tail and writes the end-of-stream marker.
+// Close flushes the tail and authenticates the end-of-stream marker.
 func (b *backupEncryptWriter) Close() error {
 	if b.closed {
-		return nil
+		return b.err
 	}
 	b.closed = true
-	if err := b.flushChunk(); err != nil {
-		return err
+	if b.err == nil {
+		b.err = b.flushChunk()
+	}
+	if b.err != nil {
+		return b.err
 	}
 	var terminator [4]byte
-	_, err := b.w.Write(terminator[:])
-	return err
+	tag := b.aead.Seal(nil, chunkNonce(b.prefix, b.index), nil, backupRecordAAD(b.headerDigest, b.index, true))
+	b.err = writeBackupBytes(b.w, terminator[:])
+	if b.err == nil {
+		b.err = writeBackupBytes(b.w, tag)
+	}
+	return b.err
 }
 
 // IsEncryptedBackup reports whether the file starts with the container magic.
@@ -252,10 +268,12 @@ func readBackupHeader(r io.Reader) (BackupHeader, []byte, error) {
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return header, nil, errors.New("encrypted backup header is invalid")
 	}
-	if header.FormatVersion != backupFormatVersion || header.Cipher != "AES-256-GCM" || header.KDF != "PBKDF2-HMAC-SHA256" {
+	if (header.FormatVersion != backupFormatVersion && header.FormatVersion != legacyBackupFormatVersion) || header.Cipher != "AES-256-GCM" || header.KDF != "PBKDF2-HMAC-SHA256" {
 		return header, nil, errors.New("unsupported encrypted backup format")
 	}
-	if header.ChunkSize < 1 || header.ChunkSize > 64<<20 || header.Iterations < 100_000 {
+	// Parameters are untrusted until GCM verification. Bound KDF work before
+	// deriving a key, and only accept the chunk size emitted by either writer.
+	if header.ChunkSize != backupChunkSize || header.Iterations < 100_000 || header.Iterations > backupMaxKDFIterations {
 		return header, nil, errors.New("encrypted backup header parameters are invalid")
 	}
 	headerBytes := make([]byte, 0, len(backupMagic)+4+len(headerJSON))
@@ -266,7 +284,8 @@ func readBackupHeader(r io.Reader) (BackupHeader, []byte, error) {
 }
 
 // DecryptBackup streams an encrypted package into dst. The derived key never
-// leaves this function; the caller only receives the authenticated header.
+// leaves this function. New v3 headers and the final record are authenticated;
+// legacy v2 archives retain their original chunk-only authentication.
 func DecryptBackup(src io.Reader, dst io.Writer, password string) (BackupHeader, error) {
 	header, headerBytes, err := readBackupHeader(src)
 	if err != nil {
@@ -276,22 +295,19 @@ func DecryptBackup(src io.Reader, dst io.Writer, password string) (BackupHeader,
 		return header, errors.New("this backup is encrypted; a password is required")
 	}
 	salt, err := base64.StdEncoding.DecodeString(header.Salt)
-	if err != nil || len(salt) < 8 {
+	if err != nil || len(salt) != backupSaltSize {
 		return header, errors.New("encrypted backup salt is invalid")
 	}
 	prefix, err := base64.StdEncoding.DecodeString(header.NoncePrefix)
 	if err != nil || len(prefix) != backupNoncePrefix {
 		return header, errors.New("encrypted backup nonce is invalid")
 	}
-	block, err := aes.NewCipher(deriveBackupKey(password, salt, header.Iterations))
-	if err != nil {
-		return header, err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := backupAEAD(password, salt, header.Iterations)
 	if err != nil {
 		return header, err
 	}
 	headerSize := len(headerBytes)
+	headerDigest := sha256.Sum256(headerBytes)
 	var index uint32
 	var length [4]byte
 	for {
@@ -303,7 +319,25 @@ func DecryptBackup(src io.Reader, dst io.Writer, password string) (BackupHeader,
 		}
 		size := binary.BigEndian.Uint32(length[:])
 		if size == 0 {
+			if header.FormatVersion == backupFormatVersion {
+				tag := make([]byte, aead.Overhead())
+				if _, err := io.ReadFull(src, tag); err != nil {
+					return header, errors.New("encrypted backup final record is truncated")
+				}
+				if _, err := aead.Open(nil, chunkNonce(prefix, index), tag, backupRecordAAD(headerDigest, index, true)); err != nil {
+					return header, errors.New("backup password is wrong or the final record was tampered with")
+				}
+			} else if index == 0 {
+				return header, errors.New("legacy encrypted backup contains no authenticated data")
+			}
+			var extra [1]byte
+			if n, err := io.ReadFull(src, extra[:]); n != 0 || !errors.Is(err, io.EOF) {
+				return header, errors.New("encrypted backup contains trailing data")
+			}
 			return header, nil
+		}
+		if index == ^uint32(0) {
+			return header, errors.New("encrypted backup contains too many chunks")
 		}
 		if size < 16 || size > backupChunkSize+16 {
 			return header, errors.New("encrypted backup chunk has an invalid size")
@@ -313,12 +347,15 @@ func DecryptBackup(src io.Reader, dst io.Writer, password string) (BackupHeader,
 			return header, errors.New("encrypted backup is truncated")
 		}
 		aad := []byte(fmt.Sprintf("omnishare-backup-chunk:%d:%d", headerSize, index))
+		if header.FormatVersion == backupFormatVersion {
+			aad = backupRecordAAD(headerDigest, index, false)
+		}
 		plain, err := aead.Open(nil, chunkNonce(prefix, index), sealed, aad)
 		if err != nil {
 			return header, errors.New("backup password is wrong or the package was tampered with")
 		}
 		index++
-		if _, err := dst.Write(plain); err != nil {
+		if err := writeBackupBytes(dst, plain); err != nil {
 			return header, err
 		}
 	}

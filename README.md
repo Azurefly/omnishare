@@ -116,6 +116,12 @@ Linux 根据发行版选择 AppImage、DEB 或 RPM。Release 同时提供 Window
 - **发现协议**：局域网公告使用稳定 Ed25519 身份和签名，校验时间、端口、字段长度并确定性去重排序。
 - **协作保护**：文档自动保存按文档快照串行执行；切换前保存；冲突时保留本地草稿。
 
+### 备份格式兼容性
+
+新导出的 `.osb` 使用 v3 容器：完整包头、分块顺序与结束记录都参加 AES-GCM 认证，读取时也会拒绝尾随数据。PBKDF2 使用 Go 标准库实现，并在派生前检查包头参数和计算量上限。
+
+当前版本继续恢复旧版 v2 `.osb` 和未加密 ZIP；v2 保留其原有的分块校验能力。旧程序无法读取新 v3 加密备份，因此恢复新备份时应使用本次更新或更新版本的程序。恢复失败会回滚到最终切换之前的状态，保留解压校验期间已经成功完成的写入；恢复成功仍表示用所选备份替换当前数据。
+
 ## Windows 桌面端使用
 
 1. 从 GitHub Release 下载 NSIS 安装器或 MSI。
@@ -212,8 +218,9 @@ Linux 用户级安装包使用 XDG 目录：
 - 自动迁移：首次以 SQLite 启动且数据目录存在 `omnishare.json` 时，先把原文件完整复制为 `omnishare.json.<UTC时间戳>.migrated.bak`，再在单个事务中导入并逐项校验 `notes/files/pads/shares/audits/trash` 条数与审计哈希链。任一不一致会回滚事务、保留原 JSON，并自动回退到 JSON 引擎继续运行；启动日志和 `/api/v1/health` 会显示 `"migration": "not_migrated"`。
 - 手动迁移：`omnishare --migrate-storage`，打印迁移条目数后退出。
 - 强制回退：`omnishare --storage-engine=json`（或环境变量 `OMNISHARE_STORAGE=json`）。迁移成功后原 `omnishare.json` 仍然保留，不会被删除或改名。
+- 已有 SQLite 数据库无法打开时，程序会停止并说明原因，不会自动选择迁移前的旧 JSON。旧 JSON 不包含 SQLite 使用期间新增的数据；只有明确决定使用旧数据时才手动选择 JSON 引擎。
 - 完整回滚：停止服务，把 `omnishare.db`、`omnishare.db-wal`、`omnishare.db-shm` 移出数据目录，再以 `--storage-engine=json` 启动即可回到旧数据。
-- 已知限制：笔记阅读数与文件下载数是内存累加、每 5 秒批量落库，进程崩溃会丢失最近几秒的计数；`burn-after-read` / 达到最大阅读次数的笔记仍为同步销毁。审计保留策略（`audit_retention_days` 默认 90、`audit_max_events` 默认 100000）只在 SQLite 引擎执行，裁剪以锚点分段进行；JSON 回退引擎不裁剪审计。
+- 已知限制：普通笔记阅读数与文件下载数是内存累加、每 5 秒批量落库，进程崩溃会丢失最近几秒的计数；设置最大阅读次数的笔记逐次同步计数，`burn-after-read` / 达到最大阅读次数时同步销毁。备份快照包含尚未刷盘的计数，刷新失败会保留批次供下次重试。审计保留策略（`audit_retention_days` 默认 90、`audit_max_events` 默认 100000）只在 SQLite 引擎执行，裁剪以锚点分段进行；JSON 回退引擎不裁剪审计。
 
 ## 构建桌面端
 
@@ -320,6 +327,7 @@ MSI 真实运行测试发现，后端在 Windows 上完成配置文件同步和�
 
 ## 文档
 
+- [2026-11-07 分支整合与可靠性优化](docs/INTEGRATION_2026-11-07.md)
 - [Desktop v1.0.0 发布说明](docs/RELEASE_NOTES_v1.0.0-desktop.md)
 - [桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)
 - [桌面发布与签名](docs/DESKTOP_RELEASE.md)

@@ -6,6 +6,6 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node --check web/theme.js && node --check web/runtime-bridge.js && node --check web/app.js && node --check web/service-worker.js",
-    "test": "node scripts/test.mjs"
+    "test": "node scripts/test.mjs && node --test scripts/behavior.test.mjs"
   }
 }

@@ -37,6 +37,10 @@ jobs:
           go vet ./...
       - name: Go tests
         run: cd backend && go test ./... -count=1 -race
+      - name: Real HTTP process integration
+        run: |
+          (cd backend && go build -trimpath -o "$RUNNER_TEMP/omnishare-http-test" ./cmd/omnishare)
+          python3 scripts/test-http-integration.py "$RUNNER_TEMP/omnishare-http-test"
       - name: Go coverage gate
         run: |
           cd backend

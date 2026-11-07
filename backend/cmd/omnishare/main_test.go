@@ -73,3 +73,70 @@ func TestOpenStorageMigratesThenFallsBackOnCorruption(t *testing.T) {
 		t.Fatalf("fallback notes = %d", len(notes))
 	}
 }
+
+func TestOpenStorageDoesNotFallbackFromExistingSQLite(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyState(t, dir)
+	backend, _, err := openStorage(dir, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := backend.CreateNote(model.QuickNote{ID: "sqlite-only", Content: "newer data", ContentType: "text", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The migration source still contains only n1. A database error must not
+	// silently select that stale source and appear to lose all newer writes.
+	dbPath := filepath.Join(dir, "omnishare.db")
+	if err := os.WriteFile(dbPath, []byte("damaged database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fallback, _, err := openStorage(dir, "sqlite")
+	if fallback != nil {
+		_ = fallback.Close()
+	}
+	if err == nil {
+		t.Fatal("existing SQLite failure silently selected the stale migration JSON")
+	}
+	if !strings.Contains(err.Error(), "existing SQLite") {
+		t.Fatalf("database failure should explain why fallback is unsafe: %v", err)
+	}
+}
+
+func TestOpenStorageRejectsUnknownEngine(t *testing.T) {
+	dir := t.TempDir()
+	backend, _, err := openStorage(dir, "sqltie")
+	if backend != nil {
+		_ = backend.Close()
+	}
+	if err == nil {
+		t.Fatal("unknown storage engine was silently treated as sqlite")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "omnishare.db")); !os.IsNotExist(err) {
+		t.Fatalf("invalid engine selection created a database: %v", err)
+	}
+}
+
+func TestOpenStorageSuccessfulSQLiteIsNotPending(t *testing.T) {
+	for _, migrate := range []bool{false, true} {
+		dir := t.TempDir()
+		if migrate {
+			seedLegacyState(t, dir)
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			backend, state, err := openStorage(dir, "sqlite")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if state.MigrationPending || state.MigrationFailed {
+				t.Fatalf("successful startup falsely reports pending migration (legacy=%t, attempt=%d): %+v", migrate, attempt, state)
+			}
+		}
+	}
+}

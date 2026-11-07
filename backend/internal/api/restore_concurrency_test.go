@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,7 +110,7 @@ func TestIdleTimeoutBodyReclaimsStalledUpload(t *testing.T) {
 	restoreIdleTimeout = 60 * time.Millisecond
 	defer func() { restoreIdleTimeout = old }()
 
-	body := newIdleTimeoutBody(pr, restoreIdleTimeout)
+	body := newIdleTimeoutBody(pr, restoreIdleTimeout, nil)
 	defer body.Stop()
 	done := make(chan error, 1)
 	go func() {
@@ -120,5 +124,100 @@ func TestIdleTimeoutBodyReclaimsStalledUpload(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("idle timeout did not close the stalled body")
+	}
+}
+
+// A real net/http request body holds its internal lock during a socket read.
+// Closing it from a timer cannot interrupt that read, unlike an io.Pipe.
+func TestRestoreIdleTimeoutInterruptsHTTPConnection(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	old := restoreIdleTimeout
+	restoreIdleTimeout = 60 * time.Millisecond
+	defer func() { restoreIdleTimeout = old }()
+	server := httptest.NewServer(h)
+	defer server.Close()
+	addr := strings.TrimPrefix(server.URL, "http://")
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(conn, "POST /api/v1/restore HTTP/1.1\r\nHost: %s\r\nContent-Type: multipart/form-data; boundary=idle-test\r\nContent-Length: 1048576\r\nX-OmniShare-Confirm: RESTORE-BACKUP\r\nX-OmniShare-Init-Token: %s\r\n\r\n--idle-test\r\nContent-Disposition: form-data; name=\"backup\"; filename=\"backup.zip\"\r\nContent-Type: application/zip\r\n\r\n", addr, s.InitToken())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("stalled HTTP upload was not reclaimed by the idle deadline: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("stalled upload status = %d", response.StatusCode)
+	}
+}
+
+func TestRestoreEarlyRejectKeepsBodyDrainDeadline(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	old := restoreIdleTimeout
+	restoreIdleTimeout = 60 * time.Millisecond
+	defer func() { restoreIdleTimeout = old }()
+	server := httptest.NewServer(h)
+	defer server.Close()
+	addr := strings.TrimPrefix(server.URL, "http://")
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(conn, "POST /api/v1/restore HTTP/1.1\r\nHost: %s\r\nContent-Type: text/plain\r\nContent-Length: 1024\r\nX-OmniShare-Confirm: RESTORE-BACKUP\r\nX-OmniShare-Init-Token: %s\r\n\r\n", addr, s.InitToken())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("early-rejected body drain was not bounded: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("early-rejected upload status = %d", response.StatusCode)
+	}
+}
+
+func TestRestoreCompletedPartKeepsTailDrainDeadline(t *testing.T) {
+	s, h, _ := newTestServer(t)
+	old := restoreIdleTimeout
+	restoreIdleTimeout = 60 * time.Millisecond
+	defer func() { restoreIdleTimeout = old }()
+	server := httptest.NewServer(h)
+	defer server.Close()
+	addr := strings.TrimPrefix(server.URL, "http://")
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Complete the selected file part, but promise additional HTTP bytes and
+	// withhold them. An invalid archive is enough to exercise the early return.
+	prefix := "--tail-test\r\nContent-Disposition: form-data; name=\"backup\"; filename=\"bad.zip\"\r\n\r\nnot a zip\r\n--tail-test--\r\n"
+	_, err = fmt.Fprintf(conn, "POST /api/v1/restore HTTP/1.1\r\nHost: %s\r\nContent-Type: multipart/form-data; boundary=tail-test\r\nContent-Length: %d\r\nX-OmniShare-Confirm: RESTORE-BACKUP\r\nX-OmniShare-Init-Token: %s\r\n\r\n%s", addr, len(prefix)+1024, s.InitToken(), prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("completed-part tail drain was not bounded: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("invalid archive status = %d", response.StatusCode)
 	}
 }

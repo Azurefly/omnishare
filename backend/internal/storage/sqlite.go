@@ -985,8 +985,14 @@ func (s *SQLiteStore) migrateFromJSON(jsonPath string) error {
 	return nil
 }
 
-// DumpState exports the entire SQLite state into a Go `state` structure for backup or JSON fallback.
+// DumpState exports a consistent database snapshot, including counters that
+// have not yet been flushed. Neither reading nor exporting consumes the batch.
 func (s *SQLiteStore) DumpState() (state, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+
 	var st state
 	st.SchemaVersion = currentStateSchema
 	st.Notes = []model.QuickNote{}
@@ -994,9 +1000,14 @@ func (s *SQLiteStore) DumpState() (state, error) {
 	st.Pads = []model.PadDocument{}
 	st.Shares = []model.ShareLink{}
 	st.Audits = []model.AuditEvent{}
+	tx, err := s.readDB.Begin()
+	if err != nil {
+		return st, err
+	}
+	defer tx.Rollback()
 
 	// Query Notes
-	nRows, err := s.readDB.Query(`SELECT id, content, content_redacted, content_type, tags, pinned, is_burn_after_read,
+	nRows, err := tx.Query(`SELECT id, content, content_redacted, content_type, tags, pinned, is_burn_after_read,
 		read_count, max_read_count, expires_at, deleted_at, created_at, updated_at FROM quick_notes ORDER BY rowid ASC`)
 	if err != nil {
 		return st, err
@@ -1019,11 +1030,15 @@ func (s *SQLiteStore) DumpState() (state, error) {
 		n.DeletedAt = parseTime(delStr)
 		n.CreatedAt = mustParseTime(createdStr)
 		n.UpdatedAt = mustParseTime(updatedStr)
+		n.ReadCount += s.pendingReads[n.ID]
 		st.Notes = append(st.Notes, n)
+	}
+	if err := nRows.Err(); err != nil {
+		return st, err
 	}
 
 	// Query Files
-	fRows, err := s.readDB.Query(`SELECT id, file_name, file_size, mime_type, storage_path, file_hash,
+	fRows, err := tx.Query(`SELECT id, file_name, file_size, mime_type, storage_path, file_hash,
 		download_count, is_video, download_url, stream_url, expires_at, deleted_at, created_at FROM file_assets ORDER BY rowid ASC`)
 	if err != nil {
 		return st, err
@@ -1042,11 +1057,15 @@ func (s *SQLiteStore) DumpState() (state, error) {
 		f.ExpiresAt = parseTime(expStr)
 		f.DeletedAt = parseTime(delStr)
 		f.CreatedAt = mustParseTime(createdStr)
+		f.DownloadCount += s.pendingDownloads[f.ID]
 		st.Files = append(st.Files, f)
+	}
+	if err := fRows.Err(); err != nil {
+		return st, err
 	}
 
 	// Query Pads
-	pRows, err := s.readDB.Query(`SELECT id, title, content, version, deleted_at, created_at, updated_at FROM pad_documents ORDER BY rowid ASC`)
+	pRows, err := tx.Query(`SELECT id, title, content, version, deleted_at, created_at, updated_at FROM pad_documents ORDER BY rowid ASC`)
 	if err != nil {
 		return st, err
 	}
@@ -1063,9 +1082,12 @@ func (s *SQLiteStore) DumpState() (state, error) {
 		p.UpdatedAt = mustParseTime(updatedStr)
 		st.Pads = append(st.Pads, p)
 	}
+	if err := pRows.Err(); err != nil {
+		return st, err
+	}
 
 	// Query Shares
-	sRows, err := s.readDB.Query(`SELECT id, token, object_type, object_id, name, url,
+	sRows, err := tx.Query(`SELECT id, token, object_type, object_id, name, url,
 		access_count, max_access_count, expires_at, revoked_at, last_accessed_at, created_at, status FROM share_links ORDER BY rowid ASC`)
 	if err != nil {
 		return st, err
@@ -1085,9 +1107,12 @@ func (s *SQLiteStore) DumpState() (state, error) {
 		sLink.CreatedAt = mustParseTime(createdStr)
 		st.Shares = append(st.Shares, sLink)
 	}
+	if err := sRows.Err(); err != nil {
+		return st, err
+	}
 
 	// Query Audits
-	aRows, err := s.readDB.Query(`SELECT id, action, object, object_id, summary, metadata, prev_hash, hash, created_at FROM audit_events ORDER BY seq ASC`)
+	aRows, err := tx.Query(`SELECT id, action, object, object_id, summary, metadata, prev_hash, hash, created_at FROM audit_events ORDER BY seq ASC`)
 	if err != nil {
 		return st, err
 	}
@@ -1102,8 +1127,11 @@ func (s *SQLiteStore) DumpState() (state, error) {
 		a.CreatedAt = mustParseTime(createdStr)
 		st.Audits = append(st.Audits, a)
 	}
+	if err := aRows.Err(); err != nil {
+		return st, err
+	}
 
-	return st, nil
+	return st, tx.Commit()
 }
 
 // Snapshot returns the JSON representation of the database state.
@@ -1115,7 +1143,7 @@ func (s *SQLiteStore) Snapshot() ([]byte, error) {
 	return json.MarshalIndent(st, "", "  ")
 }
 
-// WithSnapshot holds a read lock (conceptually via consistent DumpState) for backup creation.
+// WithSnapshot passes a consistent exported state and its files to the callback.
 func (s *SQLiteStore) WithSnapshot(fn func(stateJSON []byte, files []model.FileAsset) error) error {
 	st, err := s.DumpState()
 	if err != nil {
@@ -1244,6 +1272,13 @@ func (s *SQLiteStore) ReplaceStateJSON(data []byte) error {
 		return err
 	}
 	tx = nil
+
+	// Buffered counters belong to the state replaced by this successful restore.
+	// A failed restore leaves them intact for the next flush.
+	s.statsMu.Lock()
+	s.pendingReads = map[string]int{}
+	s.pendingDownloads = map[string]int{}
+	s.statsMu.Unlock()
 	return nil
 }
 
@@ -1509,10 +1544,13 @@ func (s *SQLiteStore) UpdateNote(id string, apply func(*model.QuickNote) error) 
 	return n, nil
 }
 
-// ReadNote is a read-only operation for ordinary notes: the counter is buffered
-// in memory and flushed in batches. Burn-after-read and max-read notes are true
-// state transitions, so only those consume the row synchronously.
+// ReadNote buffers counters for ordinary notes without writing to SQLite.
+// Restricted notes commit each read synchronously so limits cannot be bypassed
+// between flushes. Reading and deciding whether to consume share one lock.
 func (s *SQLiteStore) ReadNote(id string) (result model.QuickNote, err error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	now := time.Now().UTC()
 	var n model.QuickNote
 	var redacted, pinned, burn int
@@ -1542,21 +1580,20 @@ func (s *SQLiteStore) ReadNote(id string) (result model.QuickNote, err error) {
 	n.CreatedAt = mustParseTime(createdStr)
 	n.UpdatedAt = mustParseTime(updatedStr)
 
+	s.statsMu.Lock()
+	n.ReadCount += s.pendingReads[id]
+	s.statsMu.Unlock()
 	n.ReadCount++
-	remove := n.IsBurnAfterRead || (n.MaxReadCount > 0 && n.ReadCount >= n.MaxReadCount)
-	if remove {
-		return s.consumeNote(n, now)
+	if n.IsBurnAfterRead || n.MaxReadCount > 0 {
+		return s.commitRestrictedReadLocked(n, now)
 	}
 	s.bufferCounter(false, id, 1)
 	return n, nil
 }
 
-// consumeNote deletes a burn-after-read or max-read note and revokes its
-// shares. This is the only read-path operation allowed to write, because it is
-// a one-shot destructive access rather than a counter update.
-func (s *SQLiteStore) consumeNote(n model.QuickNote, now time.Time) (model.QuickNote, error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+// commitRestrictedReadLocked persists a restricted read while writeMu remains
+// held from the lookup. Exhausted notes are deleted and their shares revoked.
+func (s *SQLiteStore) commitRestrictedReadLocked(n model.QuickNote, now time.Time) (model.QuickNote, error) {
 	tx, err := s.writeDB.Begin()
 	if err != nil {
 		return model.QuickNote{}, err
@@ -1566,19 +1603,38 @@ func (s *SQLiteStore) consumeNote(n model.QuickNote, now time.Time) (model.Quick
 			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.Exec("DELETE FROM quick_notes WHERE id = ?", n.ID); err != nil {
+	remove := n.IsBurnAfterRead || n.ReadCount >= n.MaxReadCount
+	var res sql.Result
+	if remove {
+		res, err = tx.Exec("DELETE FROM quick_notes WHERE id = ? AND deleted_at IS NULL", n.ID)
+	} else {
+		res, err = tx.Exec("UPDATE quick_notes SET read_count = ? WHERE id = ? AND deleted_at IS NULL", n.ReadCount, n.ID)
+	}
+	if err != nil {
 		return model.QuickNote{}, err
 	}
-	if _, err := tx.Exec("UPDATE share_links SET revoked_at = ? WHERE object_type = 'note' AND object_id = ? AND revoked_at IS NULL", now.Format(time.RFC3339Nano), n.ID); err != nil {
+	affected, err := res.RowsAffected()
+	if err != nil {
 		return model.QuickNote{}, err
 	}
-	if err := s.appendAuditTx(tx, "read", "note", n.ID, "note read", map[string]interface{}{"removed": true}); err != nil {
+	if affected != 1 {
+		return model.QuickNote{}, ErrNotFound
+	}
+	if remove {
+		if _, err := tx.Exec("UPDATE share_links SET revoked_at = ? WHERE object_type = 'note' AND object_id = ? AND revoked_at IS NULL", now.Format(time.RFC3339Nano), n.ID); err != nil {
+			return model.QuickNote{}, err
+		}
+	}
+	if err := s.appendAuditTx(tx, "read", "note", n.ID, "note read", map[string]interface{}{"removed": remove}); err != nil {
 		return model.QuickNote{}, err
 	}
 	if err := s.commit(tx); err != nil {
 		return model.QuickNote{}, err
 	}
 	tx = nil
+	s.statsMu.Lock()
+	delete(s.pendingReads, n.ID)
+	s.statsMu.Unlock()
 	return n, nil
 }
 
@@ -1599,6 +1655,11 @@ func (s *SQLiteStore) bufferCounter(download bool, id string, delta int) {
 // One aggregate audit event records the batch, so audit volume scales with
 // flush intervals instead of request count.
 func (s *SQLiteStore) flushStats() {
+	// Serialize taking a batch with state replacement so a waiting flush cannot
+	// apply counters collected from the state that a restore has replaced.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	s.statsMu.Lock()
 	reads, downloads := s.pendingReads, s.pendingDownloads
 	if len(reads) == 0 && len(downloads) == 0 {
@@ -1609,8 +1670,22 @@ func (s *SQLiteStore) flushStats() {
 	s.pendingDownloads = map[string]int{}
 	s.statsMu.Unlock()
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		// Preserve the failed batch alongside any counters collected meanwhile.
+		s.statsMu.Lock()
+		defer s.statsMu.Unlock()
+		for id, delta := range reads {
+			s.pendingReads[id] += delta
+		}
+		for id, delta := range downloads {
+			s.pendingDownloads[id] += delta
+		}
+	}()
+
 	tx, err := s.writeDB.Begin()
 	if err != nil {
 		return
@@ -1642,6 +1717,7 @@ func (s *SQLiteStore) flushStats() {
 		return
 	}
 	tx = nil
+	committed = true
 }
 
 // FlushStats exposes the batch flush for the maintenance loop and tests.
