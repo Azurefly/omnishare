@@ -108,7 +108,7 @@ for arch in amd64 arm64; do
   (cd "$(dirname "$app")" && zip -qr "$PKG/OmniShare-v${VERSION}-macos-${arch}.zip" OmniShare.app)
 done
 
-for doc in "$ROOT/README.md" "$RELEASE_NOTES" "$ROOT/docs/REMEDIATION_v1.3.0-rc1.md"; do
+for doc in "$ROOT/README.md" "$RELEASE_NOTES" "$ROOT/docs/SECURE_SHARING.md"; do
   [ -f "$doc" ] && cp "$doc" "$PKG/"
 done
 (

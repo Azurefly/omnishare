@@ -9,7 +9,9 @@ import { fileURLToPath } from 'node:url';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
 const workflow = readFileSync(join(repo, '.github/workflows/publish-desktop-prerelease.yml'), 'utf8');
+const desktopWorkflow = readFileSync(join(repo, '.github/workflows/desktop-release.yml'), 'utf8');
 const version = '1.3.0-rc3';
+const stableVersion = '0.1.0';
 
 // Execute the actual workflow scripts against fixtures. This catches publishing
 // gate regressions without contacting GitHub or creating a tag/release.
@@ -60,36 +62,39 @@ function expectFailure(result) {
   assert.equal(result.error, undefined, 'validation could not be executed');
 }
 
-function writeManifest(root, overrides = {}) {
+function writeManifest(root, overrides = {}, candidate = version) {
   mkdirSync(join(root, 'release'));
   mkdirSync(join(root, 'docs'));
-  writeFileSync(join(root, 'VERSION'), `${version}\n`);
-  writeFileSync(join(root, `docs/RELEASE_NOTES_v${version}.md`), '# Candidate release\n');
+  writeFileSync(join(root, 'VERSION'), `${candidate}\n`);
+  writeFileSync(join(root, `docs/RELEASE_NOTES_v${candidate}.md`), '# Candidate release\n');
   writeFileSync(join(root, 'release/desktop-release.json'), JSON.stringify({
-    tag: `v${version}`,
-    name: `OmniShare v${version}`,
-    notes: `docs/RELEASE_NOTES_v${version}.md`,
-    prerelease: true,
+    tag: `v${candidate}`,
+    name: `OmniShare v${candidate}`,
+    notes: `docs/RELEASE_NOTES_v${candidate}.md`,
+    prerelease: candidate.includes('-'),
     ...overrides
   }));
 }
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 
-function writeAssets(root) {
+function writeAssets(root, candidate = version) {
   const assets = join(root, 'release-assets');
   mkdirSync(assets);
   const put = (name, content = `fixture ${name}\n`) => writeFileSync(join(assets, name), content);
   const server = ['amd64', 'arm64'].flatMap(arch => [
-    `OmniShare-v${version}-windows-${arch}.zip`,
-    `OmniShare-v${version}-linux-${arch}.tar.gz`,
-    `omnishare-server_${version}_${arch}.deb`,
-    `OmniShare-v${version}-macos-${arch}.zip`
+    `OmniShare-v${candidate}-windows-${arch}.zip`,
+    `OmniShare-v${candidate}-linux-${arch}.tar.gz`,
+    `omnishare-server_${candidate}_${arch}.deb`,
+    `OmniShare-v${candidate}-macos-${arch}.zip`
   ]);
-  const windows = [`OmniShare_${version}_x64_en-US.msi`, `OmniShare_${version}_x64-setup.exe`];
-  const linux = [`OmniShare_${version}_amd64.AppImage`, `OmniShare_${version}_amd64.deb`, 'OmniShare-1.3.0-0.rc3.x86_64.rpm'];
-  for (const name of [...server, ...windows, ...linux]) put(name);
-  put('SHA256SUMS.txt', server.map(name => `${digest(readFileSync(join(assets, name)))}  ${name}\n`).join(''));
+  const windows = [`OmniShare_${candidate}_x64_en-US.msi`, `OmniShare_${candidate}_x64-setup.exe`];
+  const [baseVersion, suffix] = candidate.split('-');
+  const rpmRelease = suffix ? `0.${suffix.replace('.', '')}` : '1';
+  const linux = [`OmniShare_${candidate}_amd64.AppImage`, `OmniShare_${candidate}_amd64.deb`, `OmniShare-${baseVersion}-${rpmRelease}.x86_64.rpm`];
+  const docs = ['README.md', `RELEASE_NOTES_v${candidate}.md`, 'SECURE_SHARING.md'];
+  for (const name of [...server, ...windows, ...linux, ...docs]) put(name);
+  put('SHA256SUMS.txt', [...server, ...docs].map(name => `${digest(readFileSync(join(assets, name)))}  ${name}\n`).join(''));
   put('omnishare-windows-sha256.json', '\uFEFF' + JSON.stringify(windows.map(name => ({
     Path: `D:\\build evidence\\bundle\\${name}`,
     SHA256: digest(readFileSync(join(assets, name))).toUpperCase()
@@ -101,26 +106,47 @@ function writeAssets(root) {
     put(name, '\uFEFF<testsuite tests="2" failures="0"><testcase name="passed"/></testsuite>\n');
   }
   put('omnishare-windows-watchdog.json', '\uFEFF' + JSON.stringify({ success: true }));
-  return { assets, server, windows, linux, put };
+  return { assets, server, windows, linux, docs, put };
 }
 
-test('matching prerelease manifest produces versioned outputs', () => fixture(root => {
-  writeManifest(root);
-  expectSuccess(execute(manifestScript, root));
-  assert.equal(readFileSync(join(root, 'outputs'), 'utf8'),
-    `version=${version}\ntag=v${version}\nname=OmniShare v${version}\nnotes=docs/RELEASE_NOTES_v${version}.md\n`);
-}));
+for (const candidate of [stableVersion, '0.1.0-rc1', version]) {
+  test(`matching ${candidate} manifest produces the correct release type and latest policy`, () => fixture(root => {
+    writeManifest(root, {}, candidate);
+    expectSuccess(execute(manifestScript, root));
+    const prerelease = candidate.includes('-');
+    assert.equal(readFileSync(join(root, 'outputs'), 'utf8'),
+      `version=${candidate}\ntag=v${candidate}\nname=OmniShare v${candidate}\nnotes=docs/RELEASE_NOTES_v${candidate}.md\nprerelease=${prerelease}\nmake_latest=${!prerelease}\n`);
+  }));
+}
 
 for (const [label, overrides] of [
   ['mismatched tag', { tag: 'v1.3.0-rc2' }],
   ['mismatched notes', { notes: 'docs/other.md' }],
   ['multiline metadata', { name: 'candidate\ntag=v9.0.0' }],
-  ['stable publication flag', { prerelease: false }]
+  ['stable publication flag for an RC version', { prerelease: false }]
 ]) {
   test(`manifest rejects ${label}`, () => fixture(root => {
     writeManifest(root, overrides);
     expectFailure(execute(manifestScript, root));
   }));
+}
+
+test('manifest rejects a prerelease flag for stable 0.1.0', () => fixture(root => {
+  writeManifest(root, { prerelease: true }, stableVersion);
+  const result = execute(manifestScript, root);
+  expectFailure(result);
+  assert.match(result.stderr, /boolean matching the version prerelease suffix/);
+}));
+
+for (const candidate of [stableVersion, version]) {
+  for (const [label, value] of [['string true', 'true'], ['string false', 'false'], ['zero', 0], ['one', 1], ['null', null], ['missing', undefined]]) {
+    test(`${candidate} manifest rejects ${label} instead of a prerelease boolean`, () => fixture(root => {
+      writeManifest(root, { prerelease: value }, candidate);
+      const result = execute(manifestScript, root);
+      expectFailure(result);
+      assert.match(result.stderr, /boolean matching the version prerelease suffix/);
+    }));
+  }
 }
 
 test('manifest rejects missing release notes', () => fixture(root => {
@@ -129,10 +155,24 @@ test('manifest rejects missing release notes', () => fixture(root => {
   expectFailure(execute(manifestScript, root));
 }));
 
-test('complete server and desktop assets pass hash and runtime verification', () => fixture(root => {
-  writeAssets(root);
-  expectSuccess(execute(assetsScript, root));
-}));
+for (const candidate of [stableVersion, version]) {
+  test(`${candidate} has 22 complete server, desktop, documentation and evidence assets`, () => fixture(root => {
+    const { assets } = writeAssets(root, candidate);
+    assert.equal(readdirSync(assets).length, 22);
+    expectSuccess(execute(assetsScript, root, { RELEASE_VERSION: candidate }));
+  }));
+}
+
+for (const name of ['README.md', `RELEASE_NOTES_v${stableVersion}.md`, 'SECURE_SHARING.md']) {
+  test(`stable release requires ${name} in the server checksum list`, () => fixture(root => {
+    const { assets, put } = writeAssets(root, stableVersion);
+    put('SHA256SUMS.txt', readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8')
+      .split('\n').filter(line => !line.endsWith(`  ${name}`)).join('\n'));
+    const result = execute(assetsScript, root, { RELEASE_VERSION: stableVersion });
+    expectFailure(result);
+    assert.ok(result.stderr.includes(`Missing or incorrect SHA256 for ${name}`), result.stderr);
+  }));
+}
 
 for (const [label, existing, collision, source] of [
   ['legacy server and desktop Debian basenames', `OmniShare_${version}_amd64.deb`, `omnishare_${version}_amd64.deb`, `omnishare-server_${version}_amd64.deb`],
@@ -172,18 +212,41 @@ for (const [label, mutate] of [
 
 test('publication waits for every build and only runs on main push or dispatch', () => {
   const verify = workflow.slice(workflow.indexOf('\n  verify-assets:\n'), workflow.indexOf('\n  publish:\n'));
-  const publish = workflow.slice(workflow.indexOf('\n  publish:\n'));
+  const publish = workflow.slice(workflow.indexOf('\n  publish:\n') + 1).split(/\n(?=  [a-zA-Z0-9_-]+:\n)/)[0];
   assert.match(verify, /needs:\s*\n\s*- release-metadata\s*\n\s*- build-server\s*\n\s*- build-and-test/);
   assert.match(verify, /name: verified-prerelease-assets/);
   assert.match(publish, /needs:\s*\n\s*- release-metadata\s*\n\s*- verify-assets/);
-  assert.match(publish, /name: Create GitHub prerelease\s*\n\s*if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'\)/);
+  assert.match(publish, /name: Create GitHub release\s*\n\s*if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'\)/);
   assert.match(publish, /name: Download combined verified assets[\s\S]+name: verified-prerelease-assets/);
   assert.match(workflow, /pull_request:\s*\n\s*paths:/);
   assert.doesNotMatch(workflow, /pull_request_target:/);
   assert.match(workflow, /run: \.\/scripts\/build-release\.sh/);
   assert.match(workflow, /name: release-assets-Server/);
   assert.match(workflow, /pattern: release-assets-\*/);
-  assert.ok(publish.indexOf('- name: Verify published release assets') > publish.indexOf('- name: Publish GitHub prerelease'));
+  assert.match(workflow, /prerelease: \$\{\{ steps\.metadata\.outputs\.prerelease \}\}/);
+  assert.match(workflow, /make_latest: \$\{\{ steps\.metadata\.outputs\.make_latest \}\}/);
+  assert.match(publish, /prerelease: \$\{\{ needs\.release-metadata\.outputs\.prerelease \}\}/);
+  assert.match(publish, /make_latest: \$\{\{ needs\.release-metadata\.outputs\.make_latest \}\}/);
+  assert.match(publish, /RELEASE_PRERELEASE: \$\{\{ needs\.release-metadata\.outputs\.prerelease \}\}/);
+  assert.ok(publish.indexOf('- name: Verify published release assets') > publish.indexOf('- name: Publish GitHub release'));
+});
+
+test('desktop workflow validates three platforms with read-only permissions and no publication path', () => {
+  assert.match(desktopWorkflow, /^name: Desktop Validation$/m);
+  assert.match(desktopWorkflow, /^permissions:\n  contents: read$/m);
+  assert.match(desktopWorkflow, /^  workflow_dispatch:$/m);
+  assert.match(desktopWorkflow, /^  pull_request:$/m);
+  assert.doesNotMatch(desktopWorkflow, /^  (?:push|publish-release):/m);
+  assert.doesNotMatch(desktopWorkflow, /contents:\s*write|action-gh-release@|release_tag|APPLE_|inputs:/);
+  for (const name of ['Linux', 'Windows', 'macOS-universal']) {
+    assert.ok(desktopWorkflow.includes(`- name: ${name}\n`), `missing desktop target ${name}`);
+  }
+  assert.match(desktopWorkflow, /cargo test --all-features/);
+  assert.match(desktopWorkflow, /windows-runtime-smoke-ci\.ps1/);
+  assert.match(desktopWorkflow, /name: Build unsigned universal Tauri bundle \(macOS validation\)\n\s*if: runner\.os == 'macOS'/);
+  assert.match(desktopWorkflow, /name: Verify macOS universal architectures/);
+  assert.match(desktopWorkflow, /name: Upload desktop bundle artifact/);
+  assert.match(desktopWorkflow, /name: Upload desktop test evidence/);
 });
 
 test('packager separates server filenames while preserving Debian package identity and prerelease ordering', () => fixture(root => {
@@ -193,15 +256,21 @@ test('packager separates server filenames while preserving Debian package identi
   cpSync(join(repo, 'packaging'), join(root, 'packaging'), { recursive: true });
   cpSync(join(repo, 'scripts/package-release.sh'), join(root, 'scripts/package-release.sh'));
   writeFileSync(join(root, 'README.md'), '# Packaging fixture\n');
+  writeFileSync(join(root, 'docs/SECURE_SHARING.md'), '# Sharing fixture\n');
   for (const name of ['windows-amd64.exe', 'windows-arm64.exe', 'linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64']) {
     writeFileSync(join(root, 'binaries', `omnishare-${name}`), 'binary fixture\n', { mode: 0o755 });
   }
-  for (const candidate of ['1.3.0-alpha1', '1.3.0-beta1', version, '1.3.0-rc4']) {
+  for (const candidate of [stableVersion, '0.1.0-rc1', '1.3.0-alpha1', '1.3.0-beta1', version, '1.3.0-rc4']) {
     writeFileSync(join(root, 'VERSION'), `${candidate}\n`);
     writeFileSync(join(root, `docs/RELEASE_NOTES_v${candidate}.md`), '# Packaging fixture\n');
     expectSuccess(spawnSync('bash', [join(root, 'scripts/package-release.sh'), join(root, 'binaries'), join(root, 'dist')], { encoding: 'utf8' }));
     const packages = join(root, 'dist/packages');
     const names = readdirSync(packages);
+    assert.equal(names.length, 12, 'server packages must include eight binaries, three documents and the checksum list');
+    const checksums = readFileSync(join(packages, 'SHA256SUMS.txt'), 'utf8');
+    for (const name of ['README.md', `RELEASE_NOTES_v${candidate}.md`, 'SECURE_SHARING.md']) {
+      assert.ok(checksums.includes(`  ${name}\n`), `missing package documentation checksum for ${name}`);
+    }
     assert.ok(names.every(name => !name.includes('~')), 'public filenames must not require GitHub normalization');
     const combined = [...names, `OmniShare_${candidate}_amd64.deb`];
     assert.equal(new Set(combined.map(name => name.toLowerCase())).size, combined.length,
@@ -214,18 +283,19 @@ test('packager separates server filenames while preserving Debian package identi
       const control = spawnSync('dpkg-deb', ['-f', deb, 'Version'], { encoding: 'utf8' });
       expectSuccess(control);
       assert.equal(control.stdout.trim(), candidate.replace('-', '~'));
-      expectSuccess(spawnSync('dpkg', ['--compare-versions', control.stdout.trim(), 'lt', '1.3.0'], { encoding: 'utf8' }));
+      expectSuccess(spawnSync('dpkg', ['--compare-versions', control.stdout.trim(),
+        candidate.includes('-') ? 'lt' : 'eq', candidate.split('-')[0]], { encoding: 'utf8' }));
     }
     expectSuccess(spawnSync('sha256sum', ['-c', 'SHA256SUMS.txt'], { cwd: packages, encoding: 'utf8' }));
   }
 }));
 
-function writePublishedRelease(root) {
-  const { assets } = writeAssets(root);
+function writePublishedRelease(root, candidate = version) {
+  const { assets } = writeAssets(root, candidate);
   const release = {
-    tag_name: `v${version}`,
+    tag_name: `v${candidate}`,
     draft: false,
-    prerelease: true,
+    prerelease: candidate.includes('-'),
     assets: readdirSync(assets).map(name => {
       const contents = readFileSync(join(assets, name));
       return { name, state: 'uploaded', size: contents.length, digest: `sha256:${digest(contents)}` };
@@ -236,7 +306,7 @@ function writePublishedRelease(root) {
   mkdirSync(mockBin);
   writeFileSync(join(mockBin, 'gh'), `#!/usr/bin/env node
 const fs = require('node:fs');
-const expected = ['api', 'repos/fixture/omnishare/releases/tags/v${version}'];
+const expected = ['api', 'repos/fixture/omnishare/releases/tags/v${candidate}'];
 if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) process.exit(2);
 if (process.env.MOCK_GH_EXIT) process.exit(Number(process.env.MOCK_GH_EXIT));
 process.stdout.write(fs.readFileSync(process.env.MOCK_RELEASE_RESPONSE, 'utf8'));
@@ -247,17 +317,37 @@ process.stdout.write(fs.readFileSync(process.env.MOCK_RELEASE_RESPONSE, 'utf8'))
       writeFileSync(responsePath, JSON.stringify(release));
       return execute(publishedAssetsScript, root, {
         PATH: `${mockBin}:${process.env.PATH}`,
-        GH_REPO: 'fixture/omnishare', GH_TOKEN: 'fixture-token', TAG: `v${version}`,
+        GH_REPO: 'fixture/omnishare', GH_TOKEN: 'fixture-token', TAG: `v${candidate}`,
+        RELEASE_PRERELEASE: String(candidate.includes('-')),
         MOCK_RELEASE_RESPONSE: responsePath, ...env
       });
     }
   };
 }
 
-test('public verification checks uploaded files without requiring internal Linux evidence paths', () => fixture(root => {
-  const published = writePublishedRelease(root);
-  expectSuccess(published.verify());
+for (const candidate of [stableVersion, version]) {
+  test(`${candidate} public verification checks release type and all 22 assets without internal Linux paths`, () => fixture(root => {
+    const published = writePublishedRelease(root, candidate);
+    assert.equal(published.release.assets.length, 22);
+    expectSuccess(published.verify());
+  }));
+}
+
+test('stable 0.1.0 public verification rejects a release marked as prerelease', () => fixture(root => {
+  const published = writePublishedRelease(root, stableVersion);
+  published.release.prerelease = true;
+  const result = published.verify();
+  expectFailure(result);
+  assert.match(result.stderr, /release type does not match/);
 }));
+
+for (const value of [undefined, '', '0', 'TRUE']) {
+  test(`public verification rejects an invalid expected release type ${JSON.stringify(value)}`, () => fixture(root => {
+    const result = writePublishedRelease(root).verify({ RELEASE_PRERELEASE: value });
+    expectFailure(result);
+    assert.match(result.stderr, /Expected release type must be explicitly true or false/);
+  }));
+}
 
 for (const [label, mutate] of [
   ['a filename rewritten by GitHub', release => { release.assets.find(asset => asset.name.startsWith('omnishare-server_')).name = 'omnishare-server_1.3.0.rc3_amd64.deb'; }],
@@ -298,20 +388,21 @@ function tagFixture(root) {
   return { previous, current: git(root, 'rev-parse', 'HEAD') };
 }
 
-for (const kind of ['new tag', 'matching lightweight tag', 'matching annotated tag']) {
-  test(`tag guard accepts ${kind}`, () => fixture(root => {
-    const { current } = tagFixture(root);
-    if (kind === 'matching lightweight tag') git(root, 'tag', `v${version}`, current);
-    if (kind === 'matching annotated tag') git(root, 'tag', '-a', `v${version}`, current, '-m', 'release');
-    expectSuccess(execute(tagScript, root, { TAG: `v${version}`, GITHUB_SHA: current }));
+for (const candidate of [stableVersion, version]) {
+  for (const kind of ['new tag', 'matching lightweight tag', 'matching annotated tag']) {
+    test(`${candidate} tag guard accepts ${kind}`, () => fixture(root => {
+      const { current } = tagFixture(root);
+      if (kind === 'matching lightweight tag') git(root, 'tag', `v${candidate}`, current);
+      if (kind === 'matching annotated tag') git(root, 'tag', '-a', `v${candidate}`, current, '-m', 'release');
+      expectSuccess(execute(tagScript, root, { TAG: `v${candidate}`, GITHUB_SHA: current }));
+    }));
+  }
+  test(`${candidate} tag guard rejects an existing tag from a different commit`, () => fixture(root => {
+    const { previous, current } = tagFixture(root);
+    git(root, 'tag', '-a', `v${candidate}`, previous, '-m', 'old release');
+    expectFailure(execute(tagScript, root, { TAG: `v${candidate}`, GITHUB_SHA: current }));
   }));
 }
-
-test('tag guard rejects an existing tag from a different commit', () => fixture(root => {
-  const { previous, current } = tagFixture(root);
-  git(root, 'tag', '-a', `v${version}`, previous, '-m', 'old release');
-  expectFailure(execute(tagScript, root, { TAG: `v${version}`, GITHUB_SHA: current }));
-}));
 
 test('tag guard does not treat a failed remote lookup as a missing tag', () => fixture(root => {
   const { current } = tagFixture(root);

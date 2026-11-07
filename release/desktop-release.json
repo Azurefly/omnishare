@@ -1,8 +1,8 @@
 {
-  "tag": "v1.3.0-rc4",
-  "name": "OmniShare v1.3.0-rc4",
-  "notes": "docs/RELEASE_NOTES_v1.3.0-rc4.md",
-  "prerelease": true,
+  "tag": "v0.1.0",
+  "name": "OmniShare v0.1.0",
+  "notes": "docs/RELEASE_NOTES_v0.1.0.md",
+  "prerelease": false,
   "platforms": [
     "desktop-windows-x86_64",
     "desktop-linux-x86_64",

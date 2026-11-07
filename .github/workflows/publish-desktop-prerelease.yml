@@ -1,4 +1,4 @@
-name: Publish Desktop Prerelease
+name: Publish Release
 
 on:
   push:
@@ -14,6 +14,8 @@ on:
       - 'scripts/package-release.sh'
       - 'scripts/check-version.sh'
       - 'scripts/test-release-contract.mjs'
+      - 'scripts/cleanup-release-history.mjs'
+      - 'scripts/cleanup-release-history.test.mjs'
   workflow_dispatch:
 
 permissions:
@@ -28,9 +30,18 @@ jobs:
       tag: ${{ steps.metadata.outputs.tag }}
       name: ${{ steps.metadata.outputs.name }}
       notes: ${{ steps.metadata.outputs.notes }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      make_latest: ${{ steps.metadata.outputs.make_latest }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node for release checks
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
 
       - name: Read manifest
         id: metadata
@@ -54,17 +65,39 @@ jobs:
           if (manifest.notes !== `docs/RELEASE_NOTES_v${version}.md` || !fs.statSync(manifest.notes).isFile()) {
             throw new Error('Release notes must exist and match VERSION');
           }
-          if (manifest.prerelease !== true) {
-            throw new Error('This publishing workflow requires prerelease: true');
+          if (typeof manifest.prerelease !== 'boolean' || manifest.prerelease !== version.includes('-')) {
+            throw new Error('Manifest prerelease must be a boolean matching the version prerelease suffix');
           }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${manifest.tag}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `name=${manifest.name}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${manifest.notes}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `prerelease=${manifest.prerelease}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `make_latest=${!manifest.prerelease}\n`);
           NODE
 
       - name: Release workflow contracts
         run: node scripts/test-release-contract.mjs
+
+      - name: Test version reset cleanup guards
+        run: node --test scripts/cleanup-release-history.test.mjs
+
+      - name: Preview authorized version reset cleanup
+        if: steps.metadata.outputs.tag == 'v0.1.0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/cleanup-release-history.mjs --plan
+
+      - name: Save reviewed cleanup plan
+        if: steps.metadata.outputs.tag == 'v0.1.0'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: version-reset-cleanup-plan
+          path: release-cleanup-evidence/plan.json
+          if-no-files-found: error
+          retention-days: 30
 
   build-server:
     name: Build and test server release packages
@@ -361,6 +394,9 @@ jobs:
               `OmniShare-v${version}-macos-${arch}.zip`
             ]) verifyHash(name, serverHashes);
           }
+          for (const name of ['README.md', `RELEASE_NOTES_v${version}.md`, 'SECURE_SHARING.md']) {
+            verifyHash(name, serverHashes);
+          }
 
           const windows = [
             ...requireMatches('Windows MSI', /^OmniShare_.+_x64_en-US\.msi$/),
@@ -389,7 +425,7 @@ jobs:
             throw new Error('Windows watchdog recovery did not pass');
           }
           if (names.some(name => /\.dmg$/i.test(name))) {
-            throw new Error('This prerelease does not publish unsigned macOS Tauri installers');
+            throw new Error('This release workflow does not publish unsigned macOS Tauri installers');
           }
           console.log(`Verified server and Windows/Linux desktop release assets for ${version}`);
           NODE
@@ -404,7 +440,7 @@ jobs:
   publish:
     permissions:
       contents: write
-    name: Create GitHub prerelease
+    name: Create GitHub release
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs:
       - release-metadata
@@ -443,13 +479,14 @@ jobs:
             fi
           fi
 
-      - name: Publish GitHub prerelease
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-metadata.outputs.tag }}
           name: ${{ needs.release-metadata.outputs.name }}
           target_commitish: ${{ github.sha }}
-          prerelease: true
+          prerelease: ${{ needs.release-metadata.outputs.prerelease }}
+          make_latest: ${{ needs.release-metadata.outputs.make_latest }}
           draft: false
           body_path: ${{ needs.release-metadata.outputs.notes }}
           files: release-assets/**/*
@@ -460,6 +497,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-metadata.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
         run: |
           set -euo pipefail
           gh api "repos/${GH_REPO}/releases/tags/${TAG}" > published-release.json
@@ -468,8 +506,12 @@ jobs:
           const path = require('path');
           const crypto = require('crypto');
           const release = JSON.parse(fs.readFileSync('published-release.json', 'utf8'));
-          if (release.tag_name !== process.env.TAG || release.draft !== false || release.prerelease !== true) {
-            throw new Error('Published release tag or prerelease state does not match the request');
+          const expectedPrerelease = process.env.RELEASE_PRERELEASE;
+          if (!['true', 'false'].includes(expectedPrerelease)) {
+            throw new Error('Expected release type must be explicitly true or false');
+          }
+          if (release.tag_name !== process.env.TAG || release.draft !== false || release.prerelease !== (expectedPrerelease === 'true')) {
+            throw new Error('Published release tag or release type does not match the request');
           }
           if (!Array.isArray(release.assets)) throw new Error('Published release has no asset list');
           const root = 'release-assets';
@@ -496,3 +538,42 @@ jobs:
           }
           console.log(`Verified ${expected.length} public release asset names, sizes and SHA256 digests for ${release.tag_name}`);
           NODE
+
+
+  cleanup-version-reset:
+    name: Retire approved legacy releases and merged refs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Azurefly/omnishare' && needs.release-metadata.outputs.tag == 'v0.1.0'
+    needs:
+      - release-metadata
+      - publish
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout complete release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+      - name: Download this run's verified publication files
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-prerelease-assets
+          path: release-assets
+      - name: Reverify the new release and retire reviewed legacy objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/cleanup-release-history.mjs --apply
+      - name: Save cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: version-reset-cleanup-result
+          path: release-cleanup-evidence/
+          if-no-files-found: warn
+          retention-days: 90
