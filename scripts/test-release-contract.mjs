@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -32,6 +32,7 @@ function stepScript(name) {
 const manifestScript = stepScript('Read manifest');
 const assetsScript = stepScript('Verify staged assets');
 const tagScript = stepScript('Verify existing tag target');
+const publishedAssetsScript = stepScript('Verify published release assets');
 
 function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), 'omnishare-release-contract-'));
@@ -82,7 +83,7 @@ function writeAssets(root) {
   const server = ['amd64', 'arm64'].flatMap(arch => [
     `OmniShare-v${version}-windows-${arch}.zip`,
     `OmniShare-v${version}-linux-${arch}.tar.gz`,
-    `omnishare_${version.replace('-rc', '~rc')}_${arch}.deb`,
+    `omnishare_${version}_${arch}.deb`,
     `OmniShare-v${version}-macos-${arch}.zip`
   ]);
   const windows = [`OmniShare_${version}_x64_en-US.msi`, `OmniShare_${version}_x64-setup.exe`];
@@ -95,7 +96,7 @@ function writeAssets(root) {
   }))));
   put('omnishare-linux-sha256.txt', linux.map(name =>
     `${digest(readFileSync(join(assets, name)))}  desktop/src-tauri/target/release/bundle/${name}\n`
-  ).join(''));
+  ).join('') + `${'0'.repeat(64)}  desktop/src-tauri/target/release/bundle/appimage/OmniShare.AppDir/usr/lib/not-a-public-asset.so\n`);
   for (const name of ['omnishare-windows-runtime.junit.xml', 'omnishare-windows-watchdog.junit.xml']) {
     put(name, '\uFEFF<testsuite tests="2" failures="0"><testcase name="passed"/></testsuite>\n');
   }
@@ -164,7 +165,96 @@ test('publication waits for every build and only runs on main push or dispatch',
   assert.match(workflow, /run: \.\/scripts\/build-release\.sh/);
   assert.match(workflow, /name: release-assets-Server/);
   assert.match(workflow, /pattern: release-assets-\*/);
+  assert.ok(publish.indexOf('- name: Verify published release assets') > publish.indexOf('- name: Publish GitHub prerelease'));
 });
+
+test('packager keeps Debian prerelease ordering while using portable public filenames', () => fixture(root => {
+  mkdirSync(join(root, 'scripts'));
+  mkdirSync(join(root, 'docs'));
+  mkdirSync(join(root, 'binaries'));
+  cpSync(join(repo, 'packaging'), join(root, 'packaging'), { recursive: true });
+  cpSync(join(repo, 'scripts/package-release.sh'), join(root, 'scripts/package-release.sh'));
+  writeFileSync(join(root, 'README.md'), '# Packaging fixture\n');
+  for (const name of ['windows-amd64.exe', 'windows-arm64.exe', 'linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64']) {
+    writeFileSync(join(root, 'binaries', `omnishare-${name}`), 'binary fixture\n', { mode: 0o755 });
+  }
+  for (const candidate of ['1.3.0-alpha1', '1.3.0-beta1', version]) {
+    writeFileSync(join(root, 'VERSION'), `${candidate}\n`);
+    writeFileSync(join(root, `docs/RELEASE_NOTES_v${candidate}.md`), '# Packaging fixture\n');
+    expectSuccess(spawnSync('bash', [join(root, 'scripts/package-release.sh'), join(root, 'binaries'), join(root, 'dist')], { encoding: 'utf8' }));
+    const packages = join(root, 'dist/packages');
+    assert.ok(readdirSync(packages).every(name => !name.includes('~')), 'public filenames must not require GitHub normalization');
+    for (const arch of ['amd64', 'arm64']) {
+      const deb = join(packages, `omnishare_${candidate}_${arch}.deb`);
+      const control = spawnSync('dpkg-deb', ['-f', deb, 'Version'], { encoding: 'utf8' });
+      expectSuccess(control);
+      assert.equal(control.stdout.trim(), candidate.replace('-', '~'));
+      expectSuccess(spawnSync('dpkg', ['--compare-versions', control.stdout.trim(), 'lt', '1.3.0'], { encoding: 'utf8' }));
+    }
+    expectSuccess(spawnSync('sha256sum', ['-c', 'SHA256SUMS.txt'], { cwd: packages, encoding: 'utf8' }));
+  }
+}));
+
+function writePublishedRelease(root) {
+  const { assets } = writeAssets(root);
+  const release = {
+    tag_name: `v${version}`,
+    draft: false,
+    prerelease: true,
+    assets: readdirSync(assets).map(name => {
+      const contents = readFileSync(join(assets, name));
+      return { name, state: 'uploaded', size: contents.length, digest: `sha256:${digest(contents)}` };
+    })
+  };
+  const mockBin = join(root, 'mock-bin');
+  const responsePath = join(root, 'release-response.json');
+  mkdirSync(mockBin);
+  writeFileSync(join(mockBin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const expected = ['api', 'repos/fixture/omnishare/releases/tags/v${version}'];
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) process.exit(2);
+if (process.env.MOCK_GH_EXIT) process.exit(Number(process.env.MOCK_GH_EXIT));
+process.stdout.write(fs.readFileSync(process.env.MOCK_RELEASE_RESPONSE, 'utf8'));
+`, { mode: 0o755 });
+  return {
+    release,
+    verify(env = {}) {
+      writeFileSync(responsePath, JSON.stringify(release));
+      return execute(publishedAssetsScript, root, {
+        PATH: `${mockBin}:${process.env.PATH}`,
+        GH_REPO: 'fixture/omnishare', GH_TOKEN: 'fixture-token', TAG: `v${version}`,
+        MOCK_RELEASE_RESPONSE: responsePath, ...env
+      });
+    }
+  };
+}
+
+test('public verification checks uploaded files without requiring internal Linux evidence paths', () => fixture(root => {
+  const published = writePublishedRelease(root);
+  expectSuccess(published.verify());
+}));
+
+for (const [label, mutate] of [
+  ['a filename rewritten by GitHub', release => { release.assets.find(asset => asset.name.startsWith('omnishare_')).name = 'omnishare_1.3.0.rc3_amd64.deb'; }],
+  ['a missing published asset', release => { release.assets.pop(); }],
+  ['an unexpected published asset', release => { release.assets.push({ name: 'unexpected.zip', state: 'uploaded', size: 1, digest: `sha256:${'0'.repeat(64)}` }); }],
+  ['an unfinished upload', release => { release.assets[0].state = 'starter'; }],
+  ['a public size mismatch', release => { release.assets[0].size += 1; }],
+  ['a public digest mismatch', release => { release.assets[0].digest = `sha256:${'0'.repeat(64)}`; }],
+  ['the wrong release tag', release => { release.tag_name = 'v1.3.0-rc2'; }],
+  ['a draft release', release => { release.draft = true; }],
+  ['a stable release', release => { release.prerelease = false; }]
+]) {
+  test(`public verification rejects ${label}`, () => fixture(root => {
+    const published = writePublishedRelease(root);
+    mutate(published.release);
+    expectFailure(published.verify());
+  }));
+}
+
+test('public verification rejects a failed GitHub lookup', () => fixture(root => {
+  expectFailure(writePublishedRelease(root).verify({ MOCK_GH_EXIT: '42' }));
+}));
 
 function git(root, ...args) {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });

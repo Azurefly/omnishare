@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release-metadata:
@@ -343,12 +343,11 @@ jobs:
           };
 
           const serverHashes = parseHashes('SHA256SUMS.txt');
-          const debVersion = version.replace('-rc', '~rc');
           for (const arch of ['amd64', 'arm64']) {
             for (const name of [
               `OmniShare-v${version}-windows-${arch}.zip`,
               `OmniShare-v${version}-linux-${arch}.tar.gz`,
-              `omnishare_${debVersion}_${arch}.deb`,
+              `omnishare_${version}_${arch}.deb`,
               `OmniShare-v${version}-macos-${arch}.zip`
             ]) verifyHash(name, serverHashes);
           }
@@ -393,6 +392,8 @@ jobs:
           if-no-files-found: error
 
   publish:
+    permissions:
+      contents: write
     name: Create GitHub prerelease
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs:
@@ -442,3 +443,46 @@ jobs:
           draft: false
           body_path: ${{ needs.release-metadata.outputs.notes }}
           files: release-assets/**/*
+
+      - name: Verify published release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GH_REPO}/releases/tags/${TAG}" > published-release.json
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const release = JSON.parse(fs.readFileSync('published-release.json', 'utf8'));
+          if (release.tag_name !== process.env.TAG || release.draft !== false || release.prerelease !== true) {
+            throw new Error('Published release tag or prerelease state does not match the request');
+          }
+          if (!Array.isArray(release.assets)) throw new Error('Published release has no asset list');
+          const root = 'release-assets';
+          const expected = fs.readdirSync(root, { withFileTypes: true }).map(entry => {
+            if (!entry.isFile()) throw new Error(`Unexpected non-file release asset: ${entry.name}`);
+            return entry.name;
+          });
+          const published = new Map(release.assets.map(asset => [asset.name, asset]));
+          if (published.size !== release.assets.length) throw new Error('Published release has duplicate asset names');
+          const missing = expected.filter(name => !published.has(name));
+          const unexpected = [...published.keys()].filter(name => !expected.includes(name));
+          if (missing.length || unexpected.length) {
+            throw new Error(`Published asset names changed: missing=${JSON.stringify(missing)}, unexpected=${JSON.stringify(unexpected)}`);
+          }
+          // Verify only the files staged for this release. The Linux build hash
+          // evidence also lists AppDir libraries that are not public assets.
+          for (const name of expected) {
+            const contents = fs.readFileSync(path.join(root, name));
+            const asset = published.get(name);
+            const digest = `sha256:${crypto.createHash('sha256').update(contents).digest('hex')}`;
+            if (asset.state !== 'uploaded' || asset.size !== contents.length || asset.digest !== digest) {
+              throw new Error(`Published asset is incomplete or has a different SHA256: ${name}`);
+            }
+          }
+          console.log(`Verified ${expected.length} public release asset names, sizes and SHA256 digests for ${release.tag_name}`);
+          NODE

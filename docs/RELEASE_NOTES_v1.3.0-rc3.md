@@ -23,13 +23,19 @@
 | Windows x64 桌面 | `OmniShare_1.3.0-rc3_x64-setup.exe`；MSI 部署使用 `OmniShare_1.3.0-rc3_x64_en-US.msi` |
 | Linux x64 桌面 | 名称以 `OmniShare` 开头的 AppImage、DEB 或 RPM；RPM 包版本按系统要求映射为 `1.3.0`、release 为 `0.rc3` |
 | Windows 便携后端 + Web | `OmniShare-v1.3.0-rc3-windows-amd64.zip` / `OmniShare-v1.3.0-rc3-windows-arm64.zip` |
-| Linux 后端 + Web | `OmniShare-v1.3.0-rc3-linux-amd64.tar.gz` / `OmniShare-v1.3.0-rc3-linux-arm64.tar.gz`，以及小写 `omnishare_1.3.0~rc3_*.deb` |
+| Linux 后端 + Web | `OmniShare-v1.3.0-rc3-linux-amd64.tar.gz` / `OmniShare-v1.3.0-rc3-linux-arm64.tar.gz`，以及小写 `omnishare_1.3.0.rc3_*.deb` |
 | macOS 后端 + Web | `OmniShare-v1.3.0-rc3-macos-amd64.zip` / `OmniShare-v1.3.0-rc3-macos-arm64.zip`，内部为单后端进程的 `.app` 启动包装 |
 | 完整性与验证 | SHA-256 清单、Windows 运行及 watchdog 的 JUnit / JSON 证据 |
 
 **macOS 边界：** 本版本的 macOS ZIP 是未签名的后端启动包装，并非 Tauri Universal 桌面安装包。macOS Tauri 桌面签名与公证尚未完成，因此不在本次公开桌面附件范围内；Gatekeeper 可能限制未签名程序的运行。Windows 安装包也尚未提供商业代码签名。
 
 Windows 便携包解压后运行 `start-omnishare.cmd`，并保留同目录的 `start-omnishare.ps1` 和 `omnishare.exe`。ARM64 Windows 使用便携包；本次 Tauri Windows 安装器为 x64。
+
+## RC3 公开校验清单更正
+
+发布后确认 GitHub 将两个服务器 DEB 文件名中的 `~` 规范化为 `.`，但原附件 `SHA256SUMS.txt` 仍保留 `~rc3`。包内容与哈希没有变化；按公开名字下载后，原清单会提示找不到这两个文件。
+
+需要校验 RC3 的用户可使用仓库中的 [修正版 SHA256SUMS.txt](../release/checksums/v1.3.0-rc3/SHA256SUMS.txt)。修正版只调整这两个名称，全部 11 项哈希与原清单一致，并已对照公开 Release 的资产 digest 验证。原 RC3 tag 和二进制没有改写。RC4 起从打包阶段采用不会被 GitHub 改写的文件名，并增加公开附件校验。
 
 ## 升级与数据
 

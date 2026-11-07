@@ -34,13 +34,24 @@ const state = {
   currentPad: null, currentPadDirty: false, padSaveBlocked: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
   accessKey: sessionGet('omnishare.accessKey') || '', initToken: sessionGet(INIT_TOKEN_KEY) || '',
   deferredInstall: null, editingNote: null,
-  uploadQueue: [], activeUploads: 0, requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
+  uploadQueue: [], activeUploads: 0, uploadSequence: 0, uploadPumping: false, uploadNotice: '',
+  requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
   noteTotal: 0, fileTotal: 0, restoreInFlight: false
 }
 
 // Server default is 100; ask explicitly so the response can be paged instead of
 // silently truncated.
 const PAGE_SIZE = 100
+
+// Clipboard content is read only after a click, kept in page memory, and sent
+// only after a second explicit confirmation. No watcher or background sync.
+let clipboardSelection = null
+let clipboardPreviewURL = ''
+let clipboardReading = false
+let clipboardSending = false
+let clipboardReadSequence = 0
+const CLIPBOARD_TEXT_LIMIT = 256 * 1024
+const CLIPBOARD_IMAGE_LIMIT = 16 * 1024 * 1024
 
 const escapeHTML = (value = '') => String(value).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]))
 const formatBytes = (bytes = 0) => { if (!bytes) return '0 B'; const units=['B','KB','MB','GB','TB']; const i=Math.min(Math.floor(Math.log(bytes)/Math.log(1024)),units.length-1); return `${(bytes/1024**i).toFixed(i ? 1 : 0)} ${units[i]}` }
@@ -162,12 +173,16 @@ async function loadHealth(strict=false) {
     const badge = $('#healthBadge')
     badge.className = 'badge'
     const node = state.config?.node_name || 'OmniShare'
+    badge.setAttribute('aria-label', `已连接到 ${node}，版本 ${data.version}`)
+    badge.title = `已连接到 ${node} · v${data.version}`
     const markup = `<i></i>${escapeHTML(node)} · v${escapeHTML(data.version)}`
     // Polled every 15s: avoid needless DOM/HTML reparsing when nothing changed.
     if (badge.innerHTML !== markup) badge.innerHTML = markup
   } catch (err) {
     const badge = $('#healthBadge')
     badge.className = 'badge muted'
+    badge.setAttribute('aria-label', '节点连接失败')
+    badge.title = '节点连接失败'
     const markup = '<i></i>连接失败'
     if (badge.innerHTML !== markup) badge.innerHTML = markup
     reportLoadError(err, strict)
@@ -214,6 +229,7 @@ async function loadConfig(strict=false) {
     state.config = await api('/api/v1/config')
     $('#dataDirText').textContent = '本机私有存储（路径未通过 API 暴露）'
     $('#uploadLimit').textContent = `单文件上限 ${formatBytes(state.config.max_upload_mb * 1024 * 1024)}`
+    renderNodeSecurity()
     fillSettings()
     renderStats()
   } catch (err) {
@@ -290,6 +306,7 @@ async function saveSettings() {
 
   try {
     state.config = await api('/api/v1/config', {method:'PUT', headers:requestHeaders, body:JSON.stringify(payload)})
+    renderNodeSecurity()
     if (secret && secret !== 'CLEAR') {
       state.accessKey = secret
       sessionSet('omnishare.accessKey', secret)
@@ -347,19 +364,19 @@ function renderNotes() {
         <div class="note-head">
           <div class="note-meta">
             <span class="tag">${escapeHTML(n.id)}</span>
-            ${n.pinned ? '<span class="badge">📌 置顶</span>' : ''}
-            ${n.is_burn_after_read ? '<span class="badge muted">🔥 阅后即焚</span>' : ''}
-            ${n.max_read_count > 0 ? `<span class="badge muted">👁 ${n.read_count}/${n.max_read_count}</span>` : ''}
+            ${n.pinned ? '<span class="badge">置顶</span>' : ''}
+            ${n.is_burn_after_read ? '<span class="badge muted">阅后即焚</span>' : ''}
+            ${n.max_read_count > 0 ? `<span class="badge muted">阅读 ${n.read_count}/${n.max_read_count}</span>` : ''}
             <span>${formatDate(n.updated_at)}</span>
           </div>
           <div class="note-actions">
             ${restricted
-              ? '<button class="text-button read-note">📖 读取</button><button class="text-button copy-note">📋 读取并复制</button>'
-              : '<button class="text-button copy-note">📋 复制</button>'}
-            <button class="text-button share-note">🔗 分享</button>
-            <button class="text-button edit-note">✏️ 编辑</button>
+              ? '<button class="text-button read-note">读取</button><button class="text-button copy-note">读取并复制</button>'
+              : '<button class="text-button copy-note">复制</button>'}
+            <button class="text-button share-note">分享</button>
+            <button class="text-button edit-note">编辑</button>
             <button class="text-button raw-note">Raw</button>
-            <button class="text-button danger delete-note">🗑️ 删除</button>
+            <button class="text-button danger delete-note">删除</button>
           </div>
         </div>
         <div class="note-content${restricted ? ' restricted' : ''}">
@@ -435,6 +452,153 @@ async function createNote() {
   }
 }
 
+function resetClipboardPreview() {
+  clipboardReadSequence++
+  clipboardSelection = null
+  if (clipboardPreviewURL) URL.revokeObjectURL(clipboardPreviewURL)
+  clipboardPreviewURL = ''
+  $('#clipboardPreviewText').value = ''
+  $('#clipboardPreviewText').classList.add('hidden')
+  $('#clipboardPreviewImage').removeAttribute('src')
+  $('#clipboardPreviewImage').classList.add('hidden')
+  $('#clipboardPreviewMeta').textContent = ''
+  $('#clipboardPreviewStatus').textContent = ''
+}
+
+function closeClipboardPreview() {
+  if (clipboardSending) return
+  resetClipboardPreview()
+  $('#clipboardDialog').close()
+}
+
+async function validateClipboardPNG(blob) {
+  const uploadLimit = Number(state.config?.max_upload_mb) * 1024 * 1024
+  const limit = Math.min(CLIPBOARD_IMAGE_LIMIT, uploadLimit > 0 ? uploadLimit : CLIPBOARD_IMAGE_LIMIT)
+  if (blob.type !== 'image/png' || !blob.size) throw new Error('剪贴板中没有可发送的 PNG 图片')
+  if (blob.size > limit) throw new Error(`剪贴板图片超过 ${formatBytes(limit)}，请先缩小图片`)
+  // Bound decoded dimensions as well as bytes before displaying a local blob.
+  const header = new Uint8Array(await blob.slice(0, 24).arrayBuffer())
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10]
+  if (header.length !== 24 || signature.some((byte, i) => header[i] !== byte) ||
+      header[8] !== 0 || header[9] !== 0 || header[10] !== 0 || header[11] !== 13 ||
+      header[12] !== 73 || header[13] !== 72 || header[14] !== 68 || header[15] !== 82) {
+    throw new Error('剪贴板图片格式无效')
+  }
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength)
+  const width = view.getUint32(16)
+  const height = view.getUint32(20)
+  if (!width || !height || width > 8192 || height > 8192 || width * height > 16 * 1024 * 1024) {
+    throw new Error('剪贴板图片尺寸过大，请先缩小图片')
+  }
+  return { width, height }
+}
+
+async function readClipboardPreview() {
+  if (clipboardReading || clipboardSending) return
+  resetClipboardPreview()
+  const sequence = clipboardReadSequence
+  clipboardReading = true
+  $('#pasteBtn').disabled = true
+  try {
+    if (!navigator.clipboard) throw new Error('当前浏览器无法读取剪贴板，请使用 HTTPS 或本机地址，或直接粘贴到编辑框')
+    let selection
+    if (typeof navigator.clipboard.read === 'function') {
+      const items = await navigator.clipboard.read()
+      // Only one representation is selected. HTML, SVG and arbitrary clipboard
+      // formats are never inserted into the document or uploaded implicitly.
+      const image = items.find(item => item.types.includes('image/png'))
+      if (image) {
+        const blob = await image.getType('image/png')
+        const dimensions = await validateClipboardPNG(blob)
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        selection = { type: 'image', file: new File([blob], `clipboard-${stamp}.png`, {type:'image/png'}), ...dimensions }
+      } else {
+        const item = items.find(entry => entry.types.includes('text/plain'))
+        if (!item) throw new Error('剪贴板中没有纯文本或 PNG 图片，请选择文件上传')
+        const blob = await item.getType('text/plain')
+        if (blob.size > CLIPBOARD_TEXT_LIMIT) throw new Error('剪贴板文本超过 256 KB，请改为文件上传')
+        selection = { type: 'text', text: await blob.text() }
+      }
+    } else if (typeof navigator.clipboard.readText === 'function') {
+      selection = { type: 'text', text: await navigator.clipboard.readText() }
+    } else {
+      throw new Error('当前浏览器不支持读取剪贴板，请直接粘贴到编辑框')
+    }
+    if (selection.type === 'text') {
+      if (!selection.text.trim()) throw new Error('剪贴板中的文本为空')
+      if (new Blob([selection.text]).size > CLIPBOARD_TEXT_LIMIT) throw new Error('剪贴板文本超过 256 KB，请改为文件上传')
+    }
+    if (sequence !== clipboardReadSequence) return
+    const destination = `${state.config?.node_name || '当前节点'} · ${location.origin}`
+    if (selection.type === 'image') {
+      clipboardPreviewURL = URL.createObjectURL(selection.file)
+      const preview = $('#clipboardPreviewImage')
+      preview.src = clipboardPreviewURL
+      if (typeof preview.decode !== 'function') throw new Error('当前浏览器无法预览此图片，请选择文件上传')
+      try { await preview.decode() } catch { throw new Error('无法解码剪贴板图片，请重新复制图片或选择文件上传') }
+      if (sequence !== clipboardReadSequence) return
+      preview.classList.remove('hidden')
+      $('#clipboardPreviewMeta').textContent = `PNG 图片 · ${selection.width} × ${selection.height} · ${formatBytes(selection.file.size)} → ${destination}`
+    } else {
+      $('#clipboardPreviewText').value = selection.text
+      $('#clipboardPreviewText').classList.remove('hidden')
+      $('#clipboardPreviewMeta').textContent = `纯文本 · ${formatBytes(new Blob([selection.text]).size)} → ${destination}`
+    }
+    clipboardSelection = selection
+    $('#clipboardTTL').value = '86400'
+    $('#clipboardConfirmBtn').disabled = false
+    $('#clipboardCancelBtn').disabled = false
+    $('#clipboardDialog').showModal()
+  } catch (err) {
+    if (sequence === clipboardReadSequence) {
+      resetClipboardPreview()
+      toast(err.name === 'NotAllowedError' ? '未获得剪贴板读取权限；可以直接粘贴到编辑框' : err.message, true)
+    }
+  } finally {
+    clipboardReading = false
+    $('#pasteBtn').disabled = false
+  }
+}
+
+async function confirmClipboardSend() {
+  const selection = clipboardSelection
+  if (!selection || clipboardReading || clipboardSending) return
+  const ttl = Number($('#clipboardTTL').value)
+  if (![3600, 86400, 604800].includes(ttl)) {
+    $('#clipboardPreviewStatus').textContent = '请选择有效的保留时长'
+    return
+  }
+  clipboardSending = true
+  $('#clipboardConfirmBtn').disabled = true
+  $('#clipboardCancelBtn').disabled = true
+  $('#clipboardPreviewStatus').textContent = '正在发送到当前节点…'
+  try {
+    if (selection.type === 'image') {
+      if (!uploadFiles([selection.file], {ttl})) throw new Error('未加入上传队列，请检查文件上限或清理已结束的任务后再试')
+      resetClipboardPreview()
+      $('#clipboardDialog').close()
+      switchTab('files')
+      toast('剪贴板图片已加入传输队列')
+    } else {
+      const body = JSON.stringify({content:selection.text, tags:['剪贴板'], ttl_seconds:ttl})
+      // The API bounds the entire JSON body, including escaped control bytes.
+      if (new Blob([body]).size > 1024 * 1024) throw new Error('文本编码后超过请求上限，请改为文件上传')
+      await api('/api/v1/notes', {method:'POST', headers:{'Content-Type':'application/json'}, body})
+      resetClipboardPreview()
+      $('#clipboardDialog').close()
+      switchTab('notes')
+      toast('剪贴板文本已保存为随手记')
+      await loadDashboard()
+    }
+  } catch (err) {
+    $('#clipboardPreviewStatus').textContent = `${err.message}。若连接中断，请先检查节点中的内容，再决定是否重新发送。`
+  } finally {
+    clipboardSending = false
+    $('#clipboardConfirmBtn').disabled = false
+    $('#clipboardCancelBtn').disabled = false
+  }
+}
+
 async function deleteNote(id) {
   if (!confirm('将这条随手记移入回收站？')) return
   try {
@@ -502,11 +666,11 @@ async function loadFiles(strict=false, append=false) {
 }
 
 function fileIcon(f) {
-  if (f.is_video) return '🎬'
-  if ((f.mime_type || '').startsWith('image/')) return '🖼️'
-  if ((f.mime_type || '').includes('zip') || (f.mime_type || '').includes('tar') || (f.mime_type || '').includes('rar')) return '🗜️'
-  if ((f.mime_type || '').includes('pdf') || (f.mime_type || '').includes('text') || (f.mime_type || '').includes('markdown')) return '📄'
-  return '📦'
+  let shape = '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>'
+  if (f.is_video) shape = '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 8 6 4-6 4Z"/>'
+  else if ((f.mime_type || '').startsWith('image/')) shape = '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'
+  else if (/(zip|tar|rar)/.test(f.mime_type || '')) shape = '<rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18M10 13h4M7 5V3h10v2"/>'
+  return `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`
 }
 
 function renderFiles() {
@@ -518,24 +682,24 @@ function renderFiles() {
     <article class="card file-card" data-file-id="${escapeHTML(f.id)}">
       <div class="file-info">
         <div class="file-icon">${fileIcon(f)}</div>
-        <div style="min-width:0;">
+        <div class="file-description">
           <h3 title="${escapeHTML(f.file_name)}">${escapeHTML(f.file_name)}</h3>
           <p>${formatBytes(f.file_size)} · ${escapeHTML(f.mime_type)} · 下载 ${f.download_count || 0} 次</p>
         </div>
       </div>
       <div class="file-actions">
         ${f.is_video ? '<button class="button ghost small play-file">▶ 播放</button>' : ''}
-        <button class="button ghost small download-file">⬇ 下载</button>
-        <button class="button ghost small share-file">🔗 分享</button>
-        <button class="button ghost small rename-file">✏️ 重命名</button>
-        <button class="button danger small delete-file">🗑️ 删除</button>
+        <button class="button ghost small download-file">下载</button>
+        <button class="button ghost small share-file">分享</button>
+        <button class="button ghost small rename-file">重命名</button>
+        <button class="button danger small delete-file">删除</button>
       </div>
     </article>
   `).join('') : `
     <div class="empty">
       <div class="empty-icon">📁</div>
       <h3>没有匹配的文件</h3>
-      <p>拖拽文件至上方虚线区域或点击选择文件即可秒速上传</p>
+      <p>拖拽文件至上方虚线区域或点击选择文件即可上传</p>
     </div>
   `
 }
@@ -620,110 +784,261 @@ async function renameFile(file) {
   }
 }
 
-function uploadFiles(files) {
-  for (const file of files) state.uploadQueue.push({file, ttl: $('#fileTTL').value})
-  pumpUploads()
+const UPLOAD_CONCURRENCY = 3
+const MAX_UPLOAD_TASKS = 100
+const UPLOAD_CANCEL_NOTICE = '本次传输已取消，文件可能已在服务端保存；重试前请检查文件列表。'
+
+function hasPendingUploads() {
+  return state.uploadQueue.some(task => task.status === 'queued' || task.status === 'uploading')
 }
 
-function pumpUploads() {
-  while (state.activeUploads<3 && state.uploadQueue.length) {
-    const task = state.uploadQueue.shift()
-    state.activeUploads++
-    uploadOne(task).finally(() => {
-      state.activeUploads--
-      pumpUploads()
-    })
+function uploadSizeError(file) {
+  if (!file || !Number.isFinite(file.size) || file.size < 0) return '无法读取文件大小'
+  const maxMB = Number(state.config?.max_upload_mb)
+  if (Number.isFinite(maxMB) && maxMB > 0 && file.size > maxMB * 1024 ** 2) {
+    return `超过节点单文件上限 ${formatBytes(maxMB * 1024 ** 2)}`
+  }
+  return ''
+}
+
+function uploadFiles(files, options = {}) {
+  const ttl = String(options.ttl ?? $('#fileTTL')?.value ?? 0)
+  let accepted = 0
+  let rejected = 0
+  let firstRejection = ''
+  state.uploadNotice = ''
+  for (const file of files || []) {
+    const reason = uploadSizeError(file) || (state.uploadQueue.length >= MAX_UPLOAD_TASKS
+      ? `最多保留 ${MAX_UPLOAD_TASKS} 个任务，请先清除已结束的任务` : '')
+    if (reason) {
+      rejected++
+      if (!firstRejection) firstRejection = `${String(file?.name || '文件')}：${reason}`
+      continue
+    }
+    const task = {
+      file, name: String(file.name), size: file.size, ttl, order: ++state.uploadSequence,
+      status: 'queued', attempt: 0, loaded: 0, total: 0, progress: null,
+      processing: false, error: '', xhr: null, cancelAttempt: null
+    }
+    state.uploadQueue.push(task)
+    createUploadRow(task)
+    accepted++
+  }
+  if (rejected) {
+    state.uploadNotice = `${rejected} 个文件未加入：${firstRejection}`
+    toast(state.uploadNotice, true)
+  }
+  updateUploadSummary()
+  pumpUploads()
+  return accepted
+}
+
+function createUploadRow(task) {
+  const make = (tag, className, text = '') => {
+    const node = document.createElement(tag)
+    node.className = className
+    node.textContent = text
+    return node
+  }
+  const row = make('div', 'progress-card upload-task')
+  const head = make('div', 'upload-task-head')
+  const name = make('span', 'upload-file-name', task.name)
+  name.title = task.name
+  const status = make('span', 'pct upload-status badge muted')
+  const meta = make('p', 'upload-meta')
+  const progress = make('progress', 'progress-track')
+  progress.max = 100
+  progress.setAttribute('aria-label', `${task.name} 上传进度`)
+  const detail = make('p', 'upload-detail')
+  const actions = make('div', 'file-actions upload-actions')
+  const cancel = make('button', 'button ghost small cancel-upload', '取消')
+  const retry = make('button', 'button ghost small retry-upload', '重试')
+  cancel.type = retry.type = 'button'
+  cancel.addEventListener('click', () => cancelUpload(task))
+  retry.addEventListener('click', () => retryUpload(task))
+  head.append(name, status)
+  actions.append(cancel, retry)
+  row.append(head, meta, progress, detail, actions)
+  task.view = { row, status, meta, progress, detail, cancel, retry }
+  $('#uploadQueue').appendChild(row)
+  renderUploadTask(task)
+}
+
+function renderUploadTask(task) {
+  const { row, status, meta, progress, detail, cancel, retry } = task.view
+  const pending = task.status === 'queued' || task.status === 'uploading'
+  row.dataset.uploadState = task.status
+  const labels = { queued: '排队中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
+  status.textContent = task.status === 'uploading'
+    ? (task.processing ? '服务端处理中' : task.progress === null ? '上传中' : `上传中 ${task.progress}%`)
+    : labels[task.status]
+  meta.textContent = `${formatBytes(task.size)}${task.attempt > 1 ? ` · 第 ${task.attempt} 次尝试` : ''}`
+  if (task.status === 'uploading' && task.progress === null) progress.removeAttribute('value')
+  else progress.value = task.status === 'succeeded' || task.processing ? 100 : task.progress || 0
+  detail.textContent = task.status === 'queued' ? '等待开始上传，可随时取消。'
+    : task.status === 'succeeded' ? '服务器已确认保存。'
+    : task.status === 'failed' || task.status === 'cancelled' ? task.error
+    : task.processing ? '文件内容已发送，正在等待服务器确认保存。'
+    : task.total > 0 ? `已发送 ${formatBytes(task.loaded)} / ${formatBytes(task.total)}`
+    : task.loaded > 0 ? `已发送 ${formatBytes(task.loaded)}，等待进度信息。` : '正在上传，等待进度信息。'
+  cancel.hidden = cancel.disabled = !pending
+  retry.hidden = retry.disabled = !((task.status === 'failed' || task.status === 'cancelled') && task.file)
+}
+
+function updateUploadSummary() {
+  const counts = { queued: 0, uploading: 0, succeeded: 0, failed: 0, cancelled: 0 }
+  for (const task of state.uploadQueue) counts[task.status]++
+  const summary = $('#transferSummary')
+  if (summary) {
+    const text = state.uploadQueue.length
+      ? `上传中 ${counts.uploading} · 排队 ${counts.queued} · 已完成 ${counts.succeeded} · 失败 ${counts.failed} · 已取消 ${counts.cancelled}`
+      : '等待上传'
+    summary.textContent = state.uploadNotice ? `${text}。${state.uploadNotice}` : text
+  }
+  const clear = $('#clearFinishedUploadsBtn')
+  if (clear) clear.disabled = counts.succeeded + counts.failed + counts.cancelled === 0
+  const cancel = $('#cancelAllUploadsBtn')
+  if (cancel) cancel.disabled = counts.queued + counts.uploading === 0
+}
+
+function clearFinishedUploads() {
+  state.uploadQueue = state.uploadQueue.filter(task => {
+    if (task.status === 'queued' || task.status === 'uploading') return true
+    task.file = null
+    task.view.row.remove()
+    task.view = null
+    return false
+  })
+  state.uploadNotice = ''
+  updateUploadSummary()
+}
+
+function cancelUpload(task) {
+  if (!state.uploadQueue.includes(task)) return
+  if (task.status === 'queued') {
+    task.status = 'cancelled'
+    task.error = task.attempt ? UPLOAD_CANCEL_NOTICE : '已取消，文件尚未发送。'
+    renderUploadTask(task)
+    updateUploadSummary()
+  } else if (task.status === 'uploading') {
+    task.cancelAttempt?.()
   }
 }
 
-function uploadOne({file, ttl}) {
-  return new Promise(resolve => {
-    const row = document.createElement('div')
-    row.className = 'progress-card'
-    row.innerHTML = `
-      <div class="note-head">
-        <span>📄 ${escapeHTML(file.name)}</span>
-        <span class="pct badge muted">排队中</span>
-      </div>
-      <progress class="progress-track" max="100" value="0"></progress>
-      <div class="file-actions upload-actions"></div>
-    `
-    $('#uploadQueue').appendChild(row)
-    const pct = row.querySelector('.pct')
-    const progress = row.querySelector('.progress-track')
-    const actions = row.querySelector('.upload-actions')
-    let xhr = null
-    let settled = false
-    let attempt = 0
+function cancelAllUploads() {
+  // Cancel waiting tasks first, so aborting a running request cannot start one.
+  state.uploadQueue.filter(task => task.status === 'queued').forEach(cancelUpload)
+  state.uploadQueue.filter(task => task.status === 'uploading').forEach(cancelUpload)
+}
 
-    const finish = () => {
-      if (settled) return
-      settled = true
-      resolve()
+function retryUpload(task) {
+  if (!state.uploadQueue.includes(task) || !task.file || !['failed', 'cancelled'].includes(task.status)) return false
+  const reason = uploadSizeError(task.file)
+  if (reason) {
+    task.status = 'failed'
+    task.error = reason
+    renderUploadTask(task)
+    updateUploadSummary()
+    return false
+  }
+  Object.assign(task, { status: 'queued', order: ++state.uploadSequence, loaded: 0, total: 0, progress: null, processing: false, error: '' })
+  renderUploadTask(task)
+  updateUploadSummary()
+  pumpUploads()
+  return true
+}
+
+function pumpUploads() {
+  if (state.uploadPumping) return
+  state.uploadPumping = true
+  try {
+    while (state.activeUploads < UPLOAD_CONCURRENCY) {
+      const task = state.uploadQueue.filter(item => item.status === 'queued').sort((a, b) => a.order - b.order)[0]
+      if (!task) break
+      uploadOne(task)
     }
+  } finally {
+    state.uploadPumping = false
+    updateUploadSummary()
+  }
+}
 
-    const setActions = (retryable=false) => {
-      actions.innerHTML = retryable ? '<button type="button" class="button ghost small retry-upload">重试</button>' : '<button type="button" class="button ghost small cancel-upload">取消</button>'
-      const retry = actions.querySelector('.retry-upload')
-      if (retry) retry.addEventListener('click', () => { actions.innerHTML = ''; attempt = 0; send() })
-      const cancel = actions.querySelector('.cancel-upload')
-      if (cancel) cancel.addEventListener('click', () => xhr?.abort())
+function uploadOne(task) {
+  if (task.status !== 'queued' || state.activeUploads >= UPLOAD_CONCURRENCY) return
+  task.status = 'uploading'
+  const attempt = ++task.attempt
+  state.activeUploads++
+  let xhr = null
+  const current = () => task.status === 'uploading' && task.attempt === attempt && task.xhr === xhr
+  const finish = (status, message = '', abort = false) => {
+    if (!current()) return false
+    // Invalidate the attempt before abort(): synchronous or queued events from
+    // this request must never finish a cancellation or a later retry again.
+    task.status = status
+    task.error = message
+    task.xhr = null
+    task.cancelAttempt = null
+    if (xhr) {
+      xhr.onload = xhr.onerror = xhr.ontimeout = xhr.onabort = null
+      xhr.upload.onprogress = xhr.upload.onload = null
+      if (abort) { try { xhr.abort() } catch { /* the attempt is already invalidated */ } }
     }
-
-    const fail = message => {
-      pct.textContent = '失败'
-      setActions(true)
-      toast(`${file.name}：${message}`, true)
-      finish()
+    state.activeUploads--
+    if (status === 'succeeded') task.file = null
+    renderUploadTask(task)
+    updateUploadSummary()
+    pumpUploads()
+    return true
+  }
+  task.cancelAttempt = () => finish('cancelled', UPLOAD_CANCEL_NOTICE, true)
+  renderUploadTask(task)
+  try {
+    xhr = new XMLHttpRequest()
+    task.xhr = xhr
+    // Only this node receives the file or session headers. Discovery URLs and
+    // other caller-supplied destinations are never upload targets.
+    xhr.open('POST', '/api/v1/files/upload')
+    xhr.timeout = Math.max(5 * 60 * 1000, Math.ceil(task.size / (64 * 1024)) * 1000)
+    Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value))
+    xhr.upload.onprogress = event => {
+      if (!current() || task.processing) return
+      task.loaded = Math.max(0, event.loaded)
+      task.total = event.lengthComputable && event.total > 0 ? event.total : 0
+      task.progress = task.total ? Math.min(100, Math.floor(task.loaded / task.total * 100)) : null
+      task.processing = task.progress === 100
+      renderUploadTask(task)
     }
-
-    const send = () => {
-      attempt++
-      xhr = new XMLHttpRequest()
-      xhr.open('POST', '/api/v1/files/upload')
-      // 120 s used to fail any upload below ~35 MB of bandwidth. Budget by size
-      // with a 64 KB/s floor and a 5 minute minimum instead of a fixed clock.
-      xhr.timeout = Math.max(5 * 60 * 1000, Math.ceil(file.size / (64 * 1024)) * 1000)
-      Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value))
-      pct.textContent = attempt > 1 ? `重试 ${attempt - 1}` : '0%'
-      progress.value = 0
-      setActions()
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable) {
-          const p = Math.round(e.loaded / e.total * 100)
-          pct.textContent = `${p}%`
-          progress.value = p
+    xhr.upload.onload = () => {
+      if (!current()) return
+      task.processing = true
+      task.progress = 100
+      renderUploadTask(task)
+    }
+    xhr.onload = () => {
+      if (!current()) return
+      let payload
+      try { payload = JSON.parse(xhr.responseText) } catch { /* invalid responses are failures */ }
+      if (xhr.status >= 200 && xhr.status < 300 && payload?.code === 0) {
+        if (finish('succeeded')) {
+          toast(`${task.name} 上传完成`)
+          void Promise.allSettled([loadFiles(), loadDashboard()])
         }
+        return
       }
-      xhr.onload = async () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          toast(`${file.name} 上传完成`)
-          row.remove()
-          await Promise.all([loadFiles(), loadDashboard()])
-          finish()
-          return
-        }
-        let message = `HTTP ${xhr.status}`
-        try { message = JSON.parse(xhr.responseText).message || message } catch {}
-        fail(message)
-      }
-      xhr.onerror = () => fail('网络连接错误')
-      xhr.ontimeout = () => fail('上传超时')
-      xhr.onabort = () => {
-        pct.textContent = '已取消'
-        actions.innerHTML = '<button type="button" class="button ghost small retry-upload">重试</button>'
-        actions.querySelector('.retry-upload').addEventListener('click', () => { actions.innerHTML = ''; attempt = 0; send() })
-        toast(`${file.name}：上传已取消`, true)
-        finish()
-      }
-      const form = new FormData()
-      form.append('file', file)
-      form.append('ttl_seconds', ttl)
-      xhr.send(form)
+      const message = typeof payload?.message === 'string' ? payload.message : `上传未获确认（HTTP ${xhr.status}），请检查文件列表后再重试。`
+      finish('failed', message)
+      if (xhr.status === 401) showAuth()
     }
-
-    send()
-  })
+    xhr.onerror = () => finish('failed', '网络连接错误，文件可能已在服务端保存；请检查文件列表后再重试。')
+    xhr.ontimeout = () => finish('failed', '上传超时，文件可能已在服务端保存；请检查文件列表后再重试。')
+    xhr.onabort = () => finish('cancelled', UPLOAD_CANCEL_NOTICE)
+    const form = new FormData()
+    form.append('file', task.file)
+    form.append('ttl_seconds', task.ttl)
+    xhr.send(form)
+  } catch (err) {
+    finish('failed', `无法开始上传：${err.message}`, true)
+  }
 }
 
 async function loadPads(strict=false) {
@@ -741,7 +1056,7 @@ async function loadPads(strict=false) {
 function renderPads() {
   $('#padsList').innerHTML = state.pads.length ? state.pads.map(p => `
     <button class="pad-item ${state.currentPad?.id === p.id ? 'active' : ''}" data-pad-id="${escapeHTML(p.id)}">
-      <strong>📄 ${escapeHTML(p.title)}</strong>
+      <strong>${escapeHTML(p.title)}</strong>
       <span>v${p.version} · ${formatDate(p.updated_at)}</span>
     </button>
   `).join('') : `
@@ -981,7 +1296,7 @@ function renderShares() {
           <code class="share-url">${escapeHTML(link.url)}</code>
         </div>
         <div class="file-actions">
-          <button class="button ghost small copy-share">📋 复制</button>
+          <button class="button ghost small copy-share">复制</button>
           <button class="button ghost small open-share">🔗 打开</button>
           ${link.revoked_at ? '' : '<button class="button danger small revoke-share">🚫 撤销</button>'}
         </div>
@@ -1119,43 +1434,81 @@ async function loadDevices(strict=false) {
 
 function safeDeviceURL(value) {
   try {
-    const u = new URL(value, location.origin)
-    return ['http:', 'https:'].includes(u.protocol) ? u.href : ''
+    // Device discovery supplies an origin, never a login link or executable
+    // path. Reject credentials and token-bearing queries rather than displaying
+    // a misleading label for a different destination.
+    const u = new URL(value)
+    if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password ||
+        u.search || u.hash || u.pathname !== '/') return ''
+    return `${u.origin}/`
   } catch {
     return ''
   }
 }
 
+function renderNodeSecurity() {
+  const summary = $('#nodeSecuritySummary')
+  if (!summary || !state.config) return
+  summary.textContent = state.config.has_access_key
+    ? '访问密钥已启用 · 每个节点独立验证'
+    : '当前节点未设置访问密钥 · 可在设置中启用'
+}
+
 function renderDevices() {
-  $('#deviceList').innerHTML = state.devices.length ? state.devices.map(d => {
+  const groups = [
+    { title: '当前节点', devices: state.devices.filter(d => d.is_local) },
+    { title: '在线节点', devices: state.devices.filter(d => !d.is_local && d.online) },
+    { title: '离线节点', devices: state.devices.filter(d => !d.is_local && !d.online) }
+  ]
+  const renderDevice = d => {
     const url = safeDeviceURL(d.url)
+    const network = ({lan:'局域网发现', manual:'手动添加', tailscale:'Tailscale'})[d.network_type] || d.network_type || '网络节点'
+    const latency = Number(d.latency_ms)
+    const connection = d.is_local ? '本节点' : (d.online ? '在线' : '离线')
     return `
       <div class="device">
-        <div class="device-main">
-          <h3>${escapeHTML(d.hostname)}</h3>
-          ${url ? `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>` : '<span class="muted-text">无有效地址</span>'}
+        <div class="device-heading">
+          <span class="device-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></span>
+          <div class="device-main"><h3>${escapeHTML(d.hostname || '未命名节点')}</h3></div>
+          <span class="device-state ${d.online ? '' : 'offline'}">${connection}</span>
         </div>
-        <div>
-          <div class="device-state ${d.online ? '' : 'offline'}">${d.online ? '在线' : '离线'}</div>
-          <div class="muted-text">${escapeHTML(d.network_type)}${d.latency_ms ? ` · ${d.latency_ms}ms` : ''}</div>
-        </div>
+        <div class="device-meta">${escapeHTML(network)}${!d.is_local && d.online && Number.isFinite(latency) && latency > 0 ? ` · ${Math.round(latency)} ms` : ''}</div>
+        ${url ? `<a class="device-url" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="打开 ${escapeHTML(d.hostname || '节点')}：${escapeHTML(url)}">${escapeHTML(url)}</a>` : '<span class="muted-text">地址无效，无法打开</span>'}
+        <p class="device-note">${d.is_local ? '当前工作区的数据保存在此节点' : '打开后需独立验证；发现设备不会授予访问权限'}</p>
       </div>
     `
-  }).join('') : `
+  }
+  const markup = state.devices.length ? groups.filter(group => group.devices.length).map(group => `
+    <section class="device-group">
+      <h3 class="device-group-title">${group.title}<span>${group.devices.length}</span></h3>
+      ${group.devices.map(renderDevice).join('')}
+    </section>
+  `).join('') : `
     <div class="empty">
-      <p>未发现可用网络节点</p>
+      <p>暂无可用节点</p>
+      <small>可在设置中添加局域网或 Tailscale 地址。</small>
     </div>
   `
+  const list = $('#deviceList')
+  // Compare our source markup rather than the browser-normalized innerHTML.
+  // An unchanged poll must not replace a focused link or text selection.
+  if (list._deviceMarkup !== markup) {
+    const focused = document.activeElement
+    const focusedURL = focused && list.contains(focused) ? focused.getAttribute('href') : ''
+    list.innerHTML = markup
+    list._deviceMarkup = markup
+    if (focusedURL) [...list.querySelectorAll('.device-url')].find(link => link.getAttribute('href') === focusedURL)?.focus({preventScroll:true})
+  }
 }
 
 const TAB_CONFIG = {
-  dashboard: { panel: '#dashboardPanel' },
-  notes: { panel: '#notesPanel', load: loadNotes },
-  files: { panel: '#filesPanel', load: loadFiles },
-  pads: { panel: '#padsPanel', load: loadPads },
-  shares: { panel: '#sharesPanel', load: loadShares },
-  trash: { panel: '#trashPanel', load: loadTrash },
-  activity: { panel: '#activityPanel', load: loadAudit }
+  dashboard: { panel: '#dashboardPanel', title: '工作台' },
+  notes: { panel: '#notesPanel', title: '随手记', load: loadNotes },
+  files: { panel: '#filesPanel', title: '文件与传输', load: loadFiles },
+  pads: { panel: '#padsPanel', title: '协同文档', load: loadPads },
+  shares: { panel: '#sharesPanel', title: '安全分享', load: loadShares },
+  trash: { panel: '#trashPanel', title: '回收站', load: loadTrash },
+  activity: { panel: '#activityPanel', title: '活动记录', load: loadAudit }
 }
 
 function switchTab(tab) {
@@ -1163,9 +1516,16 @@ function switchTab(tab) {
   if (!config) return
   if (state.activeTab === 'pads' && tab !== 'pads' && state.currentPadDirty && !state.padSaveBlocked) savePad(false)
   state.activeTab = tab
-  $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab))
+  $$('.tab').forEach(b => {
+    const active = b.dataset.tab === tab
+    b.classList.toggle('active', active)
+    if (active) b.setAttribute('aria-current', 'page')
+    else b.removeAttribute('aria-current')
+  })
   $$('.panel-view').forEach(p => p.classList.remove('active'))
   $(config.panel).classList.add('active')
+  if ($('#workspaceTitle')) $('#workspaceTitle').textContent = config.title
+  document.title = `${config.title} · OmniShare`
   if (config.load) config.load()
 }
 
@@ -1349,6 +1709,16 @@ function restoreBackup() {
 }
 
 function bindEvents() {
+  const sidebar = $('.sidebar-disclosure')
+  if (sidebar && window.matchMedia) {
+    const narrow = window.matchMedia('(max-width: 980px)')
+    const applySidebarDefault = () => { sidebar.open = !narrow.matches }
+    applySidebarDefault()
+    // Keep the user's choice while they remain within the same layout. Only
+    // crossing the desktop/mobile boundary applies the new layout's default.
+    if (typeof narrow.addEventListener === 'function') narrow.addEventListener('change', applySidebarDefault)
+    else if (typeof narrow.addListener === 'function') narrow.addListener(applySidebarDefault)
+  }
   $$('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)))
   $$('.dashboard-link').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.targetTab)))
   $('#createNoteBtn').addEventListener('click', createNote)
@@ -1358,16 +1728,16 @@ function bindEvents() {
       createNote()
     }
   })
-  $('#pasteBtn').addEventListener('click', async () => {
-    try {
-      $('#noteContent').value = await navigator.clipboard.readText()
-      toast('已读取剪贴板内容')
-    } catch {
-      toast('浏览器未授予剪贴板权限', true)
-    }
+  $('#pasteBtn').addEventListener('click', readClipboardPreview)
+  $('#clipboardConfirmBtn').addEventListener('click', confirmClipboardSend)
+  $('#clipboardCancelBtn').addEventListener('click', closeClipboardPreview)
+  $('#clipboardDialog').addEventListener('cancel', event => {
+    if (clipboardSending) event.preventDefault()
   })
-  $('#noteSearch').addEventListener('input', debounce(loadNotes))
-  $('#noteTagFilter').addEventListener('change', loadNotes)
+  $('#clipboardDialog').addEventListener('close', resetClipboardPreview)
+  window.addEventListener('pagehide', resetClipboardPreview)
+  $('#noteSearch').addEventListener('input', debounce(() => loadNotes()))
+  $('#noteTagFilter').addEventListener('change', () => loadNotes())
   $('#notesList').addEventListener('click', async e => {
     const card = e.target.closest('[data-note-id]')
     if (!card) return
@@ -1386,7 +1756,15 @@ function bindEvents() {
     e.stopPropagation()
     $('#fileInput').click()
   })
-  $('#dropZone').addEventListener('click', () => $('#fileInput').click())
+  $('#dropZone').addEventListener('click', event => {
+    if (!event.target.closest('button, input, select, label, a')) $('#fileInput').click()
+  })
+  $('#dropZone').addEventListener('keydown', event => {
+    if (event.target === $('#dropZone') && ['Enter', ' '].includes(event.key)) {
+      event.preventDefault()
+      $('#fileInput').click()
+    }
+  })
   $('#fileInput').addEventListener('change', e => {
     uploadFiles(e.target.files)
     e.target.value = ''
@@ -1400,9 +1778,12 @@ function bindEvents() {
     $('#dropZone').classList.remove('dragging')
   }))
   $('#dropZone').addEventListener('drop', e => uploadFiles(e.dataTransfer.files))
+  $('#clearFinishedUploadsBtn').addEventListener('click', clearFinishedUploads)
+  $('#cancelAllUploadsBtn').addEventListener('click', cancelAllUploads)
+  updateUploadSummary()
 
-  $('#fileSearch').addEventListener('input', debounce(loadFiles))
-  $('#fileType').addEventListener('change', loadFiles)
+  $('#fileSearch').addEventListener('input', debounce(() => loadFiles()))
+  $('#fileType').addEventListener('change', () => loadFiles())
   $('#filesList').addEventListener('click', e => {
     const card = e.target.closest('[data-file-id]')
     if (!card) return
@@ -1415,7 +1796,7 @@ function bindEvents() {
   })
 
   $('#newPadBtn').addEventListener('click', createPad)
-  $('#padSearch').addEventListener('input', debounce(loadPads))
+  $('#padSearch').addEventListener('input', debounce(() => loadPads()))
   $('#padsList').addEventListener('click', e => {
     const item = e.target.closest('[data-pad-id]')
     if (item) void selectPad(item.dataset.padId)
@@ -1457,7 +1838,7 @@ function bindEvents() {
   })
 
   $('#refreshAuditBtn').addEventListener('click', loadAudit)
-  $('#refreshDevicesBtn').addEventListener('click', loadDevices)
+  $('#refreshDevicesBtn').addEventListener('click', () => loadDevices())
   $('#settingsBtn').addEventListener('click', () => {
     fillSettings()
     $('#settingsDialog').showModal()
@@ -1510,7 +1891,7 @@ async function start() {
   bindEvents()
   window.addEventListener('beforeunload', event => {
     if (state.currentPadDirty) preservePadDraft()
-    if (state.currentPadDirty || state.activeUploads > 0 || state.uploadQueue.length > 0) {
+    if (state.currentPadDirty || clipboardSending || hasPendingUploads()) {
       event.preventDefault()
       event.returnValue = ''
     }

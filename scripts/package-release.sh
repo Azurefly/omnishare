@@ -4,7 +4,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${1:?binary directory required}"
 OUT="${2:-$ROOT/dist}"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-DEB_VERSION="${VERSION/-rc/~rc}"
+# Debian's internal version needs '~' so a prerelease sorts before the final
+# release. Keep that out of asset names: GitHub rewrites '~' during upload.
+DEB_VERSION="${VERSION/-/\~}"
 BUNDLE_VERSION="$(printf '%s' "$VERSION" | sed -E 's/-rc([0-9]+)/.\1/; s/[^0-9.].*$//')"
 SHORT_VERSION="${VERSION%%-*}"
 PKG="$OUT/packages"
@@ -38,6 +40,7 @@ for arch in amd64 arm64; do
   (cd "$(dirname "$work")" && tar -czf "$PKG/OmniShare-v${VERSION}-linux-${arch}.tar.gz" OmniShare)
 
   deb="$(mktemp -d)"
+  deb_package="$PKG/omnishare_${VERSION}_${arch}.deb"
   mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/share/applications" "$deb/usr/share/doc/omnishare"
   chmod g-s "$deb" "$deb/DEBIAN" 2>/dev/null || true
   cp "$BIN/omnishare-linux-$arch" "$deb/usr/bin/omnishare"; chmod 0755 "$deb/usr/bin/omnishare"
@@ -54,9 +57,9 @@ Description: Private multi-device notes, files and collaboration hub
  A lightweight local-first desktop companion with a local web interface.
 CONTROL
   if command -v dpkg-deb >/dev/null 2>&1; then
-    dpkg-deb --build --root-owner-group "$deb" "$PKG/omnishare_${DEB_VERSION}_${arch}.deb" >/dev/null
+    dpkg-deb --build --root-owner-group "$deb" "$deb_package" >/dev/null
   else
-    python3 - "$deb" "$PKG/omnishare_${DEB_VERSION}_${arch}.deb" <<'PY'
+    python3 - "$deb" "$deb_package" <<'PY'
 import sys, os, tarfile, io
 
 deb_root, out_deb = sys.argv[1], sys.argv[2]

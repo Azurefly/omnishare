@@ -1,0 +1,11 @@
+1b7d6fdca435fdfcf1078c86c9a826aee3ed82e25df535bed324b6826f87fcc7  OmniShare-v1.3.0-rc3-linux-amd64.tar.gz
+6761e1a28543a3870a41c7f116cff97f1653e3d956ae9d16bae9b209eb3d1018  OmniShare-v1.3.0-rc3-linux-arm64.tar.gz
+cc610c2e0c251d66599a91697b2bccfb089f07edf974edd8d7f172a0e7c5459f  OmniShare-v1.3.0-rc3-macos-amd64.zip
+83fdecd73059e2bb3b69468aa5eec91b31849ca6b81f9f30bc0a265946fcc204  OmniShare-v1.3.0-rc3-macos-arm64.zip
+5a516b4e684a8fb8a1afb89ebac468341579e6e11d1a214c2a97a4ada2b9cff5  OmniShare-v1.3.0-rc3-windows-amd64.zip
+77fefab28f8813fa1bbd5052bd459dc91c5671e6e68b8fe24f6a19d63599ef35  OmniShare-v1.3.0-rc3-windows-arm64.zip
+b11ecb6b386e89b02e6e0cf13043077ef0c5f3796795ce4697038609d56ff88d  README.md
+c0e13c1f3df1fc159fb76d2fb00e9f76013aefca43f5e5d525fc3d3bb4f1d0f8  RELEASE_NOTES_v1.3.0-rc3.md
+9da3ba4edce33caae13d9773a12a105d87ebb3940509ba4989b3b410388644c6  REMEDIATION_v1.3.0-rc1.md
+abdedf247150ccb0d56d9fddd69ab145447add609b252ef0bdd58f100ab3de5e  omnishare_1.3.0.rc3_amd64.deb
+8d08685c59512c901e6e9a144f82269790155be71711f0b2fd3904f06aff2a32  omnishare_1.3.0.rc3_arm64.deb
