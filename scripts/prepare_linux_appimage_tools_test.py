@@ -115,7 +115,7 @@ class PreparationTests(unittest.TestCase):
             self.assertEqual(source.stat().st_mode & 0o777, 0o755)
             self.assertFalse(target.exists())
             original_replace(source, target)
-        with patch.dict(os.environ, {"GITHUB_TOKEN": "must-not-be-used", "GH_TOKEN": "also-private"}), \
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "must-not-be-used", "GH_TOKEN": "also-private", "OMNISHARE_TOOL_GITHUB_TOKEN": ""}), \
                 patch.object(prepare.os, "replace", side_effect=inspect_replace):
             self.assertEqual(prepare.prepare_asset(ASSET, self.cache, opener), "downloaded and verified")
         request, timeout = opener.requests[0]
@@ -169,6 +169,98 @@ class PreparationTests(unittest.TestCase):
                 handler.redirect_request(request, None, 302, "Found", {}, url)
         redirected = handler.redirect_request(request, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/tool")
         self.assertEqual(redirected.full_url, "https://release-assets.githubusercontent.com/tool")
+
+    def test_explicit_credential_is_sent_only_on_initial_api_request_never_redirected(self):
+        token = "explicit-private-token"
+        opener = Opener([PAYLOAD])
+        with patch.dict(os.environ, {"OMNISHARE_TOOL_GITHUB_TOKEN": token, "GITHUB_TOKEN": "ambient-token"}):
+            prepare.prepare_asset(ASSET, self.cache, opener)
+        request = opener.requests[0][0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + token)
+        self.assertNotIn("Authorization", request.headers)
+        handler = prepare.OfficialRedirects()
+        for destination in ("https://release-assets.githubusercontent.com/tool", "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/2"):
+            with self.subTest(destination=destination):
+                redirected = handler.redirect_request(request, None, 302, "Found", {}, destination)
+                self.assertIsNone(redirected.get_header("Authorization"))
+                self.assertNotIn(token, repr(redirected.header_items()))
+
+    def test_explicit_token_is_never_sent_to_other_hosts_or_unscoped_api_paths(self):
+        urls = ("https://github.com/tauri-apps/binary-releases/releases/download/tool/file", "https://release-assets.githubusercontent.com/tool",
+                "https://api.github.com/repos/tauri-apps/binary-releases", ASSET.url + "?query=value")
+        with patch.dict(os.environ, {"OMNISHARE_TOOL_GITHUB_TOKEN": "explicit-token"}):
+            for index, url in enumerate(urls):
+                with self.subTest(url=url):
+                    asset = prepare.Asset("tool-" + str(index), url, ASSET.size, ASSET.sha256)
+                    opener = Opener([PAYLOAD])
+                    prepare.prepare_asset(asset, self.cache, opener)
+                    self.assertIsNone(opener.requests[0][0].get_header("Authorization"))
+                    direct = Opener([PAYLOAD])
+                    prepare.download_asset(asset, self.cache, direct, token="explicit-token")
+                    self.assertIsNone(direct.requests[0][0].get_header("Authorization"))
+
+    def test_client_errors_and_rate_limits_stop_without_retry_or_auth_fallback(self):
+        cases = ((401, {}, "Bad credentials", "access_denied"),
+                 (403, {"X-RateLimit-Remaining": "0"}, "rate exceeded", "rate_limit"),
+                 (403, {}, "You have exceeded a secondary rate limit", "rate_limit"),
+                 (403, {"X-RateLimit-Remaining": "900"}, "Resource not accessible by integration", "access_denied"),
+                 (404, {}, "Not Found", "not_found"), (422, {}, "Invalid request", "client_error"),
+                 (429, {"Retry-After": "60"}, "Too many requests", "rate_limit"))
+        for status, headers, message, category in cases:
+            with self.subTest(status=status, category=category), patch.dict(os.environ, {"OMNISHARE_TOOL_GITHUB_TOKEN": "explicit-token"}):
+                error = urllib.error.HTTPError(ASSET.url, status, "private HTTP reason", headers, io.BytesIO(json.dumps({"message": message}).encode()))
+                opener = Opener([error, PAYLOAD])
+                waits = []
+                with self.assertRaises(prepare.PreparationError) as raised:
+                    prepare.prepare_asset(ASSET, self.cache, opener, sleep=waits.append)
+                self.assertIn("[" + category + "]", str(raised.exception))
+                self.assertEqual(len(opener.requests), 1)
+                self.assertEqual(waits, [])
+                self.assertEqual(opener.requests[0][0].get_header("Authorization"), "Bearer explicit-token")
+                self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_http_diagnostics_are_bounded_and_never_echo_private_response_data(self):
+        token, ip, signed_url = "private-token-do-not-print", "203.0.113.10", "https://release-assets.githubusercontent.com/file?secret=private-signature"
+        class TrackedBody(io.BytesIO):
+            def __init__(self, body):
+                super().__init__(body)
+                self.read_sizes = []
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return super().read(size)
+        body = TrackedBody(json.dumps({"message": "API rate limit exceeded for " + ip + " " + token, "url": signed_url}).encode())
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1770000000", "Retry-After": "30",
+                   "X-RateLimit-Limit": token, "X-Private-Debug": signed_url}
+        error = urllib.error.HTTPError(signed_url, 403, token, headers, body)
+        with self.assertRaises(prepare.PreparationError) as raised:
+            prepare.prepare_asset(ASSET, self.cache, Opener([error]))
+        diagnostic = str(raised.exception)
+        for secret in (token, ip, signed_url, "private-signature", "API rate limit exceeded for"):
+            self.assertNotIn(secret, diagnostic)
+        self.assertIn("x-ratelimit-remaining=0", diagnostic)
+        self.assertIn("x-ratelimit-reset=1770000000", diagnostic)
+        self.assertIn("retry-after=30", diagnostic)
+        self.assertEqual(body.read_sizes, [4096])
+
+    def test_invalid_explicit_credential_fails_without_download_or_secret_output(self):
+        token = "private-token\r\nmalformed-header"
+        opener = Opener([])
+        with patch.dict(os.environ, {"OMNISHARE_TOOL_GITHUB_TOKEN": token}), self.assertRaises(prepare.PreparationError) as raised:
+            prepare.prepare_asset(ASSET, self.cache, opener)
+        self.assertNotIn("private-token", str(raised.exception))
+        self.assertEqual(opener.requests, [])
+        self.assertEqual(list(self.cache.iterdir()), [])
+
+    def test_server_error_retries_keep_the_same_explicit_credential(self):
+        class ChangingEnvironmentOpener(Opener):
+            def open(self, request, timeout):
+                if not self.requests:
+                    os.environ["OMNISHARE_TOOL_GITHUB_TOKEN"] = "different-token"
+                return super().open(request, timeout)
+        opener = ChangingEnvironmentOpener([urllib.error.HTTPError(ASSET.url, 504, "Gateway timeout", {}, None), PAYLOAD])
+        with patch.dict(os.environ, {"OMNISHARE_TOOL_GITHUB_TOKEN": "original-token"}):
+            prepare.prepare_asset(ASSET, self.cache, opener, sleep=lambda _: None)
+        self.assertEqual([request.get_header("Authorization") for request, _ in opener.requests], ["Bearer original-token", "Bearer original-token"])
 
     def test_transient_download_failures_retry_a_bounded_number_of_times(self):
         waits = []

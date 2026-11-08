@@ -786,9 +786,9 @@ test('desktop packaging uses the pinned CLI and verified platform tools before b
   assert.equal(lock.packages['node_modules/@tauri-apps/cli'].version, '2.12.4');
   for (const source of [desktopWorkflow, jobSource('build-and-test')]) {
     assert.match(source, /name: Install locked desktop dependencies\n\s*working-directory: desktop\n\s*run: npm ci/);
-    assert.match(source, /name: Prepare verified Linux AppImage tools\n\s*if: runner\.os == 'Linux'\n\s*run: python3 scripts\/prepare-linux-appimage-tools\.py/);
+    assert.match(source, /name: Prepare verified Linux AppImage tools\n\s*if: runner\.os == 'Linux'\n\s*env:\n\s*OMNISHARE_TOOL_GITHUB_TOKEN: \$\{\{ github\.token \}\}\n\s*run: python3 scripts\/prepare-linux-appimage-tools\.py/);
     assert.ok(source.indexOf('Prepare verified Linux AppImage tools') < source.indexOf('- name: Build Tauri bundle'));
-    assert.match(source, /name: Prepare verified Windows installer tools\n\s*if: runner\.os == 'Windows'\n\s*run: python scripts\/prepare-windows-bundle-tools\.py/);
+    assert.match(source, /name: Prepare verified Windows installer tools\n\s*if: runner\.os == 'Windows'\n\s*env:\n\s*OMNISHARE_TOOL_GITHUB_TOKEN: \$\{\{ github\.token \}\}\n\s*run: python scripts\/prepare-windows-bundle-tools\.py/);
     assert.ok(source.indexOf('Prepare verified Windows installer tools') < source.indexOf('- name: Build Tauri bundle'));
     assert.doesNotMatch(source, /run: npm install\s*\n/);
   }

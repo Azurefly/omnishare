@@ -404,10 +404,14 @@ jobs:
 
       - name: Prepare verified Linux AppImage tools
         if: runner.os == 'Linux'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/prepare-linux-appimage-tools.py
 
       - name: Prepare verified Windows installer tools
         if: runner.os == 'Windows'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/prepare-windows-bundle-tools.py
 
       - name: Desktop release contract tests
@@ -441,6 +445,12 @@ jobs:
           cargo test --all-features 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-test.log"
 
       - name: Build Tauri bundle
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        run: npm run build -- --verbose
+
+      - name: Build Tauri bundle (Windows)
+        if: runner.os == 'Windows'
         working-directory: desktop
         run: npm run build
 
