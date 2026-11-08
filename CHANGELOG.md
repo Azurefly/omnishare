@@ -4,7 +4,7 @@
 
 ### 构建稳定性
 
-- 固定桌面 CLI 及依赖锁文件，通过官方 GitHub 附件 API 下载 Linux AppImage 工具并严格核验大小与 SHA-256，避免发布下载路径超时阻断打包。
+- 固定桌面 CLI 及依赖锁文件，通过官方 GitHub 附件 API 下载 Linux AppImage 工具和 Windows 安装器工具，严格核验大小与 SHA-256，避免发布下载路径超时阻断打包。
 
 ### macOS 正式分发准备
 

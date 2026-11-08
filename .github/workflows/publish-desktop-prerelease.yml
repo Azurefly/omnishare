@@ -17,6 +17,9 @@ on:
       - 'scripts/macos-signing.py'
       - 'scripts/prepare-linux-appimage-tools.py'
       - 'scripts/prepare_linux_appimage_tools_test.py'
+      - 'scripts/prepare-windows-bundle-tools.py'
+      - 'scripts/prepare_windows_bundle_tools_test.py'
+      - 'scripts/release_tool_downloads.py'
       - 'desktop/package.json'
       - 'desktop/package-lock.json'
       - 'scripts/macos_signing_test.py'
@@ -127,8 +130,10 @@ jobs:
       - name: Release workflow contracts
         run: node scripts/test-release-contract.mjs
 
-      - name: Test verified Linux tool downloads
-        run: python3 scripts/prepare_linux_appimage_tools_test.py
+      - name: Test verified desktop tool downloads
+        run: |
+          python3 scripts/prepare_linux_appimage_tools_test.py
+          python3 scripts/prepare_windows_bundle_tools_test.py
 
       - name: Test macOS signing and acceptance guards
         run: |
@@ -400,6 +405,10 @@ jobs:
       - name: Prepare verified Linux AppImage tools
         if: runner.os == 'Linux'
         run: python3 scripts/prepare-linux-appimage-tools.py
+
+      - name: Prepare verified Windows installer tools
+        if: runner.os == 'Windows'
+        run: python scripts/prepare-windows-bundle-tools.py
 
       - name: Desktop release contract tests
         run: npm --prefix desktop run test:contracts

@@ -8,6 +8,11 @@ on:
       - 'backend/**'
       - 'frontend/**'
       - 'scripts/build-tauri-desktop.*'
+      - 'scripts/prepare-linux-appimage-tools.py'
+      - 'scripts/prepare_linux_appimage_tools_test.py'
+      - 'scripts/prepare-windows-bundle-tools.py'
+      - 'scripts/prepare_windows_bundle_tools_test.py'
+      - 'scripts/release_tool_downloads.py'
       - '.github/workflows/desktop-release.yml'
 
 permissions:
@@ -124,6 +129,10 @@ jobs:
       - name: Prepare verified Linux AppImage tools
         if: runner.os == 'Linux'
         run: python3 scripts/prepare-linux-appimage-tools.py
+
+      - name: Prepare verified Windows installer tools
+        if: runner.os == 'Windows'
+        run: python scripts/prepare-windows-bundle-tools.py
 
       - name: Run desktop release contract tests
         run: npm --prefix desktop run test:contracts
