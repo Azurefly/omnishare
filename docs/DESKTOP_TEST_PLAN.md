@@ -77,7 +77,7 @@ Current desktop unit coverage includes:
 
 ### 2.5 Three-platform package builds
 
-The release workflow builds:
+The `Desktop Validation` workflow builds:
 
 - Windows x86_64 MSI and NSIS bundles.
 - Linux desktop bundles.
@@ -151,18 +151,20 @@ arm64
 x86_64
 ```
 
-Formal releases additionally run:
+These Tauri macOS artifacts are validation-only. They are separate from the public Go backend application packages, which have individual Intel and Apple silicon builds.
+
+The next formal Go application release requires Developer ID signing, Hardened Runtime, secure timestamps, app and DMG notarization and stapling, and Gatekeeper acceptance. Native verification checks the exact final ZIP and DMG, including:
 
 ```bash
 codesign --verify --deep --strict --verbose=2 OmniShare.app
 spctl --assess --type execute --verbose=2 OmniShare.app
 ```
 
-A release workflow without valid Developer ID and notarization credentials must fail before publishing.
+A release workflow without valid Developer ID and notarization credentials must fail before publishing. The final packages must pass all 23 native checks and agree with their verification reports and public SHA-256 digests. See [MACOS_SIGNING.md](MACOS_SIGNING.md) for the complete release gates and configuration. The currently published `0.1.1` is still ad-hoc and unnotarized; the pipeline change does not retrospectively certify it.
 
 ### 2.8 Bundle integrity evidence
 
-Every generated bundle file is hashed with SHA-256. Evidence is uploaded independently from release packages so that test reports are never accidentally included in a public release.
+Every generated bundle file is hashed with SHA-256. Complete test artifacts are uploaded independently; only the explicitly selected, sanitized verification reports and checksum files are staged as public release assets. Private signing materials and raw backend initialization logs must never be included.
 
 ## 3. CI evidence artifacts
 
@@ -237,27 +239,29 @@ Capture:
 
 ### 4.2 macOS Apple Silicon, including M4
 
-Use the signed and notarized release artifact, not the unsigned PR artifact.
+This is the acceptance target for the next signed and notarized Go application release. The published `0.1.1` and PR rehearsal artifacts do not meet that prerequisite.
 
-1. Download the DMG from GitHub Release using Safari or Chrome.
+1. On a fresh Mac or restored VM snapshot, download the matching `arm64` DMG from GitHub Release using Safari and compare its SHA-256 with the release manifest.
 2. Drag OmniShare to Applications.
-3. Open from Applications without using `xattr` or bypass commands.
+3. Eject the disk image and open the installed app with the original download quarantine retained.
 4. Confirm Gatekeeper does not report the application as damaged.
 5. Confirm `spctl -a -vv /Applications/OmniShare.app` reports acceptance.
-6. Confirm the application and bundled backend are Universal.
-7. Repeat launch and tray/menu-bar lifecycle checks.
+6. Confirm the Go executable reports the expected version and `arm64` architecture; the public app is not the Tauri Universal build.
+7. Confirm the browser UI opens, then verify shutdown and restart. A normal first-open confirmation is acceptable; Open Anyway is not part of acceptance.
 8. Verify upload and download.
+
+Repeat from a clean snapshot without networking to check stapled-ticket availability, and test the ZIP fallback separately. Do not count a cached approval or simulated quarantine assessment as this first-download test. Native CI evidence keeps `first_download_verified: false`; record these real-device results separately.
 
 Capture:
 
 - `spctl` output.
 - `codesign -dv --verbose=4` output.
-- `lipo -archs` for both executables.
+- `lipo -archs` for the packaged Go executable.
 - Screenshot of successful first launch.
 
 ### 4.3 macOS Intel
 
-Install the same Universal release artifact and repeat first launch, menu-bar lifecycle and transfer smoke tests.
+Install the matching `amd64` DMG and ZIP and repeat the same fresh-download, installation, launch, shutdown and transfer tests. When Tauri macOS distribution is separately enabled, also test its Universal executable, bundled backend and tray/menu-bar lifecycle; those are not claims made by the current Go application release.
 
 ### 4.4 Linux
 
@@ -300,13 +304,13 @@ Do not publish a workaround that asks users to disable Gatekeeper or remove quar
 A stable release requires all of the following:
 
 - Repository CI is green.
-- Desktop Release build-and-test matrix is green.
+- Desktop Validation build-and-test matrix is green.
 - Windows installed-layout runtime smoke is green.
-- macOS Universal architecture validation is green.
-- Formal macOS signing and Gatekeeper checks are green.
+- Tauri macOS Universal architecture validation is green, and both public Go application architectures pass native ZIP/DMG validation.
+- Formal macOS signing, notarization, stapling and Gatekeeper checks are green.
 - SHA-256 evidence exists for every package.
 - Windows real-device tray and lifecycle acceptance is signed off.
 - macOS M4 first-launch acceptance is signed off.
 - No release-blocking issue remains open.
 
-Unsigned pull-request artifacts are test artifacts only and must not be presented as production macOS downloads.
+Ad-hoc pull-request rehearsal artifacts are test artifacts only and must not be presented as production macOS downloads. These are acceptance requirements, not a statement that the published `0.1.1` already satisfies them.

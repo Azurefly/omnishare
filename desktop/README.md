@@ -89,6 +89,9 @@ to apply native package-manager version rules:
   still reports the original version. Build metadata is not an upgrade counter.
 - macOS keeps the original version and build flow.
 
-The release workflow's existing policy of not publishing desktop bundles for
-RC/alpha/beta tags is unchanged. Pull requests still validate native installers.
+`Desktop Validation` validates native installers without publishing them.
+The shared `Publish Release` workflow uses its reviewed manifest to distinguish
+stable releases from prereleases. macOS Tauri builds remain validation-only;
+the public Go application signing and notarization requirements are documented
+in [`docs/MACOS_SIGNING.md`](../docs/MACOS_SIGNING.md).
 Run `npm run test:contracts` to check version mapping and platform build plans.

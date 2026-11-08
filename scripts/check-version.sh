@@ -14,6 +14,9 @@ if not m or m.group(1)!=expected: raise SystemExit('backend build version mismat
 sw=(root/'frontend/web/service-worker.js').read_text()
 if f'omnishare-v{expected}' not in sw: raise SystemExit('service worker cache version mismatch')
 desktop_package=json.loads((root/'desktop/package.json').read_text())['version']
+desktop_lock=json.loads((root/'desktop/package-lock.json').read_text())
+if desktop_lock.get('version')!=expected or desktop_lock.get('packages',{}).get('',{}).get('version')!=expected:
+    raise SystemExit('desktop npm lockfile version mismatch')
 desktop_cargo=(root/'desktop/src-tauri/Cargo.toml').read_text()
 m=re.search(r'^version\s*=\s*"([^"]+)"',desktop_cargo,re.M)
 if not m or m.group(1)!=expected: raise SystemExit('desktop Cargo version mismatch')
