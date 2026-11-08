@@ -1,0 +1,64 @@
+name: macOS Signing Readiness
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-signing-readiness.yml'
+      - '.github/workflows/publish-desktop-prerelease.yml'
+      - 'scripts/package-macos.sh'
+      - 'scripts/macos-signing.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  credentials:
+    name: Check required signing configuration
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted main configuration
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check credential names and format without signing or publishing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package-macos.sh --check-credentials
+
+  cleanup-reviewed-branch:
+    name: Remove the merged distribution branch
+    needs: credentials
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Azurefly/omnishare'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed merge history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Delete only the reviewed merged branch with an exact lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_ref=refs/heads/fix/macos-notarized-distribution-20261108
+          if remote="$(git ls-remote --exit-code --heads origin "$branch_ref")"; then
+            expected="$(git rev-parse --verify "${GITHUB_SHA}^2")"
+            main="$(git ls-remote --exit-code --heads origin refs/heads/main)"
+            test "${main%%[[:space:]]*}" = "$GITHUB_SHA"
+            read -r actual actual_ref <<< "$remote"
+            test "$actual_ref" = "$branch_ref"
+            test "$actual" = "$expected"
+            git merge-base --is-ancestor "$actual" "$GITHUB_SHA"
+            git push --atomic --force-with-lease="$branch_ref:$expected" origin ":$branch_ref"
+          else
+            status=$?
+            test "$status" -eq 2
+          fi

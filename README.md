@@ -37,7 +37,9 @@ OmniShare 是面向个人、家庭、小团队和内网环境的自托管内容�
 
 **macOS 发布包需要 macOS 12 Monterey 或更新版本。** Apple 芯片选择 `macos-arm64.zip`，Intel Mac 选择 `macos-amd64.zip`。解压后的 `.app` 启动 Go 后端并通过浏览器使用，当前不提供 Tauri macOS 桌面安装器。
 
-macOS `.app` 使用 ad-hoc 签名校验完整性，**没有 Developer ID 身份签名或 Apple 公证**，首次下载后仍可能被 Gatekeeper 拦截。确认来源和 SHA-256 后，可按 Apple 的“系统设置 → 隐私与安全性 → 仍要打开”流程处理未验证开发者提示；若提示“已损坏”，应先重新核对文件并按 [macOS 安装与诊断](docs/MACOS.md)检查。Windows 安装包尚未提供商业代码签名。
+**已发布的 macOS `0.1.1` 只有 ad-hoc 完整性签名，没有 Developer ID 身份签名或 Apple 公证**，首次下载后仍可能被 Gatekeeper 拦截；若提示“已损坏”，先核对文件并按 [macOS 安装与诊断](docs/MACOS.md)收集信息。
+
+主分支正在完善正式签名、公证和 DMG 拖入“应用程序”的发布流程，并保留 ZIP 备用包。**新的公证安装包尚未发布，当前下载仍为上述 `0.1.1` 文件。** 配置签名身份、通过 Apple 公证及实际安装验收后，才会发布下一版本；维护者步骤见 [macOS 正式签名与公证](docs/MACOS_SIGNING.md)。正式包首次打开可能仍有系统正常的“是否打开”确认，目标是不需要“仍要打开”安全例外；组织管理策略可能另有限制。Windows 安装包尚未提供商业代码签名。
 
 ## 安装与迁移
 
@@ -174,7 +176,7 @@ Linux/macOS：
 ./scripts/build-tauri-desktop.sh
 ```
 
-脚本按顺序构建前端、内置后端与桌面壳。普通构建产物位于 `desktop/src-tauri/target/release/bundle`，macOS Universal 产物位于 `desktop/src-tauri/target/universal-apple-darwin/release/bundle`。当前 macOS 后端包装说明见[macOS 安装与诊断](docs/MACOS.md)，Tauri 桌面正式分发的签名和公证要求见[桌面发布与签名](docs/DESKTOP_RELEASE.md)。
+脚本按顺序构建前端、内置后端与桌面壳。普通构建产物位于 `desktop/src-tauri/target/release/bundle`，macOS Universal 产物位于 `desktop/src-tauri/target/universal-apple-darwin/release/bundle`。当前 macOS 后端包装说明见[macOS 安装与诊断](docs/MACOS.md)，签名凭据和正式分发门槛见[macOS 正式签名与公证](docs/MACOS_SIGNING.md)，Tauri 验证与统一发布入口见[桌面发布指南](docs/DESKTOP_RELEASE.md)。
 
 ## 验证
 
@@ -196,7 +198,7 @@ npm --prefix frontend ci --ignore-scripts
 npm --prefix frontend run test:browser
 ```
 
-CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查、六目标后端构建，以及 Windows 安装布局与 watchdog 验证。macOS 流程检查最终 ZIP 的结构、架构、完整签名、实际 `.app` 启动和篡改副本拒绝；这不等同于浏览器首次下载后的 Gatekeeper 身份与公证验收。浏览器测试使用合成 API 数据，后端鉴权和持久化由 Go/HTTP 测试覆盖。发布前检查包名大小写冲突，发布后核对附件和 SHA-256。详细流程见[桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
+CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查、六目标后端构建，以及 Windows 安装布局与 watchdog 验证。macOS 新发布流程对最终 ZIP 和 DMG 分别检查结构、架构、签名、实际 `.app` 启动、正常退出及篡改拒绝；正式模式另要求 Developer ID、公证、票据和 Gatekeeper 门槛通过。自动化检查与真实 Safari 首次下载验收分别记录，当前 `0.1.1` 不因此变为已公证版本。浏览器测试使用合成 API 数据，后端鉴权和持久化由 Go/HTTP 测试覆盖。发布前检查包名大小写冲突，发布后核对附件和 SHA-256。详细流程见[桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
 
 ## 当前限制
 
@@ -205,7 +207,7 @@ CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 
 - JSON 回退引擎仍有随数据规模增长的整体写入开销，不执行 SQLite 的审计裁剪。
 - 清除访问密钥或恢复无密钥配置后的初始化令牌续发尚待完善；相关操作可能需要重启后使用新的本机初始化链接。自动清理与恢复之间的文件协调、审计锚点的完整备份恢复仍需后续改进。
 - Windows 托盘可见性和点击行为、macOS 权限与 Gatekeeper，以及 Safari 和各种触屏设备仍需对应真机验收。自动化检查不替代这些平台验收。
-- macOS 后端包使用 ad-hoc 完整性签名，尚未提供 Developer ID 签名和 Apple 公证；Windows 商业代码签名、完整 SBOM 和来源证明仍待补齐。macOS Tauri 桌面尚未公开分发。
+- 已发布的 `0.1.1` macOS 后端包使用 ad-hoc 完整性签名，尚未提供 Developer ID 签名和 Apple 公证；新的正式分发链路仍待凭据配置与实际发布验证。Windows 商业代码签名、完整 SBOM 和来源证明仍待补齐。macOS Tauri 桌面尚未公开分发。
 
 ## 文档
 

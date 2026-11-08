@@ -35,45 +35,22 @@ OMNISHARE_PORT=18081
 
 or deploy `omnishare-desktop.json` next to the installed executable. A per-user configuration overrides the installation-level file, and the environment variable overrides both.
 
-## macOS Apple Silicon distribution
+## macOS distribution and validation
 
-The release workflow builds a Universal macOS package containing both:
+`Desktop Validation` checks the Tauri application and its bundled Go backend as Universal binaries containing `arm64` and `x86_64`. Those macOS artifacts are for validation; the public macOS download runs the Go backend and opens a browser, with separate Intel and Apple silicon packages.
 
-- `arm64` for Apple Silicon, including M1, M2, M3 and M4.
-- `x86_64` for Intel Macs.
+The published `v0.1.1` ZIPs use ad-hoc integrity signatures and are not notarized. They can still be blocked after a browser download. Current installation status and read-only diagnostics are documented in [MACOS.md](MACOS.md).
 
-Both the Tauri desktop executable and the bundled Go backend are verified with `lipo` before artifacts are uploaded.
+The next formal distribution pipeline requires Developer ID Application signing, Hardened Runtime, secure timestamps, accepted Apple notarization, stapled tickets and Gatekeeper checks. Its target is a DMG that installs by dragging the app to Applications, plus a ZIP fallback. This pipeline change does not mean a new notarized version has already been published.
 
-### Required GitHub Actions secrets
+Configure exactly these repository Actions secrets using the local certificate-export procedure in [MACOS_SIGNING.md](MACOS_SIGNING.md):
 
-A public macOS release must be signed with a `Developer ID Application` certificate and notarized by Apple. Configure these repository secrets:
+- `APPLE_CERTIFICATE`: Base64-encoded P12 containing the Developer ID Application certificate and private key.
+- `APPLE_CERTIFICATE_PASSWORD`: P12 export password.
+- `APPLE_TEAM_ID`: the matching Apple Developer team.
+- `APPLE_ID`: the account authorized for notarization.
+- `APPLE_APP_SPECIFIC_PASSWORD`: that account's app-specific password.
 
-| Secret | Purpose |
-| --- | --- |
-| `APPLE_CERTIFICATE` | Base64-encoded exported Developer ID `.p12` certificate |
-| `APPLE_CERTIFICATE_PASSWORD` | Password used when exporting the `.p12` certificate |
-| `APPLE_SIGNING_IDENTITY` | Optional explicit Developer ID signing identity; Tauri can infer it from the certificate |
-| `APPLE_ID` | Apple ID used for notarization |
-| `APPLE_PASSWORD` | App-specific password for the Apple ID |
-| `APPLE_TEAM_ID` | Apple Developer team identifier |
+Do not put their values in source, chat, issue reports or logs. A missing credential blocks formal publication; PR rehearsal artifacts remain ad-hoc and cannot pass the production publication gate.
 
-The release workflow intentionally fails before publishing when mandatory macOS signing or notarization secrets are missing. Pull-request builds may remain unsigned because they are validation artifacts, not public releases.
-
-For a formal release, the workflow verifies:
-
-```bash
-codesign --verify --deep --strict --verbose=2 OmniShare.app
-spctl --assess --type execute --verbose=2 OmniShare.app
-```
-
-A successful public artifact must pass both checks. This prevents publishing a package that macOS Gatekeeper reports as damaged or unable to open.
-
-### Existing unsigned build workaround
-
-For diagnosis only, a user can remove quarantine from a trusted locally-built application:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/OmniShare.app
-```
-
-This is not a release fix and must not be presented as the normal installation process. The correct fix is Developer ID signing and Apple notarization.
+Native automated tests check the final ZIP and DMG, signatures, policy assessments, actual application startup and shutdown. They keep `first_download_verified: false`. Real first-download acceptance requires a fresh Mac or restored VM, a Safari download with quarantine retained, and the normal installation path. A standard first-open confirmation can appear; formal acceptance does not use Open Anyway, and managed-device policy can impose additional restrictions.

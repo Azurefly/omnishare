@@ -14,6 +14,11 @@ on:
       - 'scripts/package-release.sh'
       - 'scripts/package-macos.sh'
       - 'scripts/test-macos-release.py'
+      - 'scripts/macos-signing.py'
+      - 'scripts/macos_signing_test.py'
+      - 'scripts/macos_release_test.py'
+      - 'scripts/verify-macos-evidence.cjs'
+      - '.github/workflows/macos-signing-readiness.yml'
       - 'packaging/macos/**'
       - 'scripts/check-version.sh'
       - 'scripts/test-release-contract.mjs'
@@ -35,6 +40,7 @@ jobs:
       notes: ${{ steps.metadata.outputs.notes }}
       prerelease: ${{ steps.metadata.outputs.prerelease }}
       make_latest: ${{ steps.metadata.outputs.make_latest }}
+      macos_mode: ${{ steps.mode.outputs.macos_mode }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,9 +52,38 @@ jobs:
         with:
           node-version: '22.23.1'
 
+      - name: Select macOS validation mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo 'macos_mode=rehearsal' >> "$GITHUB_OUTPUT"
+          elif [ "$REF_NAME" = refs/heads/main ] && { [ "$EVENT_NAME" = push ] || [ "$EVENT_NAME" = workflow_dispatch ]; }; then
+            echo 'macos_mode=release' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::Formal releases require main; pull requests only run rehearsal validation.'
+            exit 1
+          fi
+
+      - name: Require formal macOS signing credentials
+        if: steps.mode.outputs.macos_mode == 'release'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package-macos.sh --check-credentials
+
       - name: Read manifest
         id: metadata
         shell: bash
+        env:
+          MACOS_VERIFICATION_MODE: ${{ steps.mode.outputs.macos_mode }}
         run: |
           node <<'NODE'
           const fs = require('fs');
@@ -71,6 +106,12 @@ jobs:
           if (typeof manifest.prerelease !== 'boolean' || manifest.prerelease !== version.includes('-')) {
             throw new Error('Manifest prerelease must be a boolean matching the version prerelease suffix');
           }
+          if (process.env.MACOS_VERIFICATION_MODE === 'release' &&
+              (manifest.macos?.signing_mode !== 'developer-id' || manifest.macos?.notarized !== true ||
+               manifest.macos?.server_zip_signed !== true || manifest.macos?.dmg_published !== true ||
+               manifest.macos?.minimum_system_version !== '12.0' || manifest.macos?.tauri_published !== false)) {
+            throw new Error('The next formal release manifest must require Developer ID, notarization and verified DMG publication; published ad-hoc versions cannot be reused');
+          }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${manifest.tag}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `name=${manifest.name}\n`);
@@ -81,6 +122,11 @@ jobs:
 
       - name: Release workflow contracts
         run: node scripts/test-release-contract.mjs
+
+      - name: Test macOS signing and acceptance guards
+        run: |
+          python3 scripts/macos_signing_test.py
+          python3 scripts/macos_release_test.py
 
       - name: Test version reset cleanup guards
         run: node --test scripts/cleanup-release-history.test.mjs
@@ -144,12 +190,12 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: Seal and test macOS ${{ matrix.arch }} release package
+    name: Package macOS ${{ matrix.arch }} (${{ needs.release-metadata.outputs.macos_mode }})
     needs:
       - release-metadata
       - build-server
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +207,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Download this run's Darwin binaries
         uses: actions/download-artifact@v4
@@ -168,22 +216,80 @@ jobs:
           name: unsigned-macos-binaries
           path: macos-binaries
 
-      - name: Seal the complete macOS application and create the release ZIP
+      - name: Package rehearsal applications without signing credentials
+        if: needs.release-metadata.outputs.macos_mode == 'rehearsal'
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
-        run: bash scripts/package-macos.sh "macos-binaries/omnishare-darwin-${ARCH}" release-assets "$ARCH"
+        run: bash scripts/package-macos.sh "macos-binaries/omnishare-darwin-${ARCH}" macos-candidates "$ARCH" --mode rehearsal
 
-      - name: Verify and launch the actual macOS release ZIP
+      - name: Sign and notarize formal macOS applications
+        if: needs.release-metadata.outputs.macos_mode == 'release' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package-macos.sh "macos-binaries/omnishare-darwin-${ARCH}" macos-candidates "$ARCH" --mode release
+
+      - name: Upload candidates for independent native verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-candidates-${{ matrix.arch }}
+          path: macos-candidates/*
+          if-no-files-found: error
+
+  verify-macos:
+    name: Verify macOS ${{ matrix.arch }} on a fresh runner
+    needs:
+      - release-metadata
+      - build-macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: macos-15-intel
+          - arch: arm64
+            os: macos-15
+    steps:
+      - name: Checkout verification code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download this run's macOS candidates
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-candidates-${{ matrix.arch }}
+          path: macos-candidates
+
+      - name: Verify and launch the actual macOS release ZIP and DMG
         shell: bash
         env:
           ARCH: ${{ matrix.arch }}
           RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          MACOS_VERIFICATION_MODE: ${{ needs.release-metadata.outputs.macos_mode }}
+          EXPECTED_TEAM_ID: ${{ github.event_name != 'pull_request' && secrets.APPLE_TEAM_ID || '' }}
         run: |
-          python3 scripts/test-macos-release.py \
-            --archive "release-assets/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.zip" \
-            --arch "$ARCH" --version "$RELEASE_VERSION" \
-            --evidence "macos-test-evidence/${ARCH}/verification.json"
+          set -euo pipefail
+          args=(--archive "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.zip"
+                --dmg "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.dmg"
+                --packaging-evidence "macos-candidates/omnishare-macos-${ARCH}-packaging.json"
+                --mode "$MACOS_VERIFICATION_MODE" --arch "$ARCH" --version "$RELEASE_VERSION"
+                --evidence "macos-test-evidence/${ARCH}/verification.json")
+          if [ "$MACOS_VERIFICATION_MODE" = release ]; then
+            args+=(--team-id "$EXPECTED_TEAM_ID")
+          fi
+          python3 scripts/test-macos-release.py "${args[@]}"
+          mkdir -p release-assets
+          cp "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.zip" release-assets/
+          cp "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.dmg" release-assets/
           cp "macos-test-evidence/${ARCH}/verification.json" \
             "release-assets/omnishare-macos-${ARCH}-verification.json"
 
@@ -389,7 +495,7 @@ jobs:
     needs:
       - release-metadata
       - build-server
-      - build-macos
+      - verify-macos
       - build-and-test
     runs-on: ubuntu-latest
     steps:
@@ -407,6 +513,8 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          MACOS_VERIFICATION_MODE: ${{ needs.release-metadata.outputs.macos_mode }}
+          EXPECTED_TEAM_ID: ${{ github.event_name != 'pull_request' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           set -euo pipefail
           (cd release-assets && sha256sum -c SHA256SUMS.txt)
@@ -475,26 +583,15 @@ jobs:
             expectedHashes.set(name, serverHashes.get(name));
           }
 
-          // Only native macOS jobs may attest the ZIPs. In particular, a Go
-          // linker's per-binary ad-hoc signature is not a sealed .app bundle.
-          const macChecks = ['archive_layout', 'signature_valid', 'signature_survives_archive',
-            'resource_tamper_rejected', 'launch_services', 'health_version', 'http_ui', 'clean_shutdown'];
+          // Formal publication requires Developer ID, accepted notarization,
+          // attached tickets and Gatekeeper acceptance for both final formats.
+          const { verifyMacEvidence } = require('./scripts/verify-macos-evidence.cjs');
           for (const arch of ['amd64', 'arm64']) {
-            const asset = `OmniShare-v${version}-macos-${arch}.zip`;
-            const reportName = `omnishare-macos-${arch}-verification.json`;
-            requireFile(asset);
-            requireFile(reportName);
-            const report = JSON.parse(text(reportName));
-            const actual = crypto.createHash('sha256').update(read(asset)).digest('hex');
-            if (report.schema_version !== 1 || report.success !== true || report.version !== version ||
-                report.arch !== arch || report.asset !== asset || report.sha256 !== actual ||
-                report.signing_mode !== 'ad-hoc' || report.minimum_macos !== '12.0' ||
-                !macChecks.every(key => report.checks?.[key] === true) ||
-                report.gatekeeper?.notarized !== false || report.gatekeeper?.first_download_verified !== false) {
-              throw new Error(`Missing or unsuccessful native macOS verification: ${reportName}`);
-            }
-            expectedHashes.set(asset, actual);
-            expectedHashes.set(reportName, crypto.createHash('sha256').update(read(reportName)).digest('hex'));
+            const records = verifyMacEvidence({
+              root, version, arch, mode: process.env.MACOS_VERIFICATION_MODE,
+              expectedTeam: process.env.EXPECTED_TEAM_ID
+            });
+            for (const [name, hash] of records) expectedHashes.set(name, hash);
           }
           // Re-running verification is safe, but stale or unapproved checksum
           // records must never be silently replaced by a newly computed hash.
@@ -528,10 +625,11 @@ jobs:
           if (JSON.parse(text('omnishare-windows-watchdog.json')).success !== true) {
             throw new Error('Windows watchdog recovery did not pass');
           }
-          if (names.some(name => /\.dmg$/i.test(name))) {
-            throw new Error('This release workflow does not publish unsigned macOS Tauri installers');
+          const expectedDmgs = new Set(['amd64', 'arm64'].map(arch => `OmniShare-v${version}-macos-${arch}.dmg`));
+          if (names.some(name => /\.dmg$/i.test(name) && !expectedDmgs.has(name))) {
+            throw new Error('Unexpected macOS installer outside the native verification gate');
           }
-          if (names.length !== 24) throw new Error(`Expected exactly 24 publication files, found ${names.length}`);
+          if (names.length !== 26) throw new Error(`Expected exactly 26 publication files, found ${names.length}`);
           // Write only after every platform has passed. A failed second Mac
           // architecture must leave the original server checksum list intact.
           const checksumFile = path.join(root, 'SHA256SUMS.txt');
@@ -567,6 +665,19 @@ jobs:
         with:
           name: verified-prerelease-assets
           path: release-assets
+
+      - name: Require notarized macOS evidence before publishing
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          node <<'NODE'
+          const { verifyMacEvidence } = require('./scripts/verify-macos-evidence.cjs');
+          for (const arch of ['amd64', 'arm64']) verifyMacEvidence({
+            root: 'release-assets', version: process.env.RELEASE_VERSION, arch,
+            mode: 'release', expectedTeam: process.env.EXPECTED_TEAM_ID
+          });
+          NODE
 
       - name: Verify existing tag target
         shell: bash

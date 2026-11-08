@@ -6,14 +6,16 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
 const workflow = readFileSync(join(repo, '.github/workflows/publish-desktop-prerelease.yml'), 'utf8');
 const desktopWorkflow = readFileSync(join(repo, '.github/workflows/desktop-release.yml'), 'utf8');
 const version = '1.3.0-rc3';
 const stableVersion = '0.1.1';
-const macChecks = ['archive_layout', 'signature_valid', 'signature_survives_archive',
-  'resource_tamper_rejected', 'launch_services', 'health_version', 'http_ui', 'clean_shutdown'];
+const { COMMON_CHECKS, DISTRIBUTION_CHECKS } = createRequire(import.meta.url)('./verify-macos-evidence.cjs');
+const macChecks = [...COMMON_CHECKS, ...DISTRIBUTION_CHECKS];
+const testTeam = 'AB12CD34EF';
 
 // Execute the actual workflow scripts against fixtures. This catches publishing
 // gate regressions without contacting GitHub or creating a tag/release.
@@ -58,7 +60,9 @@ const manifestScript = stepScript('Read manifest');
 const assetsScript = stepScript('Verify staged assets');
 const tagScript = stepScript('Verify existing tag target');
 const publishedAssetsScript = stepScript('Verify published release assets');
-const macVerificationScript = stepScript('Verify and launch the actual macOS release ZIP');
+const macVerificationScript = stepScript('Verify and launch the actual macOS release ZIP and DMG');
+const publishMacGateScript = stepScript('Require notarized macOS evidence before publishing');
+const modeScript = stepScript('Select macOS validation mode');
 
 function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), 'omnishare-release-contract-'));
@@ -72,7 +76,8 @@ function fixture(run) {
 function execute(script, cwd, env = {}) {
   return spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], {
     cwd,
-    env: { ...process.env, RELEASE_VERSION: version, GITHUB_OUTPUT: join(cwd, 'outputs'), ...env },
+    env: { ...process.env, RELEASE_VERSION: version, GITHUB_OUTPUT: join(cwd, 'outputs'),
+      MACOS_VERIFICATION_MODE: 'release', EXPECTED_TEAM_ID: testTeam, ...env },
     encoding: 'utf8'
   });
 }
@@ -96,13 +101,17 @@ function writeManifest(root, overrides = {}, candidate = version) {
     name: `OmniShare v${candidate}`,
     notes: `docs/RELEASE_NOTES_v${candidate}.md`,
     prerelease: candidate.includes('-'),
+    macos: { signing_mode: 'developer-id', notarized: true, server_zip_signed: true,
+      dmg_published: true, minimum_system_version: '12.0', tauri_published: false },
     ...overrides
   }));
 }
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 
-function writeAssets(root, candidate = version) {
+function writeAssets(root, candidate = version, mode = 'release') {
+  mkdirSync(join(root, 'scripts'), { recursive: true });
+  cpSync(join(repo, 'scripts/verify-macos-evidence.cjs'), join(root, 'scripts/verify-macos-evidence.cjs'));
   const assets = join(root, 'release-assets');
   mkdirSync(assets);
   const put = (name, content = `fixture ${name}\n`) => writeFileSync(join(assets, name), content);
@@ -112,21 +121,40 @@ function writeAssets(root, candidate = version) {
     `omnishare-server_${candidate}_${arch}.deb`
   ]);
   const macos = ['amd64', 'arm64'].map(arch => `OmniShare-v${candidate}-macos-${arch}.zip`);
+  const macDmgs = ['amd64', 'arm64'].map(arch => `OmniShare-v${candidate}-macos-${arch}.dmg`);
   const macEvidence = ['amd64', 'arm64'].map(arch => `omnishare-macos-${arch}-verification.json`);
   const windows = [`OmniShare_${candidate}_x64_en-US.msi`, `OmniShare_${candidate}_x64-setup.exe`];
   const [baseVersion, suffix] = candidate.split('-');
   const rpmRelease = suffix ? `0.${suffix.replace('.', '')}` : '1';
   const linux = [`OmniShare_${candidate}_amd64.AppImage`, `OmniShare_${candidate}_amd64.deb`, `OmniShare-${baseVersion}-${rpmRelease}.x86_64.rpm`];
   const docs = ['README.md', `RELEASE_NOTES_v${candidate}.md`, 'SECURE_SHARING.md'];
-  for (const name of [...server, ...macos, ...windows, ...linux, ...docs]) put(name);
+  for (const name of [...server, ...macos, ...macDmgs, ...windows, ...linux, ...docs]) put(name);
   put('SHA256SUMS.txt', [...server, ...docs].map(name => `${digest(readFileSync(join(assets, name)))}  ${name}\n`).join(''));
   for (const [index, arch] of ['amd64', 'arm64'].entries()) {
+    const release = mode === 'release';
+    const assessment = app => ({
+      assessment_exit_code: release ? 0 : 3, assessment_result: release ? 'accepted' : 'rejected',
+      assessment_source: release ? 'Notarized Developer ID' : null,
+      quarantine_verified: release,
+      ...(app ? { syspolicy_check: { available: true, exit_code: release ? 0 : 3, result: release ? 'accepted' : 'rejected' } } : {})
+    });
+    const notary = kind => ({ submission_id: release ? `12345678-abcd-1234-abcd-123456789ab${kind === 'app' ? 'c' : 'd'}` : null,
+      status: release ? 'Accepted' : 'NotSubmitted', stapled: release });
     put(macEvidence[index], JSON.stringify({
-      schema_version: 1, success: true, version: candidate, arch, asset: macos[index],
+      schema_version: 2, success: true, version: candidate, arch, asset: macos[index],
       sha256: digest(readFileSync(join(assets, macos[index]))),
-      signing_mode: 'ad-hoc', minimum_macos: '12.0',
-      checks: Object.fromEntries(macChecks.map(check => [check, true])),
-      gatekeeper: { notarized: false, first_download_verified: false, assessment: 'rejected', exit_code: 3 }
+      mode, production_ready: release, signing_mode: release ? 'developer-id' : 'ad-hoc',
+      team_id: release ? testTeam : null, minimum_macos: '12.0',
+      artifacts: Object.fromEntries([['zip', macos[index]], ['dmg', macDmgs[index]]].map(([kind, name]) =>
+        [kind, { name, sha256: digest(readFileSync(join(assets, name))), size: readFileSync(join(assets, name)).length }])),
+      packaging: { name: `omnishare-macos-${arch}-packaging.json`, sha256: '1'.repeat(64) },
+      notarization: { app: notary('app'), dmg: notary('dmg') },
+      checks: Object.fromEntries(macChecks.map(check => [check, release || COMMON_CHECKS.includes(check)])),
+      gatekeeper: { notarized: release, first_download_verified: false, quarantine_policy_verified: release,
+        simulation: 'explicit-quarantine-on-isolated-copies', policy_enabled: true,
+        zip_app: assessment(true), dmg: assessment(false), dmg_app: assessment(true) },
+      runtime: Object.fromEntries(['zip', 'dmg'].map(kind => [kind, { launch_method: 'open -n -W',
+        loopback_only: true, browser_suppressed: true, quarantined: false }]))
     }));
   }
   put('omnishare-windows-sha256.json', '\uFEFF' + JSON.stringify(windows.map(name => ({
@@ -146,7 +174,7 @@ function writeAssets(root, candidate = version) {
     mutate(evidence);
     put(name, JSON.stringify(evidence));
   };
-  return { assets, server, macos, macEvidence, windows, linux, docs, put, mutateMacEvidence };
+  return { assets, server, macos, macDmgs, macEvidence, windows, linux, docs, put, mutateMacEvidence };
 }
 
 for (const candidate of [stableVersion, '0.1.0-rc1', version]) {
@@ -196,16 +224,16 @@ test('manifest rejects missing release notes', () => fixture(root => {
 }));
 
 for (const candidate of [stableVersion, version]) {
-  test(`${candidate} verifies 24 assets and adds native macOS archives and evidence to the final checksums`, () => fixture(root => {
-    const { assets, server, docs, macos, macEvidence } = writeAssets(root, candidate);
-    assert.equal(readdirSync(assets).length, 24);
+  test(`${candidate} verifies 26 assets and adds native macOS archives and evidence to the final checksums`, () => fixture(root => {
+    const { assets, server, docs, macos, macDmgs, macEvidence } = writeAssets(root, candidate);
+    assert.equal(readdirSync(assets).length, 26);
     const checksums = () => readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8');
     assert.equal(checksums().trim().split('\n').length, 9);
     assert.ok(macos.every(name => !checksums().includes(name)), 'Linux staging must not certify macOS archives');
     expectSuccess(execute(assetsScript, root, { RELEASE_VERSION: candidate }));
     const names = checksums().trim().split('\n').map(line => line.slice(66));
-    assert.deepEqual(names.sort(), [...server, ...docs, ...macos, ...macEvidence].sort());
-    assert.equal(new Set(names).size, 13, 'final checksum entries must not be duplicated');
+    assert.deepEqual(names.sort(), [...server, ...docs, ...macos, ...macDmgs, ...macEvidence].sort());
+    assert.equal(new Set(names).size, 15, 'final checksum entries must not be duplicated');
     expectSuccess(spawnSync('sha256sum', ['-c', 'SHA256SUMS.txt'], { cwd: assets, encoding: 'utf8' }));
     const verified = checksums();
     expectSuccess(execute(assetsScript, root, { RELEASE_VERSION: candidate }));
@@ -261,10 +289,11 @@ for (const [label, mutate] of [
 }
 
 for (const arch of ['amd64', 'arm64']) {
-  for (const kind of ['archive', 'evidence']) {
+  for (const kind of ['archive', 'installer', 'evidence']) {
     test(`asset verification requires the ${arch} macOS ${kind}`, () => fixture(root => {
       const { assets } = writeAssets(root);
-      const name = kind === 'archive' ? `OmniShare-v${version}-macos-${arch}.zip` : `omnishare-macos-${arch}-verification.json`;
+      const name = kind === 'archive' ? `OmniShare-v${version}-macos-${arch}.zip` :
+        kind === 'installer' ? `OmniShare-v${version}-macos-${arch}.dmg` : `omnishare-macos-${arch}-verification.json`;
       rmSync(join(assets, name));
       expectFailure(execute(assetsScript, root));
     }));
@@ -272,8 +301,8 @@ for (const arch of ['amd64', 'arm64']) {
 }
 
 for (const [label, mutate] of [
-  ['unsupported schema', evidence => { evidence.schema_version = 2; }],
-  ['string schema version', evidence => { evidence.schema_version = '1'; }],
+  ['unsupported schema', evidence => { evidence.schema_version = 1; }],
+  ['string schema version', evidence => { evidence.schema_version = '2'; }],
   ['unsuccessful verification', evidence => { evidence.success = false; }],
   ['string success flag', evidence => { evidence.success = 'true'; }],
   ['missing success flag', evidence => { delete evidence.success; }],
@@ -285,14 +314,30 @@ for (const [label, mutate] of [
   ['uppercase digest', evidence => { evidence.sha256 = evidence.sha256.toUpperCase(); }],
   ['missing digest', evidence => { delete evidence.sha256; }],
   ['unsigned bundle', evidence => { evidence.signing_mode = 'unsigned'; }],
-  ['unverified Developer ID claim', evidence => { evidence.signing_mode = 'developer-id'; }],
+  ['ad-hoc signing fallback', evidence => { evidence.signing_mode = 'ad-hoc'; }],
   ['unvalidated minimum macOS version', evidence => { evidence.minimum_macos = '11.0'; }],
   ['missing checks', evidence => { delete evidence.checks; }],
   ['missing Gatekeeper limits', evidence => { delete evidence.gatekeeper; }],
-  ['false notarization claim', evidence => { evidence.gatekeeper.notarized = true; }],
+  ['missing notarization', evidence => { evidence.gatekeeper.notarized = false; }],
   ['false first-download approval claim', evidence => { evidence.gatekeeper.first_download_verified = true; }],
-  ['string notarization flag', evidence => { evidence.gatekeeper.notarized = 'false'; }],
-  ['missing first-download status', evidence => { delete evidence.gatekeeper.first_download_verified; }]
+  ['string notarization flag', evidence => { evidence.gatekeeper.notarized = 'true'; }],
+  ['missing first-download status', evidence => { delete evidence.gatekeeper.first_download_verified; }],
+  ['wrong signing team', evidence => { evidence.team_id = 'ZZ99ZZ99ZZ'; }],
+  ['rehearsal mode', evidence => { evidence.mode = 'rehearsal'; }],
+  ['not production ready', evidence => { evidence.production_ready = false; }],
+  ['wrong DMG digest', evidence => { evidence.artifacts.dmg.sha256 = '0'.repeat(64); }],
+  ['wrong DMG byte count', evidence => { evidence.artifacts.dmg.size += 1; }],
+  ['missing packaging provenance', evidence => { delete evidence.packaging; }],
+  ['notarization still in progress', evidence => { evidence.notarization.app.status = 'In Progress'; }],
+  ['DMG notarization rejected', evidence => { evidence.notarization.dmg.status = 'Invalid'; }],
+  ['missing app ticket', evidence => { evidence.notarization.app.stapled = false; }],
+  ['missing DMG ticket', evidence => { evidence.notarization.dmg.stapled = false; }],
+  ['malformed notary submission', evidence => { evidence.notarization.app.submission_id = 'accepted'; }],
+  ['reused notary submission', evidence => { evidence.notarization.dmg.submission_id = evidence.notarization.app.submission_id; }],
+  ['Gatekeeper disabled', evidence => { evidence.gatekeeper.policy_enabled = false; }],
+  ['missing quarantine policy proof', evidence => { evidence.gatekeeper.quarantine_policy_verified = false; }],
+  ['misleading runtime scope', evidence => { evidence.runtime.zip.quarantined = true; }],
+  ['unverified DMG runtime', evidence => { delete evidence.runtime.dmg; }]
 ]) {
   test(`macOS evidence rejects ${label} without partially updating checksums`, () => fixture(root => {
     const { assets, mutateMacEvidence } = writeAssets(root);
@@ -346,7 +391,7 @@ for (const name of ['omnishare-darwin-arm64', `OmniShare-v${version}-macos-unver
 test('publication waits for every build and only runs on main push or dispatch', () => {
   const verify = jobSource('verify-assets');
   const publish = jobSource('publish');
-  assert.deepEqual(jobNeeds(verify).sort(), ['release-metadata', 'build-server', 'build-macos', 'build-and-test'].sort());
+  assert.deepEqual(jobNeeds(verify).sort(), ['release-metadata', 'build-server', 'verify-macos', 'build-and-test'].sort());
   assert.match(verify, /name: verified-prerelease-assets/);
   assert.match(publish, /needs:\s*\n\s*- release-metadata\s*\n\s*- verify-assets/);
   assert.match(publish, /name: Create GitHub release\s*\n\s*if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'\)/);
@@ -364,27 +409,32 @@ test('publication waits for every build and only runs on main push or dispatch',
   assert.ok(publish.indexOf('- name: Verify published release assets') > publish.indexOf('- name: Publish GitHub release'));
 });
 
-test('native macOS jobs package each matching architecture before publication can proceed', () => {
+test('native macOS signing and independent verification run on matching architectures', () => {
   const server = jobSource('build-server');
   const macos = jobSource('build-macos');
+  const verification = jobSource('verify-macos');
   assert.deepEqual(jobNeeds(macos).sort(), ['release-metadata', 'build-server'].sort());
-  assert.match(macos, /runs-on: \$\{\{ matrix\.os \}\}/);
-  assert.match(macos, /arch: amd64\s*\n\s*os: macos-15-intel\s*\n/);
-  assert.match(macos, /arch: arm64\s*\n\s*os: macos-15\s*\n/);
-  assert.deepEqual([...macos.matchAll(/- arch: ([^\s]+)/g)].map(match => match[1]).sort(), ['amd64', 'arm64']);
+  assert.deepEqual(jobNeeds(verification).sort(), ['release-metadata', 'build-macos'].sort());
+  for (const job of [macos, verification]) {
+    assert.match(job, /runs-on: \$\{\{ matrix\.os \}\}/);
+    assert.match(job, /arch: amd64\s*\n\s*os: macos-15-intel\s*\n/);
+    assert.match(job, /arch: arm64\s*\n\s*os: macos-15\s*\n/);
+    assert.deepEqual([...job.matchAll(/- arch: ([^\s]+)/g)].map(match => match[1]).sort(), ['amd64', 'arm64']);
+    assert.doesNotMatch(job, /continue-on-error:\s*true/);
+  }
   assert.match(server, /name: unsigned-macos-binaries\s*\n\s*path: dist\/binaries\/omnishare-darwin-\*/);
-  assert.match(macos, /uses: actions\/download-artifact@[^\n]+\n\s*with:\s*\n\s*name: unsigned-macos-binaries/);
-  assert.match(macos, /ARCH: \$\{\{ matrix\.arch \}\}/);
-  const packaging = macos.indexOf('scripts/package-macos.sh');
-  const verification = macos.indexOf('scripts/test-macos-release.py');
-  const publicationFiles = macos.indexOf('name: release-assets-macOS-${{ matrix.arch }}');
-  assert.ok(packaging >= 0 && verification > packaging && publicationFiles > verification,
-    'only the final ZIP produced by native packaging may be verified and staged');
-  assert.doesNotMatch(macos, /continue-on-error:\s*true/);
-  assert.match(macos, /--archive "release-assets\/OmniShare-v\$\{RELEASE_VERSION\}-macos-\$\{ARCH\}\.zip"/);
-  assert.match(macos, /"release-assets\/omnishare-macos-\$\{ARCH\}-verification\.json"/);
+  assert.match(macos, /name: macos-candidates-\$\{\{ matrix\.arch \}\}/);
+  assert.match(verification, /name: macos-candidates-\$\{\{ matrix\.arch \}\}/);
+  assert.ok(verification.indexOf('scripts/test-macos-release.py') < verification.indexOf('name: release-assets-macOS-'));
+  assert.doesNotMatch(verification, /secrets\.APPLE_(?:CERTIFICATE|CERTIFICATE_PASSWORD|ID|APP_SPECIFIC_PASSWORD)/);
+  const rehearsal = macos.slice(macos.indexOf('- name: Package rehearsal'), macos.indexOf('- name: Sign and notarize'));
+  assert.doesNotMatch(rehearsal, /secrets\./);
+  assert.match(rehearsal, /--mode rehearsal/);
+  assert.match(macos, /macos_mode == 'release' && github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request'/);
+  assert.match(macos, /--mode release/);
+  assert.match(verification, /--team-id "\$EXPECTED_TEAM_ID"/);
   const rawArtifact = /name: (unsigned-macos-binaries)/.exec(server)?.[1];
-  assert.ok(rawArtifact && !rawArtifact.startsWith('release-assets-'), 'raw executables must not enter the public asset merge');
+  assert.ok(rawArtifact && !rawArtifact.startsWith('release-assets-'));
   const build = readFileSync(join(repo, 'scripts/build-release.sh'), 'utf8');
   const targets = /for target in ([^;\n]+); do/.exec(build)?.[1].split(/\s+/).sort();
   assert.deepEqual(targets, ['windows/amd64', 'windows/arm64', 'linux/amd64', 'linux/arm64', 'darwin/amd64', 'darwin/arm64'].sort());
@@ -395,6 +445,8 @@ for (const failed of [false, true]) {
     const mockBin = join(root, 'mock-bin');
     mkdirSync(mockBin);
     mkdirSync(join(root, 'release-assets'));
+    mkdirSync(join(root, 'macos-candidates'));
+    for (const ext of ['zip', 'dmg']) writeFileSync(join(root, `macos-candidates/OmniShare-v${stableVersion}-macos-arm64.${ext}`), 'candidate');
     writeFileSync(join(mockBin, 'python3'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
@@ -410,8 +462,11 @@ process.exit(process.env.MOCK_MAC_FAILURE === '1' ? 42 : 0);
       MOCK_MAC_FAILURE: failed ? '1' : '0'
     });
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'mac-verifier-arguments.json'), 'utf8')), [
-      'scripts/test-macos-release.py', '--archive', `release-assets/OmniShare-v${stableVersion}-macos-arm64.zip`,
-      '--arch', 'arm64', '--version', stableVersion, '--evidence', 'macos-test-evidence/arm64/verification.json'
+      'scripts/test-macos-release.py', '--archive', `macos-candidates/OmniShare-v${stableVersion}-macos-arm64.zip`,
+      '--dmg', `macos-candidates/OmniShare-v${stableVersion}-macos-arm64.dmg`,
+      '--packaging-evidence', 'macos-candidates/omnishare-macos-arm64-packaging.json',
+      '--mode', 'release', '--arch', 'arm64', '--version', stableVersion,
+      '--evidence', 'macos-test-evidence/arm64/verification.json', '--team-id', testTeam
     ]);
     if (failed) {
       expectFailure(result);
@@ -527,9 +582,9 @@ process.stdout.write(fs.readFileSync(process.env.MOCK_RELEASE_RESPONSE, 'utf8'))
 }
 
 for (const candidate of [stableVersion, version]) {
-  test(`${candidate} public verification checks release type and all 24 assets without internal Linux paths`, () => fixture(root => {
+  test(`${candidate} public verification checks release type and all 26 assets without internal Linux paths`, () => fixture(root => {
     const published = writePublishedRelease(root, candidate);
-    assert.equal(published.release.assets.length, 24);
+    assert.equal(published.release.assets.length, 26);
     expectSuccess(published.verify());
   }));
 }
@@ -609,4 +664,115 @@ test('tag guard does not treat a failed remote lookup as a missing tag', () => f
   const { current } = tagFixture(root);
   git(root, 'remote', 'set-url', 'origin', join(root, 'missing-repository'));
   expectFailure(execute(tagScript, root, { TAG: `v${version}`, GITHUB_SHA: current }));
+}));
+
+for (const [event, ref, expected] of [
+  ['pull_request', 'refs/pull/32/merge', 'rehearsal'],
+  ['push', 'refs/heads/main', 'release'],
+  ['workflow_dispatch', 'refs/heads/main', 'release']
+]) {
+  test(`macOS mode is explicitly ${expected} for ${event}`, () => fixture(root => {
+    expectSuccess(execute(modeScript, root, { EVENT_NAME: event, REF_NAME: ref }));
+    assert.equal(readFileSync(join(root, 'outputs'), 'utf8'), `macos_mode=${expected}\n`);
+  }));
+}
+for (const [event, ref] of [['workflow_dispatch', 'refs/heads/fix/unreviewed'], ['push', 'refs/heads/fix/unreviewed'], ['pull_request_target', 'refs/heads/main']]) {
+  test(`macOS mode rejects ${event} on ${ref}`, () => fixture(root => {
+    expectFailure(execute(modeScript, root, { EVENT_NAME: event, REF_NAME: ref }));
+  }));
+}
+
+test('rehearsal assets pass only rehearsal validation and never the final publication gate', () => fixture(root => {
+  writeAssets(root, version, 'rehearsal');
+  expectSuccess(execute(assetsScript, root, { MACOS_VERIFICATION_MODE: 'rehearsal', EXPECTED_TEAM_ID: '' }));
+  expectFailure(execute(assetsScript, root));
+  expectFailure(execute(publishMacGateScript, root));
+}));
+
+test('formal assets pass the independent final publication gate', () => fixture(root => {
+  writeAssets(root);
+  expectSuccess(execute(publishMacGateScript, root));
+}));
+
+for (const mode of ['', 'unsigned', 'auto']) {
+  test(`aggregation never guesses signing mode from ${JSON.stringify(mode)}`, () => fixture(root => {
+    writeAssets(root);
+    expectFailure(execute(assetsScript, root, { MACOS_VERIFICATION_MODE: mode }));
+  }));
+}
+for (const team of ['', 'AB12CD34E', 'ZZ99ZZ99ZZ']) {
+  test(`formal assets reject independent team configuration ${JSON.stringify(team)}`, () => fixture(root => {
+    writeAssets(root);
+    expectFailure(execute(assetsScript, root, { EXPECTED_TEAM_ID: team }));
+    expectFailure(execute(publishMacGateScript, root, { EXPECTED_TEAM_ID: team }));
+  }));
+}
+for (const kind of ['zip_app', 'dmg', 'dmg_app']) {
+  for (const [label, mutate] of [
+    ['rejected', assessment => { assessment.assessment_exit_code = 3; assessment.assessment_result = 'rejected'; }],
+    ['unquarantined', assessment => { assessment.quarantine_verified = false; }],
+    ['non-notarized trust source', assessment => { assessment.assessment_source = 'Developer ID'; }],
+    ['string exit status', assessment => { assessment.assessment_exit_code = '0'; }]
+  ]) {
+    test(`formal gate rejects ${label} ${kind}`, () => fixture(root => {
+      const { mutateMacEvidence } = writeAssets(root);
+      mutateMacEvidence('arm64', evidence => mutate(evidence.gatekeeper[kind]));
+      expectFailure(execute(publishMacGateScript, root));
+    }));
+  }
+}
+for (const kind of ['zip_app', 'dmg_app']) {
+  for (const [label, mutate] of [
+    ['failed', policy => { policy.exit_code = 1; policy.result = 'rejected'; }],
+    ['unavailable', policy => { policy.available = false; }]
+  ]) {
+    test(`formal gate rejects ${label} syspolicy_check for ${kind}`, () => fixture(root => {
+      const { mutateMacEvidence } = writeAssets(root);
+      mutateMacEvidence('amd64', evidence => mutate(evidence.gatekeeper[kind].syspolicy_check));
+      expectFailure(execute(publishMacGateScript, root));
+    }));
+  }
+}
+
+test('formal gate runs before tag mutation or release creation', () => {
+  const publish = jobSource('publish');
+  assert.ok(publish.indexOf('- name: Require notarized macOS evidence before publishing') < publish.indexOf('- name: Verify existing tag target'));
+  assert.ok(publish.indexOf('- name: Require notarized macOS evidence before publishing') < publish.indexOf('- name: Publish GitHub release'));
+  assert.match(publishMacGateScript, /mode: 'release'/);
+  assert.doesNotMatch(publish, /continue-on-error:\s*true/);
+});
+
+test('credential readiness runs only trusted main and cannot publish', () => {
+  const readiness = readFileSync(join(repo, '.github/workflows/macos-signing-readiness.yml'), 'utf8');
+  assert.match(readiness, /branches: \[main\]/);
+  assert.match(readiness, /github\.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(readiness, /pull_request|action-gh-release|notarytool submit|--mode release/);
+  assert.match(readiness, /run: bash scripts\/package-macos\.sh --check-credentials/);
+  const credentialsJob = readiness.slice(readiness.indexOf('  credentials:'), readiness.indexOf('  cleanup-reviewed-branch:'));
+  assert.doesNotMatch(credentialsJob, /contents:\s*write|continue-on-error:\s*true/);
+  for (const secret of ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD']) {
+    assert.ok(credentialsJob.includes(`secrets.${secret}`));
+  }
+  assert.match(readiness, /branch_ref=refs\/heads\/fix\/macos-notarized-distribution-20261108/);
+  assert.match(readiness, /--force-with-lease="\$branch_ref:\$expected"/);
+  assert.match(readiness, /git merge-base --is-ancestor "\$actual" "\$GITHUB_SHA"/);
+});
+
+for (const [key, value] of [
+  ['signing_mode', 'ad-hoc'], ['notarized', false], ['server_zip_signed', false],
+  ['dmg_published', false], ['minimum_system_version', '11.0'], ['tauri_published', true]
+]) {
+  test(`formal manifest rejects invalid macOS ${key}`, () => fixture(root => {
+    writeManifest(root);
+    const path = join(root, 'release/desktop-release.json');
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    manifest.macos[key] = value;
+    writeFileSync(path, JSON.stringify(manifest));
+    expectFailure(execute(manifestScript, root));
+  }));
+}
+test('rehearsal can validate historical ad-hoc source without authorizing another formal publication', () => fixture(root => {
+  writeManifest(root, { macos: { signing_mode: 'ad-hoc', notarized: false } }, stableVersion);
+  expectSuccess(execute(manifestScript, root, { MACOS_VERIFICATION_MODE: 'rehearsal' }));
+  expectFailure(execute(manifestScript, root));
 }));

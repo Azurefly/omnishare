@@ -24,3 +24,6 @@ temp_*data/
 backend/temp_*data/
 
 !docs/test-evidence/*.log
+
+__pycache__/
+*.py[cod]
