@@ -1,7 +1,7 @@
 {
-  "tag": "v0.1.0",
-  "name": "OmniShare v0.1.0",
-  "notes": "docs/RELEASE_NOTES_v0.1.0.md",
+  "tag": "v0.1.1",
+  "name": "OmniShare v0.1.1",
+  "notes": "docs/RELEASE_NOTES_v0.1.1.md",
   "prerelease": false,
   "platforms": [
     "desktop-windows-x86_64",
@@ -15,8 +15,11 @@
   ],
   "macos": {
     "tauri_published": false,
-    "server_zip_signed": false,
-    "reason": "Tauri desktop packages require Apple Developer ID signing and notarization; server ZIP wrappers remain unsigned"
+    "server_zip_signed": true,
+    "signing_mode": "ad-hoc",
+    "notarized": false,
+    "minimum_system_version": "12.0",
+    "reason": "Server app ZIPs are sealed and verified on native Intel and Apple silicon macOS runners. Ad-hoc signatures do not establish Developer ID trust or notarization."
   },
-  "release_date": "2026-11-07"
+  "release_date": "2026-11-08"
 }

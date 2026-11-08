@@ -12,6 +12,9 @@ on:
       - '.github/workflows/publish-desktop-prerelease.yml'
       - 'scripts/build-release.sh'
       - 'scripts/package-release.sh'
+      - 'scripts/package-macos.sh'
+      - 'scripts/test-macos-release.py'
+      - 'packaging/macos/**'
       - 'scripts/check-version.sh'
       - 'scripts/test-release-contract.mjs'
       - 'scripts/cleanup-release-history.mjs'
@@ -126,13 +129,78 @@ jobs:
         working-directory: dist/packages
         run: sha256sum -c SHA256SUMS.txt
 
-      # macOS ZIPs contain the portable Go server, not a signed Tauri desktop app.
       - name: Upload verified server release packages
         uses: actions/upload-artifact@v4
         with:
           name: release-assets-Server
           path: dist/packages/*
           if-no-files-found: error
+
+      - name: Upload Darwin binaries for native macOS packaging
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-macos-binaries
+          path: dist/binaries/omnishare-darwin-*
+          if-no-files-found: error
+
+  build-macos:
+    name: Seal and test macOS ${{ matrix.arch }} release package
+    needs:
+      - release-metadata
+      - build-server
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: macos-15-intel
+          - arch: arm64
+            os: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download this run's Darwin binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: unsigned-macos-binaries
+          path: macos-binaries
+
+      - name: Seal the complete macOS application and create the release ZIP
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/package-macos.sh "macos-binaries/omnishare-darwin-${ARCH}" release-assets "$ARCH"
+
+      - name: Verify and launch the actual macOS release ZIP
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          python3 scripts/test-macos-release.py \
+            --archive "release-assets/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.zip" \
+            --arch "$ARCH" --version "$RELEASE_VERSION" \
+            --evidence "macos-test-evidence/${ARCH}/verification.json"
+          cp "macos-test-evidence/${ARCH}/verification.json" \
+            "release-assets/omnishare-macos-${ARCH}-verification.json"
+
+      - name: Upload verified macOS release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-macOS-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Upload macOS release test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-test-evidence-macOS-${{ matrix.arch }}
+          path: macos-test-evidence/${{ matrix.arch }}/
+          if-no-files-found: warn
 
   build-and-test:
     name: Build and test ${{ matrix.name }} release assets
@@ -321,6 +389,7 @@ jobs:
     needs:
       - release-metadata
       - build-server
+      - build-macos
       - build-and-test
     runs-on: ubuntu-latest
     steps:
@@ -370,12 +439,16 @@ jobs:
             matches.forEach(requireFile);
             return matches;
           };
-          const parseHashes = name => {
+          const parseHashes = (name, strict = false) => {
             const hashes = new Map();
             for (const line of text(name).trim().split(/\r?\n/)) {
               const match = /^([0-9a-fA-F]{64}) [ *](.+)$/.exec(line);
               if (!match) throw new Error(`Malformed checksum record in ${name}`);
-              hashes.set(path.posix.basename(match[2]), match[1].toLowerCase());
+              const basename = path.posix.basename(match[2]);
+              if (strict && (basename !== match[2] || hashes.has(basename))) {
+                throw new Error(`Ambiguous checksum record in ${name}`);
+              }
+              hashes.set(basename, match[1].toLowerCase());
             }
             return hashes;
           };
@@ -385,17 +458,48 @@ jobs:
             if (hashes.get(name) !== actual) throw new Error(`Missing or incorrect SHA256 for ${name}`);
           };
 
-          const serverHashes = parseHashes('SHA256SUMS.txt');
+          const serverHashes = parseHashes('SHA256SUMS.txt', true);
+          const expectedHashes = new Map();
           for (const arch of ['amd64', 'arm64']) {
             for (const name of [
               `OmniShare-v${version}-windows-${arch}.zip`,
               `OmniShare-v${version}-linux-${arch}.tar.gz`,
-              `omnishare-server_${version}_${arch}.deb`,
-              `OmniShare-v${version}-macos-${arch}.zip`
-            ]) verifyHash(name, serverHashes);
+              `omnishare-server_${version}_${arch}.deb`
+            ]) {
+              verifyHash(name, serverHashes);
+              expectedHashes.set(name, serverHashes.get(name));
+            }
           }
           for (const name of ['README.md', `RELEASE_NOTES_v${version}.md`, 'SECURE_SHARING.md']) {
             verifyHash(name, serverHashes);
+            expectedHashes.set(name, serverHashes.get(name));
+          }
+
+          // Only native macOS jobs may attest the ZIPs. In particular, a Go
+          // linker's per-binary ad-hoc signature is not a sealed .app bundle.
+          const macChecks = ['archive_layout', 'signature_valid', 'signature_survives_archive',
+            'resource_tamper_rejected', 'launch_services', 'health_version', 'http_ui', 'clean_shutdown'];
+          for (const arch of ['amd64', 'arm64']) {
+            const asset = `OmniShare-v${version}-macos-${arch}.zip`;
+            const reportName = `omnishare-macos-${arch}-verification.json`;
+            requireFile(asset);
+            requireFile(reportName);
+            const report = JSON.parse(text(reportName));
+            const actual = crypto.createHash('sha256').update(read(asset)).digest('hex');
+            if (report.schema_version !== 1 || report.success !== true || report.version !== version ||
+                report.arch !== arch || report.asset !== asset || report.sha256 !== actual ||
+                report.signing_mode !== 'ad-hoc' || report.minimum_macos !== '12.0' ||
+                !macChecks.every(key => report.checks?.[key] === true) ||
+                report.gatekeeper?.notarized !== false || report.gatekeeper?.first_download_verified !== false) {
+              throw new Error(`Missing or unsuccessful native macOS verification: ${reportName}`);
+            }
+            expectedHashes.set(asset, actual);
+            expectedHashes.set(reportName, crypto.createHash('sha256').update(read(reportName)).digest('hex'));
+          }
+          // Re-running verification is safe, but stale or unapproved checksum
+          // records must never be silently replaced by a newly computed hash.
+          for (const [name, hash] of serverHashes) {
+            if (expectedHashes.get(name) !== hash) throw new Error(`Unexpected or incorrect checksum record: ${name}`);
           }
 
           const windows = [
@@ -427,7 +531,15 @@ jobs:
           if (names.some(name => /\.dmg$/i.test(name))) {
             throw new Error('This release workflow does not publish unsigned macOS Tauri installers');
           }
-          console.log(`Verified server and Windows/Linux desktop release assets for ${version}`);
+          if (names.length !== 24) throw new Error(`Expected exactly 24 publication files, found ${names.length}`);
+          // Write only after every platform has passed. A failed second Mac
+          // architecture must leave the original server checksum list intact.
+          const checksumFile = path.join(root, 'SHA256SUMS.txt');
+          const temporary = path.join(root, '.SHA256SUMS.txt.tmp');
+          fs.writeFileSync(temporary, [...expectedHashes].sort(([a], [b]) => a.localeCompare(b, 'en'))
+            .map(([name, hash]) => `${hash}  ${name}\n`).join(''), { flag: 'wx' });
+          fs.renameSync(temporary, checksumFile);
+          console.log(`Verified server, native macOS, and Windows/Linux desktop release assets for ${version}`);
           NODE
 
       - name: Upload combined verified assets
@@ -539,6 +651,39 @@ jobs:
           console.log(`Verified ${expected.length} public release asset names, sizes and SHA256 digests for ${release.tag_name}`);
           NODE
 
+
+  cleanup-macos-repair-branch:
+    name: Remove the merged macOS repair branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Azurefly/omnishare' && needs.release-metadata.outputs.tag == 'v0.1.1'
+    needs:
+      - release-metadata
+      - publish
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout merged release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Remove only the reviewed merged branch with an exact lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_ref=refs/heads/fix/macos-release-20261108
+          expected="$(git rev-parse --verify "${GITHUB_SHA}^2")"
+          main="$(git ls-remote --exit-code --heads origin refs/heads/main)"
+          test "${main%%[[:space:]]*}" = "$GITHUB_SHA"
+          if remote="$(git ls-remote --exit-code --heads origin "$branch_ref")"; then
+            read -r actual actual_ref <<< "$remote"
+            test "$actual_ref" = "$branch_ref"
+            test "$actual" = "$expected"
+            git merge-base --is-ancestor "$actual" "$GITHUB_SHA"
+            git push --atomic --force-with-lease="$branch_ref:$expected" origin ":$branch_ref"
+          else
+            status=$?
+            test "$status" -eq 2
+          fi
 
   cleanup-version-reset:
     name: Retire approved legacy releases and merged refs

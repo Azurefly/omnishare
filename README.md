@@ -2,11 +2,11 @@
 
 OmniShare 是面向个人、家庭、小团队和内网环境的自托管内容工作区。随手记、文件与视频、受控分享、轻量协作文档、设备发现、审计、备份恢复和回收站集中在同一个界面中，可通过浏览器、单二进制后端或 Tauri 2 桌面端使用。
 
-## 当前版本：0.1.0
+## 当前版本：0.1.1
 
-`0.1.0` 是当前统一的产品版本，包含已完成的存储、安全、桌面可靠性和界面更新。后端、Web 与 Windows/Linux 桌面使用同一版本号，下载以 [v0.1.0 Release](https://github.com/Azurefly/omnishare/releases/tag/v0.1.0) 的实际附件为准。
+`0.1.1` 更新 macOS 发布包装：为完整 `.app` 添加 ad-hoc 完整性签名，验证最终 ZIP 的解压、启动及签名，并将最低系统要求明确为 macOS 12。后端、Web 与 Windows/Linux 桌面使用同一版本号，现有存储和共享功能继续保留。下载以 [v0.1.1 Release](https://github.com/Azurefly/omnishare/releases/tag/v0.1.1) 的实际附件为准。
 
-**这是一次版本号重置。** `0.1.0` 在安装器和包管理器的版本顺序中低于此前的 `1.x`，不能按自动升级处理。已有用户请先备份、退出旧进程，必要时卸载旧应用但保留数据目录，再安装 `0.1.0` 并沿用原目录。应用版本重置不会把备份格式改回旧版：新加密备份仍使用 v3，继续读取 v2 和 ZIP。完整步骤见[安装与迁移](#安装与迁移)及 [0.1.0 发布说明](docs/RELEASE_NOTES_v0.1.0.md)。
+从 `0.1.0` 更新到 `0.1.1` 是常规补丁更新，先备份并退出旧进程，再按原安装方式更新即可。**如果仍使用此前的 `1.x`，需要处理从 `0.1.0` 开始的版本号重置：** `0.1.1` 仍低于 `1.x`，安装器可能拒绝直接覆盖，必要时卸载旧应用但保留数据目录。新加密备份仍使用 v3，继续读取 v2 和 ZIP。详见[安装与迁移](#安装与迁移)及 [0.1.1 发布说明](docs/RELEASE_NOTES_v0.1.1.md)。
 
 ## 主要功能
 
@@ -25,17 +25,19 @@ OmniShare 是面向个人、家庭、小团队和内网环境的自托管内容�
 
 ## 下载
 
-| 平台与使用方式 | v0.1.0 附件 |
+| 平台与使用方式 | v0.1.1 附件 |
 | --- | --- |
-| Windows x64 桌面 | `OmniShare_0.1.0_x64-setup.exe` 或 `OmniShare_0.1.0_x64_en-US.msi` |
-| Linux x64 桌面 | `OmniShare_0.1.0_amd64.AppImage`、`OmniShare_0.1.0_amd64.deb` 或 `OmniShare-0.1.0-1.x86_64.rpm` |
-| Windows 后端与 Web | `OmniShare-v0.1.0-windows-amd64.zip` / `OmniShare-v0.1.0-windows-arm64.zip` |
-| Linux 后端与 Web | `OmniShare-v0.1.0-linux-amd64.tar.gz` / `OmniShare-v0.1.0-linux-arm64.tar.gz`，或 `omnishare-server_0.1.0_{amd64,arm64}.deb` |
-| macOS 后端与 Web | `OmniShare-v0.1.0-macos-amd64.zip` / `OmniShare-v0.1.0-macos-arm64.zip` |
+| Windows x64 桌面 | `OmniShare_0.1.1_x64-setup.exe` 或 `OmniShare_0.1.1_x64_en-US.msi` |
+| Linux x64 桌面 | `OmniShare_0.1.1_amd64.AppImage`、`OmniShare_0.1.1_amd64.deb` 或 `OmniShare-0.1.1-1.x86_64.rpm` |
+| Windows 后端与 Web | `OmniShare-v0.1.1-windows-amd64.zip` / `OmniShare-v0.1.1-windows-arm64.zip` |
+| Linux 后端与 Web | `OmniShare-v0.1.1-linux-amd64.tar.gz` / `OmniShare-v0.1.1-linux-arm64.tar.gz`，或 `omnishare-server_0.1.1_{amd64,arm64}.deb` |
+| macOS 后端与 Web | `OmniShare-v0.1.1-macos-amd64.zip` / `OmniShare-v0.1.1-macos-arm64.zip` |
 
-在 [v0.1.0 Release](https://github.com/Azurefly/omnishare/releases/tag/v0.1.0) 下载对应架构的文件，并用同页的 SHA-256 清单核对。Windows ARM64 使用后端便携包。Linux 的 `omnishare-server_` 文件是服务器包，`OmniShare_` 文件是桌面包，请按所需运行方式选择。服务器 DEB 的内部软件包名为 `omnishare`。
+在 [v0.1.1 Release](https://github.com/Azurefly/omnishare/releases/tag/v0.1.1) 下载对应架构的文件，并用同页的 SHA-256 清单核对。Windows ARM64 使用后端便携包。Linux 的 `omnishare-server_` 文件是服务器包，`OmniShare_` 文件是桌面包，请按所需运行方式选择。服务器 DEB 的内部软件包名为 `omnishare`。
 
-**macOS ZIP 是未签名的 Go 后端 `.app` 启动包装，不是 Tauri 桌面安装器。** macOS Tauri Universal 构建能力已具备，公开桌面分发仍需 Apple Developer ID 签名、公证和 Gatekeeper 验收。未签名的后端程序也可能受到 Gatekeeper 限制。Windows 安装包尚未提供商业代码签名。
+**macOS 发布包需要 macOS 12 Monterey 或更新版本。** Apple 芯片选择 `macos-arm64.zip`，Intel Mac 选择 `macos-amd64.zip`。解压后的 `.app` 启动 Go 后端并通过浏览器使用，当前不提供 Tauri macOS 桌面安装器。
+
+macOS `.app` 使用 ad-hoc 签名校验完整性，**没有 Developer ID 身份签名或 Apple 公证**，首次下载后仍可能被 Gatekeeper 拦截。确认来源和 SHA-256 后，可按 Apple 的“系统设置 → 隐私与安全性 → 仍要打开”流程处理未验证开发者提示；若提示“已损坏”，应先重新核对文件并按 [macOS 安装与诊断](docs/MACOS.md)检查。Windows 安装包尚未提供商业代码签名。
 
 ## 安装与迁移
 
@@ -47,21 +49,25 @@ Linux x64 桌面用户按发行版选择 AppImage、DEB 或 RPM。后端便携�
 
 首次启动默认仅监听本机。请先完成[首次配置](#首次配置与网络访问)，再按需要开放局域网。
 
-### 从已有安装迁移到 0.1.0
+### 从 0.1.0 更新到 0.1.1
+
+先导出备份、退出应用及其后端，再安装新版本并沿用原数据目录。macOS 用户重新解压对应芯片的 ZIP，替换整个旧 `.app`，不要将新旧应用的内部文件合并；默认业务数据在 `~/.omnishare`，不在 `.app` 内。此次补丁不更改 SQLite 数据格式或备份容器版本，也不要求先卸载所有旧版应用。
+
+### 从旧 1.x 迁移到 0.1.x
 
 1. **确认并备份原数据。** 在旧程序中导出备份并保存口令，记录实际数据目录；需要目录副本时，先完全停止服务，再复制整个目录，包括数据库、文件和配置。
 2. **退出旧程序及后端。** 桌面窗口关闭后可能仍在托盘运行，应选择完全退出；确认没有其他进程继续使用该数据目录。
-3. **按版本重置安装。** `0.1.0` 低于旧 `1.x`，安装器或包管理器可能拒绝覆盖。必要时先卸载旧应用，保留数据目录与独立备份，再安装 `0.1.0`；不要使用会清除用户数据的选项。
+3. **按版本重置安装。** 从 `0.1.0` 开始的版本号重新起算，当前 `0.1.1` 仍低于旧 `1.x`。仅当安装器或包管理器拒绝覆盖时，先卸载旧应用，保留数据目录与独立备份，再安装当前版本；不要使用会清除用户数据的选项。
 4. **沿用原目录。** 同一平台的桌面安装包、便携脚本和直接运行后端可能使用不同默认目录。可通过 `OMNISHARE_DATA_DIR` 或后端的 `--data-dir` 指定原目录的绝对路径，不要让两个实例同时操作同一目录。
 5. **核对内容后继续使用。** 检查随手记、文件、文档、分享和访问配置。已设置的访问密钥继续使用；没有密钥的环境通过本次启动提供的初始化入口配置。
 
-本次版本号重置不降低 SQLite 数据格式或备份容器版本。不要仅凭应用版本号判断备份兼容性。恢复备份会替换当前数据和配置，详见[备份与恢复](#备份与恢复)。
+版本号重置不降低 SQLite 数据格式或备份容器版本。不要仅凭应用版本号判断备份兼容性。恢复备份会替换当前数据和配置，详见[备份与恢复](#备份与恢复)。
 
 旧 `omnishare.json` 可导入当前 SQLite 格式。若数据来自早期写入 `backend/data` 的 SQLite 原型，当前没有自动转换工具；请保留原程序和完整目录，在数据副本上另行转换与验证，不要直接覆盖唯一副本。
 
 ## Web 与后端快速运行
 
-源码构建需要 **Go 1.26.0 或更新版本**、Node.js 和 npm；CI 使用 Node.js 22。前端构建无需安装 npm 依赖，首次后端构建需要获取 Go 模块，离线构建应提前准备依赖缓存。
+源码构建需要 **Go 1.26.0 或更新版本**、Node.js 和 npm；发布构建使用 Go 1.26 与 Node.js 22。macOS 发布包的最低版本为 12；自行换用更高版本 Go 时应核对其[系统要求](https://go.dev/wiki/MinimumRequirements)，Go 1.27 起要求 macOS 13。前端构建无需安装 npm 依赖，首次后端构建需要获取 Go 模块，离线构建应提前准备依赖缓存。
 
 在仓库根目录执行：
 
@@ -124,7 +130,7 @@ go run ./cmd/omnishare
 
 在“设置 → 存储与保留”导出备份。设置口令时生成加密 `.osb`，留空则生成明文 ZIP。备份包含状态、配置、文件与 SHA-256 校验清单；口令不写入数据目录，丢失口令将无法恢复对应加密包。
 
-| 格式 | 0.1.0 的支持情况 | 使用边界 |
+| 格式 | 0.1.1 的支持情况 | 使用边界 |
 | --- | --- | --- |
 | v3 `.osb` | 新加密备份的默认格式，可导出和恢复 | 恢复程序必须支持 v3，不能仅按应用版本号判断。 |
 | v2 `.osb` | 可读取并恢复已有备份 | 保留旧格式的分块校验能力，没有 v3 的完整包头与结束记录认证。 |
@@ -168,7 +174,7 @@ Linux/macOS：
 ./scripts/build-tauri-desktop.sh
 ```
 
-脚本按顺序构建前端、内置后端与桌面壳。普通构建产物位于 `desktop/src-tauri/target/release/bundle`，macOS Universal 产物位于 `desktop/src-tauri/target/universal-apple-darwin/release/bundle`。签名和公证要求见[桌面发布与签名](docs/DESKTOP_RELEASE.md)。
+脚本按顺序构建前端、内置后端与桌面壳。普通构建产物位于 `desktop/src-tauri/target/release/bundle`，macOS Universal 产物位于 `desktop/src-tauri/target/universal-apple-darwin/release/bundle`。当前 macOS 后端包装说明见[macOS 安装与诊断](docs/MACOS.md)，Tauri 桌面正式分发的签名和公证要求见[桌面发布与签名](docs/DESKTOP_RELEASE.md)。
 
 ## 验证
 
@@ -190,7 +196,7 @@ npm --prefix frontend ci --ignore-scripts
 npm --prefix frontend run test:browser
 ```
 
-CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查、六目标后端构建，以及 Windows 安装布局与 watchdog 验证。浏览器测试使用合成 API 数据，后端鉴权和持久化由 Go/HTTP 测试覆盖。发布前检查包名大小写冲突，发布后核对附件和 SHA-256。详细流程见[桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
+CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查、六目标后端构建，以及 Windows 安装布局与 watchdog 验证。macOS 流程检查最终 ZIP 的结构、架构、完整签名、实际 `.app` 启动和篡改副本拒绝；这不等同于浏览器首次下载后的 Gatekeeper 身份与公证验收。浏览器测试使用合成 API 数据，后端鉴权和持久化由 Go/HTTP 测试覆盖。发布前检查包名大小写冲突，发布后核对附件和 SHA-256。详细流程见[桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
 
 ## 当前限制
 
@@ -199,11 +205,12 @@ CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 
 - JSON 回退引擎仍有随数据规模增长的整体写入开销，不执行 SQLite 的审计裁剪。
 - 清除访问密钥或恢复无密钥配置后的初始化令牌续发尚待完善；相关操作可能需要重启后使用新的本机初始化链接。自动清理与恢复之间的文件协调、审计锚点的完整备份恢复仍需后续改进。
 - Windows 托盘可见性和点击行为、macOS 权限与 Gatekeeper，以及 Safari 和各种触屏设备仍需对应真机验收。自动化检查不替代这些平台验收。
-- 发布物尚未提供商业代码签名、完整 SBOM 或来源证明；macOS Tauri 桌面尚未公开分发。
+- macOS 后端包使用 ad-hoc 完整性签名，尚未提供 Developer ID 签名和 Apple 公证；Windows 商业代码签名、完整 SBOM 和来源证明仍待补齐。macOS Tauri 桌面尚未公开分发。
 
 ## 文档
 
-- [0.1.0 发布与迁移说明](docs/RELEASE_NOTES_v0.1.0.md)
+- [0.1.1 发布与更新说明](docs/RELEASE_NOTES_v0.1.1.md)
+- [macOS 安装、签名边界与诊断](docs/MACOS.md)
 - [安全共享与使用边界](docs/SECURE_SHARING.md)
 - [架构与安全边界](docs/ARCHITECTURE.md)
 - [桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)

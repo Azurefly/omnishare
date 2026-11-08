@@ -7,14 +7,12 @@ VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 # Debian's internal version needs '~' so a prerelease sorts before the final
 # release. Keep that out of asset names: GitHub rewrites '~' during upload.
 DEB_VERSION="${VERSION/-/\~}"
-BUNDLE_VERSION="$(printf '%s' "$VERSION" | sed -E 's/-rc([0-9]+)/.\1/; s/[^0-9.].*$//')"
-SHORT_VERSION="${VERSION%%-*}"
 PKG="$OUT/packages"
 RELEASE_NOTES="$ROOT/docs/RELEASE_NOTES_v${VERSION}.md"
 
 require() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required tool: $1" >&2; exit 2; }; }
 for tool in zip tar sed sha256sum python3; do require "$tool"; done
-for target in windows-amd64.exe windows-arm64.exe linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+for target in windows-amd64.exe windows-arm64.exe linux-amd64 linux-arm64; do
   test -s "$BIN/omnishare-$target" || { echo "Missing binary: $BIN/omnishare-$target" >&2; exit 2; }
 done
 test -f "$RELEASE_NOTES" || { echo "Missing release notes: $RELEASE_NOTES" >&2; exit 2; }
@@ -99,14 +97,8 @@ PY
   rm -rf "$deb"
 done
 
-for arch in amd64 arm64; do
-  app="$OUT/work/macos-$arch/OmniShare.app"
-  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp "$BIN/omnishare-darwin-$arch" "$app/Contents/MacOS/OmniShare"; chmod +x "$app/Contents/MacOS/OmniShare"
-  sed -e "s/__SHORT_VERSION__/$SHORT_VERSION/g" -e "s/__BUNDLE_VERSION__/$BUNDLE_VERSION/g" "$ROOT/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
-  sed "s/__VERSION__/$VERSION/g" "$ROOT/packaging/macos/README.txt" > "$app/Contents/Resources/README.txt"
-  (cd "$(dirname "$app")" && zip -qr "$PKG/OmniShare-v${VERSION}-macos-${arch}.zip" OmniShare.app)
-done
+# macOS apps must be sealed and verified on a native macOS runner.
+# scripts/package-macos.sh packages the separately uploaded Darwin binaries.
 
 for doc in "$ROOT/README.md" "$RELEASE_NOTES" "$ROOT/docs/SECURE_SHARING.md"; do
   [ -f "$doc" ] && cp "$doc" "$PKG/"
