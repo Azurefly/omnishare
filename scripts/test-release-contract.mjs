@@ -776,3 +776,18 @@ test('rehearsal can validate historical ad-hoc source without authorizing anothe
   expectSuccess(execute(manifestScript, root, { MACOS_VERIFICATION_MODE: 'rehearsal' }));
   expectFailure(execute(manifestScript, root));
 }));
+
+
+test('desktop packaging uses the pinned CLI and verified Linux tools before builds', () => {
+  const manifest = JSON.parse(readFileSync(join(repo, 'desktop/package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(join(repo, 'desktop/package-lock.json'), 'utf8'));
+  assert.equal(manifest.devDependencies['@tauri-apps/cli'], '2.12.4');
+  assert.equal(lock.packages[''].devDependencies['@tauri-apps/cli'], '2.12.4');
+  assert.equal(lock.packages['node_modules/@tauri-apps/cli'].version, '2.12.4');
+  for (const source of [desktopWorkflow, jobSource('build-and-test')]) {
+    assert.match(source, /name: Install locked desktop dependencies\n\s*working-directory: desktop\n\s*run: npm ci/);
+    assert.match(source, /name: Prepare verified Linux AppImage tools\n\s*if: runner\.os == 'Linux'\n\s*run: python3 scripts\/prepare-linux-appimage-tools\.py/);
+    assert.ok(source.indexOf('Prepare verified Linux AppImage tools') < source.indexOf('- name: Build Tauri bundle'));
+    assert.doesNotMatch(source, /run: npm install\s*\n/);
+  }
+});

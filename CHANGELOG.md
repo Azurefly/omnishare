@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 构建稳定性
+
+- 固定桌面 CLI 及依赖锁文件，通过官方 GitHub 附件 API 下载 Linux AppImage 工具并严格核验大小与 SHA-256，避免发布下载路径超时阻断打包。
+
 ### macOS 正式分发准备
 
 - 为下一版本建立 Developer ID Application、Hardened Runtime、安全时间戳、Apple 公证 `Accepted` 与票据验证的发布门槛；缺少凭据时停止正式发布，不以 ad-hoc 包替代。

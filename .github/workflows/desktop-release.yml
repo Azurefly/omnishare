@@ -65,7 +65,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             frontend/package.json
-            desktop/package.json
+            desktop/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -117,9 +117,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
 
-      - name: Install desktop dependencies
+      - name: Install locked desktop dependencies
         working-directory: desktop
-        run: npm install
+        run: npm ci
+
+      - name: Prepare verified Linux AppImage tools
+        if: runner.os == 'Linux'
+        run: python3 scripts/prepare-linux-appimage-tools.py
 
       - name: Run desktop release contract tests
         run: npm --prefix desktop run test:contracts
