@@ -103,9 +103,11 @@ omnishare-test-evidence-macOS-universal
 
 The Windows job extracts the MSI package and executes the desktop from the extracted installed layout. It validates port conflict fallback, existing-backend attachment, single-instance enforcement, process counts and Windows icon resources.
 
-## macOS release requirement
+## macOS Tauri desktop release requirement
 
-Pull-request builds may be unsigned validation artifacts. A formal GitHub Release is different: the workflow requires a Developer ID certificate and Apple notarization credentials before the macOS job can proceed.
+This section describes the requirements for future public Tauri desktop installers. Current macOS downloads are Go server application ZIPs that open the Web interface; they are not the Tauri Universal validation artifacts. From v0.1.1, those ZIPs are assembled and sealed with ad-hoc signatures on native Intel and Apple silicon runners, then extracted and launched for verification. They still lack Developer ID trust and notarization; see [macOS installation and diagnostics](MACOS.md).
+
+Public Tauri desktop installers require a Developer ID certificate and Apple notarization credentials before distribution. Pull-request Tauri builds remain unsigned validation artifacts and are not published by the release workflow.
 
 Mandatory repository secrets:
 
@@ -130,36 +132,19 @@ codesign --verify --deep --strict --verbose=2 OmniShare.app
 spctl --assess --type execute --verbose=2 OmniShare.app
 ```
 
-If these checks fail, the release publishing job does not run. This prevents an unsigned or non-notarized macOS package from being published as a stable release.
+These checks are required before enabling public Tauri macOS distribution. The current Publish Release workflow rejects Tauri DMG assets and separately verifies the ad-hoc signed Go server ZIPs; that verification does not claim Gatekeeper approval for browser downloads.
 
 ## Publishing
 
-There are two supported publishing paths.
+`Publish Release` is the single publication workflow. Keep `VERSION`, application metadata, `release/desktop-release.json`, and the matching release notes consistent. Merge the reviewed manifest change to `main` after its checks pass; that push starts the release build. A manual run of `Publish Release` on `main` is also available for retrying the same release commit.
 
-### Option A: publish from GitHub Actions UI
+The workflow builds Windows/Linux packages and all six Go targets. Separate native Intel and Apple silicon jobs assemble, seal, unpack, and launch the actual macOS server ZIPs. The aggregation job validates every required asset and the macOS evidence before publishing; the publisher verifies public asset names, sizes, and SHA-256 digests. An existing release tag must already point to the exact source commit or the workflow stops rather than replacing unrelated assets.
 
-1. Open **Actions**.
-2. Select **Desktop Release**.
-3. Click **Run workflow**.
-4. Select `main`.
-5. Enter a new tag such as `v1.4.1-desktop`.
-6. Choose whether the release is a draft or prerelease.
-7. Run the workflow.
+`Desktop Validation` builds the Tauri Windows/Linux/macOS Universal artifacts and runs its desktop checks for pull requests. It does not publish GitHub Releases, and pushing an arbitrary tag does not trigger publication.
 
-The workflow runs source checks, Rust tests, platform builds, installed-layout smoke tests, architecture checks and integrity hashing first. Only after every required job succeeds does a separate publishing job attach the verified release packages.
+## Additional Tauri desktop acceptance
 
-### Option B: publish from Git tag
-
-```bash
-git checkout main
-git pull origin main
-git tag v1.4.1-desktop
-git push origin v1.4.1-desktop
-```
-
-## Release gate
-
-A stable release requires all automated gates in `docs/DESKTOP_TEST_PLAN.md` to pass and the real-device evidence below to be recorded:
+The following real-device checks remain necessary before claiming complete Tauri desktop distribution readiness. They supplement the current automated release gates and are not claimed by the Go server ZIP smoke tests:
 
 - Windows 10 or 11: tray icon visible and interactive.
 - Windows: repeated launch leaves one desktop shell and one backend.

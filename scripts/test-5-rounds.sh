@@ -177,7 +177,9 @@ round5() {
     unzip -t "$release/packages/OmniShare-v${VERSION}-windows-${arch}.zip" >/dev/null
     tar -tzf "$release/packages/OmniShare-v${VERSION}-linux-${arch}.tar.gz" >/dev/null
     dpkg-deb -I "$release/packages/omnishare-server_${VERSION}_${arch}.deb" >/dev/null
-    unzip -t "$release/packages/OmniShare-v${VERSION}-macos-${arch}.zip" >/dev/null
+    # The Linux packager must never create an unsealed macOS application.
+    # Actual macOS ZIPs are sealed and launched by the native macOS CI jobs.
+    test ! -e "$release/packages/OmniShare-v${VERSION}-macos-${arch}.zip"
   done
 
   mkdir -p "$tmp/linux"; tar -xzf "$release/packages/OmniShare-v${VERSION}-linux-amd64.tar.gz" -C "$tmp/linux"
