@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Portable regression tests; no GitHub token or live download is required."""
 
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 import hashlib
 import http.client
 import importlib.util
@@ -68,6 +68,14 @@ class PreparationTests(unittest.TestCase):
         self.write_json(self.root / "desktop/node_modules/@tauri-apps/cli/package.json",
                         {"name": "@tauri-apps/cli", "version": installed})
         self.write_json(self.root / "desktop/src-tauri/tauri.conf.json", {"bundle": {"useLocalToolsDir": use_local}})
+
+    @contextmanager
+    def fixture_tools(self):
+        assets = tuple(prepare.Asset(asset.name, asset.url, len(PAYLOAD), hashlib.sha256(PAYLOAD).hexdigest())
+                       for asset in prepare.ASSETS)
+        with patch.object(prepare, "ASSETS", assets), patch.object(prepare.platform, "system", return_value="Linux"), \
+                patch.object(prepare.platform, "machine", return_value="x86_64"):
+            yield assets
 
     def test_project_requires_declared_and_installed_exact_cli_version(self):
         with patch.object(prepare.platform, "system", return_value="Linux"), patch.object(prepare.platform, "machine", return_value="x86_64"):
@@ -295,15 +303,111 @@ class PreparationTests(unittest.TestCase):
             prepare.prepare_asset(ASSET, self.cache, Opener([PAYLOAD]), attempts=1)
         self.assertEqual(list(self.cache.iterdir()), [])
 
-    def test_three_pinned_assets_are_prepared_using_expected_tauri_cache_names(self):
-        self.assertEqual([asset.name for asset in prepare.ASSETS], ["AppRun-x86_64", "linuxdeploy-07333c6-x86_64.AppImage", "linuxdeploy-plugin-appimage.AppImage"])
+    def test_four_pinned_assets_are_prepared_using_expected_tauri_cache_names(self):
+        self.assertEqual([asset.name for asset in prepare.ASSETS], ["AppRun-x86_64", "linuxdeploy-07333c6-x86_64.AppImage",
+                                                                   "linuxdeploy-plugin-appimage.AppImage", "runtime-x86_64"])
+        self.assertEqual(prepare.ASSETS[-1], prepare.Asset("runtime-x86_64",
+            "https://api.github.com/repos/AppImage/type2-runtime/releases/assets/657374641", 944632,
+            "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46"))
+        runtime = self.cache / "tauri/runtime-x86_64"
+        runtime.parent.mkdir()
+        runtime.write_bytes(PAYLOAD)
         out = io.StringIO()
         with patch.object(prepare.platform, "system", return_value="Linux"), patch.object(prepare.platform, "machine", return_value="x86_64"), \
                 patch.object(prepare, "prepare_asset", return_value="verified cache") as fetch, redirect_stdout(out):
-            prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(self.cache)}, Opener([]))
+            result = prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(self.cache)}, Opener([]))
         self.assertEqual([call.args[0] for call in fetch.call_args_list], list(prepare.ASSETS))
         self.assertTrue(all(call.args[1] == self.cache / "tauri" for call in fetch.call_args_list))
+        self.assertEqual(result, runtime.resolve())
         self.assertIn("Tauri CLI 2.12.4", out.getvalue())
+
+    def test_verified_runtime_absolute_path_is_returned_and_appended_to_github_output(self):
+        output = self.root / "step output.txt"
+        cache = self.root / "cache with spaces"
+        output.write_text("previous=value\n", encoding="utf-8")
+        out = io.StringIO()
+        with self.fixture_tools() as assets, redirect_stdout(out):
+            opener = Opener([PAYLOAD] * len(assets))
+            result = prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(cache), "GITHUB_OUTPUT": str(output)}, opener)
+            self.assertEqual(len(opener.requests), len(assets))
+            self.assertTrue(prepare.matches_asset(result, assets[-1]))
+        self.assertIsInstance(result, Path)
+        self.assertTrue(result.is_absolute())
+        self.assertEqual(result, (cache / "tauri/runtime-x86_64").resolve())
+        self.assertFalse(result.is_symlink())
+        self.assertEqual(output.read_text(encoding="utf-8"), "previous=value\nruntime_path=" + str(result) + "\n")
+        self.assertIn(str(result), out.getvalue())
+
+    def test_default_environment_supplies_github_output_but_explicit_environment_does_not_inherit_it(self):
+        output = self.root / "ambient-output"
+        env = {"XDG_CACHE_HOME": str(self.cache), "GITHUB_OUTPUT": str(output)}
+        with self.fixture_tools() as assets, patch.dict(os.environ, env), redirect_stdout(io.StringIO()):
+            result = prepare.prepare_tools(self.root, opener=Opener([PAYLOAD] * len(assets)))
+            expected = "runtime_path=" + str(result) + "\n"
+            self.assertEqual(output.read_text(encoding="utf-8"), expected)
+            self.assertEqual(prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(self.cache)}, Opener([])), result)
+        self.assertEqual(output.read_text(encoding="utf-8"), expected)
+
+    def test_any_asset_failure_preserves_output_and_never_prints_runtime_path(self):
+        for failed_index in range(len(prepare.ASSETS)):
+            with self.subTest(failed_index=failed_index):
+                cache = self.root / ("failed-cache-" + str(failed_index))
+                output = self.root / ("failed-output-" + str(failed_index))
+                output.write_text("previous=value\n", encoding="utf-8")
+                out = io.StringIO()
+                failure = urllib.error.HTTPError(ASSET.url, 403, "Forbidden", {}, io.BytesIO(b"{}"))
+                with self.fixture_tools(), redirect_stdout(out), self.assertRaises(prepare.PreparationError):
+                    prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(cache), "GITHUB_OUTPUT": str(output)},
+                                          Opener([PAYLOAD] * failed_index + [failure]))
+                self.assertEqual(output.read_text(encoding="utf-8"), "previous=value\n")
+                self.assertNotIn(str(cache / "tauri/runtime-x86_64"), out.getvalue())
+                self.assertNotIn("runtime_path=", out.getvalue())
+
+    def test_runtime_checksum_failure_never_publishes_a_path(self):
+        output = self.root / "uncreated-output"
+        out = io.StringIO()
+        with self.fixture_tools() as assets, redirect_stdout(out), \
+                self.assertRaisesRegex(prepare.PreparationError, "SHA256"):
+            # Exercise the real digest failure with one attempt and no delay.
+            original = prepare.prepare_asset
+            with patch.object(prepare, "prepare_asset", side_effect=lambda asset, cache, opener: original(asset, cache, opener, attempts=1)):
+                prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(self.cache), "GITHUB_OUTPUT": str(output)},
+                                      Opener([PAYLOAD] * (len(assets) - 1) + [b"x" * len(PAYLOAD)]))
+        self.assertFalse(output.exists())
+        self.assertFalse((self.cache / "tauri/runtime-x86_64").exists())
+        self.assertNotIn(str(self.cache / "tauri/runtime-x86_64"), out.getvalue())
+
+    def test_runtime_paths_with_cr_or_lf_are_rejected_without_output_injection(self):
+        for character in ("\r", "\n"):
+            with self.subTest(character=repr(character)):
+                cache = self.root / ("unsafe" + character + "injected=value")
+                output = self.root / "newline-output"
+                out = io.StringIO()
+                with self.fixture_tools() as assets, redirect_stdout(out), self.assertRaisesRegex(prepare.PreparationError, "newline"):
+                    prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(cache), "GITHUB_OUTPUT": str(output)},
+                                          Opener([PAYLOAD] * len(assets)))
+                self.assertFalse(output.exists())
+                self.assertNotIn("injected=value", out.getvalue())
+
+    def test_runtime_must_remain_an_actual_regular_file_before_output(self):
+        for kind in ("missing", "directory", "symlink"):
+            with self.subTest(kind=kind):
+                cache = self.root / ("runtime-" + kind)
+                runtime = cache / "tauri/runtime-x86_64"
+                runtime.parent.mkdir(parents=True)
+                if kind == "directory":
+                    runtime.mkdir()
+                elif kind == "symlink":
+                    target = self.root / "symlink-target"
+                    target.write_bytes(PAYLOAD)
+                    runtime.symlink_to(target)
+                output = self.root / ("invalid-output-" + kind)
+                out = io.StringIO()
+                with self.fixture_tools(), patch.object(prepare, "prepare_asset", return_value="verified cache"), \
+                        redirect_stdout(out), self.assertRaisesRegex(prepare.PreparationError, "regular file"):
+                    prepare.prepare_tools(self.root, {"XDG_CACHE_HOME": str(cache), "GITHUB_OUTPUT": str(output)}, Opener([]))
+                self.assertFalse(output.exists())
+                self.assertNotIn(str(runtime), out.getvalue())
 
 
 if __name__ == "__main__":

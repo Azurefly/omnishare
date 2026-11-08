@@ -403,6 +403,7 @@ jobs:
         run: npm ci
 
       - name: Prepare verified Linux AppImage tools
+        id: linux-tools
         if: runner.os == 'Linux'
         env:
           OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
@@ -447,7 +448,14 @@ jobs:
       - name: Build Tauri bundle
         if: runner.os == 'Linux'
         working-directory: desktop
-        run: npm run build -- --verbose
+        shell: bash
+        env:
+          LDAI_RUNTIME_FILE: ${{ steps.linux-tools.outputs.runtime_path }}
+        run: |
+          test -n "$LDAI_RUNTIME_FILE"
+          [[ "$LDAI_RUNTIME_FILE" = /* ]]
+          test -f "$LDAI_RUNTIME_FILE"
+          npm run build -- --verbose
 
       - name: Build Tauri bundle (Windows)
         if: runner.os == 'Windows'

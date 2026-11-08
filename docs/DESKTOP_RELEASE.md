@@ -168,7 +168,9 @@ The GitHub Actions run must include SHA-256 evidence and platform test-evidence 
 
 ### Pinned desktop packaging tools
 
-Desktop CI uses `@tauri-apps/cli` 2.12.4 and the committed npm lockfile. Before Linux AppImage packaging, `scripts/prepare-linux-appimage-tools.py` downloads AppRun, linuxdeploy and the AppImage plugin from their official GitHub Release Asset APIs. Each asset is pinned by asset ID, byte count and SHA-256; only verified bytes are atomically moved into the exact cache filenames expected by that CLI. GTK and GStreamer helper scripts remain embedded in the pinned CLI.
+Desktop CI uses `@tauri-apps/cli` 2.12.4 and the committed npm lockfile. Before Linux AppImage packaging, `scripts/prepare-linux-appimage-tools.py` downloads AppRun, linuxdeploy, the AppImage plugin and its AppImage runtime from their official GitHub Release Asset APIs. Each asset is pinned by asset ID, byte count and SHA-256; only verified bytes are atomically moved into the tool cache. GTK and GStreamer helper scripts remain embedded in the pinned CLI.
+
+The Linux preparation step exposes the verified runtime's absolute path as `runtime_path`. CI passes it through `LDAI_RUNTIME_FILE`, and fails before the build if it is empty, relative or missing. The plugin forwards this local file to `appimagetool --runtime-file`, so final AppImage packaging does not download a runtime from the moving `continuous` release. Local maintainers should set `LDAI_RUNTIME_FILE` to the absolute runtime path printed by preparation before invoking the desktop build.
 
 The default cache is `${XDG_CACHE_HOME:-$HOME/.cache}/tauri`. The preparation step rejects unsupported CLI versions or a different local-tools-directory configuration. Tauri deliberately changes three bytes of the cached linuxdeploy before execution; a later preparation run therefore replaces a changed cache entry with a freshly verified original. Upgrading the CLI requires checking its tool versions and cache layout and updating this pinned list together. The existing build, runtime and release checks still run after preparation.
 

@@ -4,6 +4,7 @@
 Cache names follow tauri-cli 2.12.4, commit
 993038c49185307dfc895ab7657d77ca0d5ed7c7 (tauri-bundler's linux/appimage).
 GTK/GStreamer scripts are embedded in that CLI and need no network download.
+The output plugin receives the verified type2 runtime through LDAI_RUNTIME_FILE.
 """
 
 import argparse
@@ -30,7 +31,7 @@ CLI_VERSION = "2.12.4"
 
 
 # Immutable release asset IDs, sizes and GitHub-published digests. In particular,
-# never follow the AppImage plugin's moving "continuous" release tag.
+# never follow the plugin or type2 runtime's moving "continuous" release tag.
 ASSETS = (
     Asset("AppRun-x86_64",
           "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/274691722",
@@ -41,6 +42,9 @@ ASSETS = (
     Asset("linuxdeploy-plugin-appimage.AppImage",
           "https://api.github.com/repos/linuxdeploy/linuxdeploy-plugin-appimage/releases/assets/602435573",
           16488952, "49d6a17160675a6bd1781699aae6bdf7692d98552e02a3671d2183d10547842e"),
+    Asset("runtime-x86_64",
+          "https://api.github.com/repos/AppImage/type2-runtime/releases/assets/657374641",
+          944632, "617aa77314d57c8b8e4fae9c3f0b35af7b30d5529cb69e98f64f92510ed98a46"),
 )
 
 
@@ -80,13 +84,29 @@ def cache_directory(env=None):
 
 def prepare_tools(root=ROOT, env=None, opener=None):
     validate_project(root)
+    env = os.environ if env is None else env
     cache = cache_directory(env)
     cache.mkdir(parents=True, exist_ok=True)
     opener = opener or urllib.request.build_opener(OfficialRedirects())
     for asset in ASSETS:
         result = prepare_asset(asset, cache, opener)
         print(asset.name + ": " + result)
+    runtime = cache / "runtime-x86_64"
+    if runtime.is_symlink() or not runtime.is_file():
+        raise PreparationError("Verified AppImage runtime must be a regular file, not a symbolic link.")
+    # appimagetool can change its working directory; pass a canonical absolute
+    # path rather than relying on its inherited working directory.
+    runtime = runtime.resolve(strict=True)
+    runtime_path = str(runtime)
+    if "\r" in runtime_path or "\n" in runtime_path:
+        raise PreparationError("AppImage runtime path cannot contain newlines.")
+    output = env.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a", encoding="utf-8") as handle:
+            handle.write("runtime_path=" + runtime_path + "\n")
     print("AppImage tools verified for Tauri CLI " + CLI_VERSION + ".")
+    print("AppImage runtime path: " + runtime_path)
+    return runtime
 
 
 def main(argv=None):
