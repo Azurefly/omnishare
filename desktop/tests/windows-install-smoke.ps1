@@ -47,7 +47,11 @@ function Get-OmniShareRegistrations {
         if (-not (Test-Path -LiteralPath $root)) { continue }
         foreach ($key in Get-ChildItem -LiteralPath $root) {
             $item = Get-ItemProperty -LiteralPath $key.PSPath
-            if ($item.PSObject.Properties.Name -contains 'DisplayName' -and $item.DisplayName -eq 'OmniShare') {
+            if ($null -eq $item) { continue }
+            # StrictMode rejects collection-wide .Name access on some registry
+            # value objects; index the optional property instead.
+            $displayName = $item.PSObject.Properties['DisplayName']
+            if ($null -ne $displayName -and [string]$displayName.Value -ceq 'OmniShare') {
                 [pscustomobject]@{ key = $key.PSPath; name = $key.PSChildName; user = $root.StartsWith('HKCU:'); values = $item }
             }
         }
