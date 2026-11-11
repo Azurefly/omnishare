@@ -20,11 +20,12 @@ $env:no_proxy = "127.0.0.1,localhost"
 $env:OMNISHARE_DESKTOP_LOG_DIR = $resolvedEvidence
 
 try {
-    & "$PSScriptRoot/windows-runtime-smoke.ps1" `
-        -BundleRoot $BundleRoot `
-        -EvidenceRoot $resolvedEvidence
+    & "$PSScriptRoot/windows-test-support.test.ps1"
+    & node --test "$PSScriptRoot/windows-webview-probe.test.mjs"
+    if ($LASTEXITCODE -ne 0) { throw 'Windows WebView driver behavior tests failed.' }
 
-    & "$PSScriptRoot/windows-watchdog-recovery-smoke.ps1" `
+    & "$PSScriptRoot/windows-install-smoke.ps1" `
+        -BundleRoot $BundleRoot `
         -EvidenceRoot $resolvedEvidence
 }
 finally {

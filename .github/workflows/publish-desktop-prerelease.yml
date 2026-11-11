@@ -20,8 +20,13 @@ on:
       - 'scripts/prepare-windows-bundle-tools.py'
       - 'scripts/prepare_windows_bundle_tools_test.py'
       - 'scripts/release_tool_downloads.py'
-      - 'desktop/package.json'
-      - 'desktop/package-lock.json'
+      - 'desktop/**'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'scripts/test-installed-features.py'
+      - 'scripts/verify-installation-evidence.cjs'
+      - 'scripts/installation-evidence.test.cjs'
+      - 'packaging/linux/**'
       - 'scripts/macos_signing_test.py'
       - 'scripts/macos_release_test.py'
       - 'scripts/verify-macos-evidence.cjs'
@@ -135,6 +140,12 @@ jobs:
           python3 scripts/prepare_linux_appimage_tools_test.py
           python3 scripts/prepare_windows_bundle_tools_test.py
 
+      - name: Test installation evidence and native GUI helpers
+        run: |
+          node --test scripts/installation-evidence.test.cjs desktop/tests/windows-webview-probe.test.mjs
+          python3 desktop/tests/linux_installed_smoke_test.py
+          python3 desktop/tests/linux_installer_test.py
+
       - name: Test macOS signing and acceptance guards
         run: |
           python3 scripts/macos_signing_test.py
@@ -227,6 +238,9 @@ jobs:
         with:
           name: unsigned-macos-binaries
           path: macos-binaries
+
+      - name: Typecheck the native macOS application entry
+        run: xcrun swiftc -typecheck packaging/macos/Launcher.swift
 
       - name: Package rehearsal applications without signing credentials
         if: needs.release-metadata.outputs.macos_mode == 'rehearsal'
@@ -332,7 +346,7 @@ jobs:
           - name: Windows
             os: windows-latest
           - name: Linux
-            os: ubuntu-latest
+            os: ubuntu-22.04
 
     env:
       EVIDENCE_DIR: desktop-test-evidence/${{ matrix.name }}
@@ -340,6 +354,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate native Windows installation helpers before building
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/tests/windows-test-support.test.ps1
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -462,7 +481,15 @@ jobs:
         working-directory: desktop
         run: npm run build
 
-      - name: Windows installed-layout runtime test
+      - name: Verify embedded Microsoft WebView2 offline installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-webview-runtime-evidence.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Windows actual installation and usability tests
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -502,6 +529,7 @@ jobs:
           Copy-Item "$env:EVIDENCE_DIR/windows-runtime-smoke.junit.xml" release-assets/omnishare-windows-runtime.junit.xml -Force
           Copy-Item "$env:EVIDENCE_DIR/windows-watchdog-recovery.junit.xml" release-assets/omnishare-windows-watchdog.junit.xml -Force
           Copy-Item "$env:EVIDENCE_DIR/windows-watchdog-recovery.json" release-assets/omnishare-windows-watchdog.json -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-install-smoke.json" release-assets/omnishare-windows-installation.json -Force
 
       - name: Stage Linux release files
         if: runner.os == 'Linux'
@@ -528,6 +556,73 @@ jobs:
           path: ${{ env.EVIDENCE_DIR }}/**
           if-no-files-found: warn
 
+  verify-ubuntu:
+    name: Install and use Ubuntu ${{ matrix.version }} packages
+    needs:
+      - release-metadata
+      - build-and-test
+    runs-on: ubuntu-${{ matrix.version }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['22.04', '24.04']
+    steps:
+      - name: Checkout installation verification code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download this run's Ubuntu 22.04 baseline packages
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-Linux
+          path: linux-candidates
+
+      - name: Install native GUI acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus-x11 xdotool at-spi2-core libatk-adaptor \
+            python3-pyatspi python3-gi scrot desktop-file-utils binutils fonts-noto-cjk
+
+      - name: Install DEB and run AppImage with real WebKit and persistent data
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t debs < <(find linux-candidates -type f -name 'OmniShare_*.deb')
+          mapfile -t images < <(find linux-candidates -type f -name 'OmniShare_*.AppImage')
+          test "${#debs[@]}" -eq 1
+          test "${#images[@]}" -eq 1
+          xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- \
+            /usr/bin/python3 desktop/tests/linux-installed-smoke.py \
+              --deb "${debs[0]}" --appimage "${images[0]}" \
+              --version "$RELEASE_VERSION" --evidence ubuntu-install-evidence
+
+      - name: Stage verified Ubuntu installation report
+        env:
+          UBUNTU_VERSION: ${{ matrix.version }}
+        run: |
+          mkdir -p release-assets
+          cp ubuntu-install-evidence/linux-installed-smoke.json \
+            "release-assets/omnishare-ubuntu-${UBUNTU_VERSION}-installation.json"
+
+      - name: Upload verified Ubuntu installation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-Ubuntu-${{ matrix.version }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Upload Ubuntu GUI screenshots and feature evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ubuntu-installation-${{ matrix.version }}
+          path: ubuntu-install-evidence/
+          if-no-files-found: warn
+
   verify-assets:
     name: Verify combined server and desktop assets
     needs:
@@ -535,6 +630,7 @@ jobs:
       - build-server
       - verify-macos
       - build-and-test
+      - verify-ubuntu
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -631,12 +727,6 @@ jobs:
             });
             for (const [name, hash] of records) expectedHashes.set(name, hash);
           }
-          // Re-running verification is safe, but stale or unapproved checksum
-          // records must never be silently replaced by a newly computed hash.
-          for (const [name, hash] of serverHashes) {
-            if (expectedHashes.get(name) !== hash) throw new Error(`Unexpected or incorrect checksum record: ${name}`);
-          }
-
           const windows = [
             ...requireMatches('Windows MSI', /^OmniShare_.+_x64_en-US\.msi$/),
             ...requireMatches('Windows NSIS installer', /^OmniShare_.+_x64-setup\.exe$/)
@@ -652,6 +742,10 @@ jobs:
           );
           const linuxHashes = parseHashes('omnishare-linux-sha256.txt');
           linux.forEach(name => verifyHash(name, linuxHashes));
+          const { verifyInstallationEvidence } = require('./scripts/verify-installation-evidence.cjs');
+          for (const [name, hash] of verifyInstallationEvidence({ root, version })) {
+            expectedHashes.set(name, hash);
+          }
 
           for (const name of ['omnishare-windows-runtime.junit.xml', 'omnishare-windows-watchdog.junit.xml']) {
             const report = text(name);
@@ -667,7 +761,21 @@ jobs:
           if (names.some(name => /\.dmg$/i.test(name) && !expectedDmgs.has(name))) {
             throw new Error('Unexpected macOS installer outside the native verification gate');
           }
-          if (names.length !== 26) throw new Error(`Expected exactly 26 publication files, found ${names.length}`);
+          if (names.length !== 29) throw new Error(`Expected exactly 29 publication files, found ${names.length}`);
+          // Include every public file, including desktop installers and their
+          // native installation reports, in the final portable checksum list.
+          for (const name of names) {
+            if (name === 'SHA256SUMS.txt') continue;
+            requireFile(name);
+            const actual = crypto.createHash('sha256').update(read(name)).digest('hex');
+            if (expectedHashes.has(name) && expectedHashes.get(name) !== actual) throw new Error(`Verified file changed: ${name}`);
+            expectedHashes.set(name, actual);
+          }
+          // A rerun must preserve every previously validated digest; never
+          // replace stale or unapproved records with newly computed hashes.
+          for (const [name, hash] of serverHashes) {
+            if (expectedHashes.get(name) !== hash) throw new Error(`Unexpected or incorrect checksum record: ${name}`);
+          }
           // Write only after every platform has passed. A failed second Mac
           // architecture must leave the original server checksum list intact.
           const checksumFile = path.join(root, 'SHA256SUMS.txt');
@@ -715,6 +823,8 @@ jobs:
             root: 'release-assets', version: process.env.RELEASE_VERSION, arch,
             mode: 'release', expectedTeam: process.env.EXPECTED_TEAM_ID
           });
+          const { verifyInstallationEvidence } = require('./scripts/verify-installation-evidence.cjs');
+          verifyInstallationEvidence({ root: 'release-assets', version: process.env.RELEASE_VERSION });
           NODE
 
       - name: Verify existing tag target

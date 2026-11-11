@@ -108,10 +108,20 @@ function writeManifest(root, overrides = {}, candidate = version) {
 }
 
 const digest = value => createHash('sha256').update(value).digest('hex');
+const featureChecks = {
+  exercise: ['health_and_embedded_ui', 'first_run_authentication', 'notes_and_trash',
+    'documents_and_conflicts', 'file_upload_download_and_range', 'share_access_and_revocation', 'encrypted_backup_restore'],
+  verify: ['health_and_embedded_ui', 'configuration_persistence', 'note_and_counter_persistence',
+    'file_persistence', 'document_persistence']
+};
+const featureEvidence = candidate => Object.fromEntries(Object.entries(featureChecks).map(([phase, checks]) =>
+  [phase, { schema_version: 1, version: candidate, phase, success: true, scope: 'installed-backend-http-features',
+    checks: Object.fromEntries(checks.map(check => [check, true])) }]));
 
 function writeAssets(root, candidate = version, mode = 'release') {
   mkdirSync(join(root, 'scripts'), { recursive: true });
   cpSync(join(repo, 'scripts/verify-macos-evidence.cjs'), join(root, 'scripts/verify-macos-evidence.cjs'));
+  cpSync(join(repo, 'scripts/verify-installation-evidence.cjs'), join(root, 'scripts/verify-installation-evidence.cjs'));
   const assets = join(root, 'release-assets');
   mkdirSync(assets);
   const put = (name, content = `fixture ${name}\n`) => writeFileSync(join(assets, name), content);
@@ -154,7 +164,7 @@ function writeAssets(root, candidate = version, mode = 'release') {
         simulation: 'explicit-quarantine-on-isolated-copies', policy_enabled: true,
         zip_app: assessment(true), dmg: assessment(false), dmg_app: assessment(true) },
       runtime: Object.fromEntries(['zip', 'dmg'].map(kind => [kind, { launch_method: 'open -n -W',
-        loopback_only: true, browser_suppressed: true, quarantined: false }]))
+        loopback_only: true, browser_suppressed: true, quarantined: false, features: featureEvidence(candidate) }]))
     }));
   }
   put('omnishare-windows-sha256.json', '\uFEFF' + JSON.stringify(windows.map(name => ({
@@ -168,6 +178,40 @@ function writeAssets(root, candidate = version, mode = 'release') {
     put(name, '\uFEFF<testsuite tests="2" failures="0"><testcase name="passed"/></testsuite>\n');
   }
   put('omnishare-windows-watchdog.json', '\uFEFF' + JSON.stringify({ success: true }));
+  const windowsChecks = ['actual_installation', 'registration_and_shortcut', 'first_run_gui',
+    'native_window_visible', 'data_directory', 'core_exercise', 'owned_backend_exited',
+    'restart_gui_and_persistence', 'second_normal_exit', 'uninstalled', 'business_data_preserved'];
+  put('omnishare-windows-installation.json', JSON.stringify({
+    schema_version: 1, version: candidate, platform: 'windows', success: true,
+    gui_method: 'visible native HWND + actual WebView2 CDP', quit_method: 'native Ctrl+Q accelerator',
+    cold_runtime_install_verified: false, offline_runtime_install_verified: false, non_admin_install_verified: false,
+    webview_runtime: {
+      schema_version: 1, success: true, mode: 'offlineInstaller', tauri_cli: '2.12.4',
+      cold_install_verified: false, offline_install_verified: false,
+      artifacts: windows.map((name, index) => ({kind: index === 0 ? 'msi' : 'nsis', name,
+        size: readFileSync(join(assets, name)).length, sha256: digest(readFileSync(join(assets, name)))})),
+      runtimes: ['msi', 'nsis'].map(kind => ({kind, sha256: '9'.repeat(64), size: 100 * 1024 * 1024,
+        product_version: '157.0.0.0', signature_status: 'Valid', publisher: 'Microsoft Corporation'}))
+    },
+    installers: windows.map((name, index) => ({kind: index === 0 ? 'msi' : 'nsis', success: true,
+      asset: {name, size: readFileSync(join(assets, name)).length, sha256: digest(readFileSync(join(assets, name)))},
+      checks: Object.fromEntries([...windowsChecks, ...(index === 0 ? ['attach_conflict_watchdog'] : [])].map(check => [check, true])),
+      features: featureEvidence(candidate)
+    }))
+  }));
+  for (const ubuntu of ['22.04', '24.04']) {
+    const appChecks = ['first_run_webkit', 'webkit_rendered', 'bundled_backend', 'core_features',
+      'core_content_in_webkit', 'normal_quit', 'restart_persistence'];
+    const app = () => ({checks: Object.fromEntries(appChecks.map(check => [check, true])), features: featureEvidence(candidate)});
+    put(`omnishare-ubuntu-${ubuntu}-installation.json`, JSON.stringify({
+      schema_version: 1, version: candidate, success: true, platform: {id: 'ubuntu', version: ubuntu},
+      normal_user: true, appimage_scope: 'extract-and-run', fuse_mount_tested: false,
+      artifacts: Object.fromEntries([['deb', linux[1]], ['appimage', linux[0]]].map(([kind, name]) =>
+        [kind, {name, sha256: digest(readFileSync(join(assets, name)))}])),
+      checks: Object.fromEntries(['apt_installed', 'glibc_baseline', 'desktop_entry_valid', 'apt_uninstalled',
+        'uninstall_preserves_data'].map(check => [check, true])), deb: app(), appimage: app()
+    }));
+  }
   const mutateMacEvidence = (arch, mutate) => {
     const name = `omnishare-macos-${arch}-verification.json`;
     const evidence = JSON.parse(readFileSync(join(assets, name), 'utf8'));
@@ -224,16 +268,16 @@ test('manifest rejects missing release notes', () => fixture(root => {
 }));
 
 for (const candidate of [stableVersion, version]) {
-  test(`${candidate} verifies 26 assets and adds native macOS archives and evidence to the final checksums`, () => fixture(root => {
+  test(`${candidate} verifies 29 assets and binds all installers and native evidence to final checksums`, () => fixture(root => {
     const { assets, server, docs, macos, macDmgs, macEvidence } = writeAssets(root, candidate);
-    assert.equal(readdirSync(assets).length, 26);
+    assert.equal(readdirSync(assets).length, 29);
     const checksums = () => readFileSync(join(assets, 'SHA256SUMS.txt'), 'utf8');
     assert.equal(checksums().trim().split('\n').length, 9);
     assert.ok(macos.every(name => !checksums().includes(name)), 'Linux staging must not certify macOS archives');
     expectSuccess(execute(assetsScript, root, { RELEASE_VERSION: candidate }));
     const names = checksums().trim().split('\n').map(line => line.slice(66));
-    assert.deepEqual(names.sort(), [...server, ...docs, ...macos, ...macDmgs, ...macEvidence].sort());
-    assert.equal(new Set(names).size, 15, 'final checksum entries must not be duplicated');
+    assert.deepEqual(names.sort(), readdirSync(assets).filter(name => name !== 'SHA256SUMS.txt').sort());
+    assert.equal(new Set(names).size, 28, 'final checksum entries must not be duplicated');
     expectSuccess(spawnSync('sha256sum', ['-c', 'SHA256SUMS.txt'], { cwd: assets, encoding: 'utf8' }));
     const verified = checksums();
     expectSuccess(execute(assetsScript, root, { RELEASE_VERSION: candidate }));
@@ -391,7 +435,7 @@ for (const name of ['omnishare-darwin-arm64', `OmniShare-v${version}-macos-unver
 test('publication waits for every build and only runs on main push or dispatch', () => {
   const verify = jobSource('verify-assets');
   const publish = jobSource('publish');
-  assert.deepEqual(jobNeeds(verify).sort(), ['release-metadata', 'build-server', 'verify-macos', 'build-and-test'].sort());
+  assert.deepEqual(jobNeeds(verify).sort(), ['release-metadata', 'build-server', 'verify-macos', 'build-and-test', 'verify-ubuntu'].sort());
   assert.match(verify, /name: verified-prerelease-assets/);
   assert.match(publish, /needs:\s*\n\s*- release-metadata\s*\n\s*- verify-assets/);
   assert.match(publish, /name: Create GitHub release\s*\n\s*if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'\)/);
@@ -582,9 +626,9 @@ process.stdout.write(fs.readFileSync(process.env.MOCK_RELEASE_RESPONSE, 'utf8'))
 }
 
 for (const candidate of [stableVersion, version]) {
-  test(`${candidate} public verification checks release type and all 26 assets without internal Linux paths`, () => fixture(root => {
+  test(`${candidate} public verification checks release type and all 29 assets without internal Linux paths`, () => fixture(root => {
     const published = writePublishedRelease(root, candidate);
-    assert.equal(published.release.assets.length, 26);
+    assert.equal(published.release.assets.length, 29);
     expectSuccess(published.verify());
   }));
 }
@@ -753,7 +797,7 @@ test('credential readiness runs only trusted main and cannot publish', () => {
   for (const secret of ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD']) {
     assert.ok(credentialsJob.includes(`secrets.${secret}`));
   }
-  assert.match(readiness, /branch_ref=refs\/heads\/fix\/macos-notarized-distribution-20261108/);
+  assert.match(readiness, /branch_ref=refs\/heads\/fix\/cross-platform-install-20261111/);
   assert.match(readiness, /--force-with-lease="\$branch_ref:\$expected"/);
   assert.match(readiness, /git merge-base --is-ancestor "\$actual" "\$GITHUB_SHA"/);
 });

@@ -9,7 +9,9 @@ const COMMON_CHECKS = [
   'resource_tamper_rejected', 'launch_services', 'health_version', 'http_ui',
   'clean_shutdown', 'dmg_layout', 'dmg_mount_readonly', 'dmg_signature_valid',
   'dmg_app_matches_zip', 'dmg_copy_survives_detach', 'dmg_launch_services',
-  'dmg_health_version', 'dmg_http_ui', 'dmg_clean_shutdown'
+  'dmg_health_version', 'dmg_http_ui', 'dmg_clean_shutdown',
+  'core_features', 'restart_persistence', 'native_quit', 'native_reopen', 'port_conflict',
+  'dmg_core_features', 'dmg_restart_persistence', 'dmg_native_quit', 'dmg_native_reopen', 'dmg_port_conflict'
 ];
 const DISTRIBUTION_CHECKS = [
   'developer_id', 'hardened_runtime', 'secure_timestamp', 'app_staple_valid',
@@ -90,6 +92,18 @@ function verifyMacEvidence({ root, version, arch, mode, expectedTeam }) {
     requireValue(runtime?.launch_method === 'open -n -W' && runtime.loopback_only === true &&
       runtime.browser_suppressed === true && runtime.quarantined === false,
       `${kind} runtime validation scope is missing or misleading`);
+    const featureChecks = {
+      exercise: ['health_and_embedded_ui', 'first_run_authentication', 'notes_and_trash',
+        'documents_and_conflicts', 'file_upload_download_and_range', 'share_access_and_revocation', 'encrypted_backup_restore'],
+      verify: ['health_and_embedded_ui', 'configuration_persistence', 'note_and_counter_persistence',
+        'file_persistence', 'document_persistence']
+    };
+    for (const [phase, checks] of Object.entries(featureChecks)) {
+      const feature = runtime.features?.[phase];
+      requireValue(feature?.schema_version === 1 && feature.success === true && feature.phase === phase &&
+        feature.version === version && checks.every(check => feature.checks?.[check] === true),
+        `${kind} installed ${phase} feature checks are missing or unsuccessful`);
+    }
   }
   records.push([reportName, digest(reportBytes)]);
   return records;

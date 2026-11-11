@@ -9,6 +9,7 @@ copies and never acknowledge or bypass a security warning.
 import argparse
 from contextlib import contextmanager
 import ctypes
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -21,6 +22,7 @@ import shutil
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,10 @@ CHECKS = (
     "dmg_staple_valid", "quarantine_policy",
 )
 PRODUCTION_CHECKS = CHECKS[-6:]
+CHECKS = CHECKS[:-6] + (
+    "core_features", "restart_persistence", "native_quit", "native_reopen", "port_conflict",
+    "dmg_core_features", "dmg_restart_persistence", "dmg_native_quit", "dmg_native_reopen", "dmg_port_conflict",
+) + PRODUCTION_CHECKS
 QUARANTINE_ATTRIBUTE = "com.apple.quarantine"
 
 
@@ -212,6 +218,7 @@ def check_archive(path):
     required = {
         "OmniShare.app/Contents/Info.plist",
         "OmniShare.app/Contents/MacOS/OmniShare",
+        "OmniShare.app/Contents/MacOS/omnishare-server",
         "OmniShare.app/Contents/Resources/README.txt",
         "OmniShare.app/Contents/_CodeSignature/CodeResources",
     }
@@ -274,6 +281,12 @@ def verify_bundle(app, arch, version, mode, team_id):
     machine = {"amd64": "x86_64", "arm64": "arm64"}[arch]
     require(tool(["/usr/bin/lipo", "-archs", binary]).stdout.strip() == machine,
             "Extracted binary has the wrong architecture")
+    backend = binary.with_name("omnishare-server")
+    require(backend.is_file() and backend.stat().st_mode & stat.S_IXUSR,
+            "Embedded backend is missing or not executable")
+    require(tool(["/usr/bin/lipo", "-archs", backend]).stdout.strip() == machine,
+            "Embedded backend has the wrong architecture")
+    verify_signature(backend, mode, team_id, executable=True)
     return verify_signature(app, mode, team_id, executable=True)
 
 
@@ -412,23 +425,53 @@ def policy_accepted(result, *, app):
     return accepted
 
 
+def parse_process_arguments(raw):
+    """Read only argc arguments from Darwin KERN_PROCARGS2, never environment."""
+    require(len(raw) >= 4, "Truncated native process argument header")
+    count = struct.unpack_from("=i", raw)[0]
+    require(1 <= count <= 256, "Invalid native process argument count")
+    end = raw.find(b"\0", 4)
+    require(end >= 4, "Missing native process executable path")
+    offset = end + 1
+    while offset < len(raw) and raw[offset] == 0:
+        offset += 1
+    arguments = []
+    for _ in range(count):
+        end = raw.find(b"\0", offset)
+        require(end >= offset, "Truncated native process arguments")
+        arguments.append(os.fsdecode(raw[offset:end]))
+        offset = end + 1
+    return arguments
+
+
 class ScopedLaunch:
-    """Identify the LaunchServices child by its private lock, path and arguments."""
+    """Bind the native app and its backend to this private installed copy."""
 
     def __init__(self, app, data, port):
         self.app = app.resolve()
-        self.binary = self.app / "Contents/MacOS/OmniShare"
+        self.app_binary = self.app / "Contents/MacOS/OmniShare"
+        self.binary = self.app / "Contents/MacOS/omnishare-server"
         self.data = data.resolve()
         self.port = port
-        self.args = ["--data-dir", str(self.data), "--listen", "127.0.0.1",
-                     "--port", str(port), "--no-browser"]
+        self.args = ["--data-dir", str(self.data), "--listen", "127.0.0.1", "--no-browser"]
+        if port is not None:
+            self.args += ["--port", str(port)]
         self.pid = None
         self.started = None
+        self.app_pid = None
+        self.app_started = None
+        self.previous_pid = None
         self.launcher = None
+        self.launch_requested = False
         self.stopped = False
         self.libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
         self.libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
         self.libproc.proc_pidpath.restype = ctypes.c_int
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.libc.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint,
+                                    ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+                                    ctypes.c_void_p, ctypes.c_size_t]
+        self.libc.sysctl.restype = ctypes.c_int
 
     def lock_pid(self):
         try:
@@ -445,40 +488,123 @@ class ScopedLaunch:
         require(pid > 1 and pid != os.getpid(), "Invalid isolated instance PID")
         return pid
 
-    def identity(self, pid):
+    def process_arguments(self, pid):
+        mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid
+        size = ctypes.c_size_t(0)
+        if self.libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
+            if ctypes.get_errno() in (errno.ESRCH, errno.EINVAL):
+                return None
+            raise VerificationError("Unable to size native process arguments")
+        require(4 < size.value <= 2 * 1024 * 1024, "Native process arguments exceed test limits")
+        buffer = ctypes.create_string_buffer(size.value)
+        if self.libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
+            if ctypes.get_errno() in (errno.ESRCH, errno.EINVAL):
+                return None
+            raise VerificationError("Unable to read native process arguments")
+        return parse_process_arguments(buffer.raw[:size.value])
+
+    def process_identity(self, pid, binary, started, arguments, parent=None):
         buffer = ctypes.create_string_buffer(4096)
         if self.libproc.proc_pidpath(pid, buffer, len(buffer)) <= 0:
             return None
-        require(Path(os.fsdecode(buffer.value)).resolve() == self.binary,
+        require(Path(os.fsdecode(buffer.value)).resolve() == binary,
                 "Refusing to operate on a process outside this extracted app")
         result = tool(
             ["/bin/ps", "-ww", "-p", str(pid), "-o", "uid=", "-o", "lstart=",
-             "-o", "command="], allow_failure=True,
+             "-o", "ppid="], allow_failure=True,
         )
         if result.returncode:
             return None
-        values = result.stdout.strip().split(maxsplit=6)
-        require(len(values) == 7 and int(values[0]) == os.getuid() and
-                values[6].endswith(" " + " ".join(self.args)),
+        values = result.stdout.strip().split()
+        require(len(values) == 7 and values[0].isdigit() and int(values[0]) == os.getuid(),
                 "Refusing a process with different ownership or startup arguments")
-        started = " ".join(values[1:6])
-        require(self.started is None or self.started == started,
+        require(parent is None or values[6] == str(parent),
+                "Backend is not owned by the native application")
+        actual_arguments = self.process_arguments(pid)
+        if actual_arguments is None:
+            return None
+        require(actual_arguments == [str(binary), *arguments],
+                "Refusing a process with different ownership or startup arguments")
+        actual_started = " ".join(values[1:6])
+        require(started is None or started == actual_started,
                 "Isolated instance PID was reused")
-        return started
+        return actual_started
+
+    def backend_arguments(self):
+        return [*self.args, "--data-dir", str(self.data), "--port", str(self.port),
+                "--no-browser", "--shutdown-on-stdin-close"]
+
+    def identity(self, pid, *, require_parent=False):
+        return self.process_identity(pid, self.binary, self.started, self.backend_arguments(),
+                                     self.app_pid if require_parent else None)
+
+    def app_identity(self, pid):
+        return self.process_identity(pid, self.app_binary, self.app_started,
+                                     self.args)
+
+    def application_pids(self):
+        # NSWorkspace supplies the running application's exact bundle URL.
+        # Process path/UID/arguments are independently checked before use.
+        script = ("ObjC.import('AppKit'); const apps=$.NSWorkspace.sharedWorkspace.runningApplications;"
+                  "const found=[]; for(let i=0;i<apps.count;i++){const a=apps.objectAtIndex(i);"
+                  "if(!a.bundleURL.isNil() && ObjC.unwrap(a.bundleURL.path)===" + json.dumps(str(self.app)) + ")"
+                  "found.push(Number(a.processIdentifier));} JSON.stringify(found);")
+        result = tool(["/usr/bin/osascript", "-l", "JavaScript", "-e", script])
+        candidates = json.loads(result.stdout)
+        require(isinstance(candidates, list) and all(type(pid) is int and pid > 1 for pid in candidates),
+                "Invalid native application PID")
+        return candidates
+
+    def find_application(self):
+        candidates = self.application_pids()
+        require(len(candidates) <= 1,
+                "Multiple native applications match this isolated bundle")
+        if candidates:
+            pid = candidates[0]
+            started = self.app_identity(pid)
+            if started:
+                self.app_pid, self.app_started = pid, started
+
+    def capture_backend(self):
+        """Capture a child only after its exact app parent has been identified."""
+        if self.app_pid is None:
+            return False
+        pid = self.lock_pid()
+        if pid is None or pid == self.previous_pid:
+            return False
+        if self.port is None:
+            arguments = self.process_arguments(pid)
+            if arguments is None:
+                return False
+            prefix = [str(self.binary), *self.args, "--data-dir", str(self.data), "--port"]
+            require(len(arguments) == len(prefix) + 3 and arguments[:len(prefix)] == prefix
+                    and arguments[-2:] == ["--no-browser", "--shutdown-on-stdin-close"]
+                    and re.fullmatch(r"[0-9]{1,5}", arguments[-3]),
+                    "Backend has unexpected startup arguments")
+            self.port = int(arguments[-3])
+            require(1 <= self.port <= 65535, "Native launcher selected an invalid port")
+        identity = self.identity(pid, require_parent=True)
+        if identity is None:
+            return False
+        self.pid, self.started = pid, identity
+        return True
 
     def start(self):
+        require(not self.application_pids(), "The isolated native application was already running")
+        self.previous_pid = self.lock_pid()
+        # A previous run's record cannot attest the exit of this new process.
+        (self.data / "desktop-shutdown.json").unlink(missing_ok=True)
         self.launcher = subprocess.Popen(
             ["/usr/bin/open", "-n", "-W", str(self.app), "--args", *self.args],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
+        self.launch_requested = True
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
-            pid = self.lock_pid()
-            if pid is not None:
-                identity = self.identity(pid)
-                if identity is not None:
-                    self.pid, self.started = pid, identity
-                    return
+            if self.app_pid is None:
+                self.find_application()
+            if self.capture_backend():
+                return
             require(self.launcher.poll() is None, "LaunchServices exited before app startup")
             time.sleep(0.2)
         raise VerificationError("LaunchServices did not start the isolated app within 45 seconds")
@@ -526,50 +652,110 @@ class ScopedLaunch:
                 b"/app.js" in body, "Root URL did not serve the embedded OmniShare UI")
         require(self.identity(self.pid), "App exited during HTTP verification")
 
+    def reopen(self):
+        require(self.app_identity(self.app_pid) and self.identity(self.pid),
+                "Native app is not running before reopen")
+        tool(["/usr/bin/open", str(self.app)])
+        time.sleep(0.7)
+        require(self.application_pids() == [self.app_pid]
+                and self.app_identity(self.app_pid) and self.identity(self.pid, require_parent=True)
+                and self.lock_pid() == self.pid, "Reopen created another backend or lost the running instance")
+
+    def force_cleanup(self):
+        """Failure-only cleanup; revalidate each independently owned process."""
+        forced = False
+        failure = None
+        if self.pid is None and self.app_pid is not None:
+            try:
+                self.capture_backend()
+            except (VerificationError, OSError) as error:
+                failure = error
+        for pid, identify in ((self.app_pid, self.app_identity), (self.pid, self.identity)):
+            if pid is None:
+                continue
+            try:
+                if identify(pid) is not None:
+                    os.kill(pid, signal.SIGKILL)
+                    forced = True
+                    deadline = time.monotonic() + 5
+                    while identify(pid) is not None and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    require(identify(pid) is None, "An isolated process survived failure cleanup")
+            except ProcessLookupError:
+                pass
+            except (VerificationError, OSError) as error:
+                # A mismatched/reused PID is never signaled. Still clean the
+                # other independently identified process before reporting it.
+                failure = failure or error
+        if failure is not None:
+            raise failure
+        return forced
+
     def stop(self):
         graceful = False
         try:
-            pid = self.pid or self.lock_pid()
-            if pid is not None:
-                identity = self.identity(pid)
-                if identity is not None:
-                    if self.started is None:
-                        self.started = identity
-                    os.kill(pid, signal.SIGTERM)
-                    deadline = time.monotonic() + 15
-                    while time.monotonic() < deadline and self.identity(pid) is not None:
-                        time.sleep(0.1)
-                    if self.identity(pid) is not None:
-                        # Revalidate before fallback cleanup; this can never
-                        # pass the clean_shutdown check.
-                        os.kill(pid, signal.SIGKILL)
-                        deadline = time.monotonic() + 5
-                        while time.monotonic() < deadline and self.identity(pid) is not None:
-                            time.sleep(0.1)
-                        require(self.identity(pid) is None, "Isolated test process did not exit")
-                    else:
-                        graceful = True
+            if self.app_pid is None and self.launch_requested:
+                self.find_application()
+            if self.pid is None and self.app_pid is not None:
+                self.capture_backend()
+            pid = self.pid
+            if self.app_pid is not None and self.app_identity(self.app_pid):
+                script = ("ObjC.import('AppKit'); const a=$.NSRunningApplication."
+                          f"runningApplicationWithProcessIdentifier({self.app_pid});"
+                          "if(a.isNil() || !a.terminate) throw new Error('Native quit was refused'); 'requested';")
+                tool(["/usr/bin/osascript", "-l", "JavaScript", "-e", script])
+                deadline = time.monotonic() + 22
+                while time.monotonic() < deadline:
+                    app_alive = self.app_identity(self.app_pid) is not None
+                    child_alive = pid is not None and self.identity(pid) is not None
+                    if not app_alive and not child_alive:
+                        break
+                    time.sleep(0.1)
+                if self.app_identity(self.app_pid) is None and pid is not None and self.identity(pid) is None:
+                    record_path = self.data / "desktop-shutdown.json"
+                    if record_path.is_file() and not record_path.is_symlink():
+                        record = json.loads(record_path.read_text())
+                        graceful = (type(record.get("backend_pid")) is int and record["backend_pid"] == pid
+                                    and type(record.get("exit_code")) is int and record["exit_code"] == 0
+                                    and record.get("normal") is True
+                                    and record.get("method") == "stdin-eof" and record.get("fallback_used") is False)
         finally:
-            # Even if a PID identity check fails, close only our own open
-            # subprocess. Never fall back to killing an app by name or port.
-            if self.launcher is not None:
-                try:
-                    self.launcher.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.launcher.terminate()
+            try:
+                if self.force_cleanup():
                     graceful = False
+            finally:
+                # This subprocess is the exact open process created above.
+                # Its cleanup must still happen if either identity check fails.
+                if self.launcher is not None:
                     try:
                         self.launcher.communicate(timeout=5)
                     except subprocess.TimeoutExpired:
-                        self.launcher.kill()
-                        self.launcher.communicate(timeout=5)
-                graceful = graceful and self.launcher.returncode == 0
-            self.stopped = True
+                        self.launcher.terminate()
+                        graceful = False
+                        try:
+                            self.launcher.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            self.launcher.kill()
+                            self.launcher.communicate(timeout=5)
+                    graceful = graceful and self.launcher.returncode == 0
+                self.stopped = True
         if graceful:
             with (self.data / ".omnishare.lock").open("rb") as stream:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 fcntl.flock(stream, fcntl.LOCK_UN)
         return graceful
+
+
+def run_features(launch, version, state, phase):
+    report_path = state.with_name(state.name + "." + phase + ".report.json")
+    result = tool([sys.executable, Path(__file__).with_name("test-installed-features.py"),
+                   "--base-url", f"http://127.0.0.1:{launch.port}", "--data-dir", launch.data,
+                   "--version", version, "--state", state, "--phase", phase,
+                   "--report", report_path], timeout=180)
+    report = json.loads(result.stdout)
+    require(report.get("success") is True and report.get("phase") == phase
+            and report.get("version") == version, "Installed feature verification failed")
+    return report
 
 
 def check_runtime(app, data, version, report, kind):
@@ -590,13 +776,43 @@ def check_runtime(app, data, version, report, kind):
         launch.check_http(version)
         report["checks"].update({prefix + "health_version": True, prefix + "http_ui": True})
         report.setdefault("runtime", {"quarantined": False, "policy_test_separate": True})[kind] = {
-            "launch_method": "open -n -W", "pid": launch.pid,
+            "launch_method": "open -n -W", "pid": launch.pid, "app_pid": launch.app_pid,
             "loopback_only": True, "browser_suppressed": True,
             "path_contains_spaces": " " in str(app),
             "quarantined": False,
         }
+        state = data.parent / (kind + "-private-feature-state.json")
+        runtime = report["runtime"][kind]
+        runtime["features"] = {"exercise": run_features(launch, version, state, "exercise")}
+        report["checks"][prefix + "core_features"] = True
+        launch.reopen()
+        report["checks"][prefix + "native_reopen"] = True
         require(launch.stop(), f"The {kind.upper()} instance did not shut down cleanly")
         report["checks"][prefix + "clean_shutdown"] = True
+        report["checks"][prefix + "native_quit"] = True
+        # Exercise Go's existing config-backup recovery through the native
+        # launcher too. This is isolated fixture data, never a user's profile.
+        config_path = data / "config.json"
+        saved_config = config_path.read_bytes()
+        require(isinstance(json.loads(saved_config), dict), "Installed configuration is not an object")
+        backup_path = data / "config.json.bak"
+        backup_path.write_bytes(saved_config)
+        backup_path.chmod(0o600)
+        config_path.write_bytes(b'{"interrupted-write":')
+        # Occupy its persisted port; the native app must choose and save a free
+        # port on an ordinary reopen while retaining the same user's database.
+        with socket.socket() as blocker:
+            blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            blocker.bind(("127.0.0.1", port))
+            blocker.listen()
+            launch = ScopedLaunch(app, data, None)
+            launch.start()
+            require(launch.port != port, "Native app did not recover from a port conflict")
+            launch.check_http(version)
+            report["checks"][prefix + "port_conflict"] = True
+            runtime["features"]["verify"] = run_features(launch, version, state, "verify")
+            report["checks"][prefix + "restart_persistence"] = True
+            require(launch.stop(), "Restarted native app did not quit cleanly")
     finally:
         if not launch.stopped:
             launch.stop()
@@ -697,8 +913,8 @@ def verify(args, report):
                     f"Gatekeeper rejected the quarantined {label} policy copy")
         report["gatekeeper"]["quarantine_policy_verified"] = release
         report["checks"]["quarantine_policy"] = release
-        check_runtime(app, root / "ZIP Test Data", args.version, report, "zip")
-        check_runtime(installed, root / "DMG Test Data", args.version, report, "dmg")
+        check_runtime(app, root / "ZIP 用户 Data #100%", args.version, report, "zip")
+        check_runtime(installed, root / "DMG 用户 Data #100%", args.version, report, "dmg")
     for kind, path in (("zip", args.archive), ("dmg", args.dmg)):
         require(file_digest(path) == report["artifacts"][kind]["sha256"],
                 f"The final {kind.upper()} changed during verification")

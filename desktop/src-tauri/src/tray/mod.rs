@@ -1,10 +1,22 @@
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
+    // A visible application menu makes Quit available even on desktops without
+    // a visible tray. Native accelerators keep working after WebView navigation.
+    let app_show = MenuItem::with_id(app, "app-show", "Open OmniShare", true, None::<&str>)?;
+    let app_quit = MenuItem::with_id(app, "app-quit", "Quit OmniShare", true, Some("CmdOrCtrl+Q"))?;
+    let submenu = Submenu::with_items(app, "OmniShare", true, &[&app_show, &app_quit])?;
+    app.set_menu(Menu::with_items(app, &[&submenu])?)?;
+    app.on_menu_event(|app, event| match event.id().as_ref() {
+        "app-show" => show_main_window(app),
+        "app-quit" => quit_application(app),
+        _ => {}
+    });
+
     let show = MenuItem::with_id(app, "show", "Open OmniShare", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide Window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit OmniShare", true, None::<&str>)?;
@@ -17,7 +29,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
             "hide" => hide_main_window(app),
-            "quit" => app.exit(0),
+            "quit" => quit_application(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -37,6 +49,11 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
     builder.build(app)?;
     Ok(())
+}
+
+fn quit_application(app: &AppHandle) {
+    // RunEvent::ExitRequested owns the shared, orderly backend shutdown path.
+    app.exit(0);
 }
 
 pub fn show_main_window(app: &AppHandle) {

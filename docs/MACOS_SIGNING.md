@@ -1,8 +1,10 @@
 # macOS 正式签名与公证
 
-本文面向发布维护者。目标是通过 Developer ID 签名、公证和用户安装路径验收，提供可拖入“应用程序”的 DMG，并保留 ZIP 备用下载。macOS 包继续运行 Go 后端并打开浏览器，不是 Tauri 桌面安装器。
+本文面向发布维护者。目标是通过 Developer ID 签名、公证和用户安装路径验收，提供可拖入“应用程序”的 DMG，并保留 ZIP 备用下载。本轮实现使用 Swift/AppKit 原生应用作为入口，由它启动内嵌 Go 后端并打开默认浏览器，提供“打开 OmniShare”“退出 OmniShare”菜单和重新打开处理。
 
 **当前已发布的 `0.1.1` 仍只有 ad-hoc 完整性签名，未经过 Apple 公证。** 本文及主分支的发布管线改进不改变已发布的标签或附件，也不表示新的受信任安装包已经发布。凭据就绪并完成正式验证后，才更新下一版本、发布清单和发布说明。
+
+截至 **2026-11-11 01:57:59 UTC**，[macOS Signing Readiness 第 3 次执行](https://github.com/Azurefly/omnishare/actions/runs/42470861499/attempts/3)的凭据检查仍报告下列五项全部缺失。本轮 Swift 启动器及 ZIP/DMG 扩展运行验收尚待原生 CI；不得据文档或本地脚本测试宣称正式公证、原生安装或 Safari 首次下载已经通过。
 
 ## 1. 在自己的 Mac 上准备签名身份
 
@@ -52,12 +54,12 @@ base64 -i "$HOME/Downloads/OmniShare-Developer-ID.p12" | pbcopy
 
 macOS Intel 与 Apple 芯片分别在原生运行器上处理对应架构的 Go 二进制。发布必须满足以下条件：
 
-1. **组装完整应用。** 写入最终 `Info.plist`、说明和全部资源；核对 `.app` 名称、可执行文件、架构、权限与最低 macOS 版本。之后的签名必须覆盖实际分发的整个应用。
-2. **使用受信任身份签名。** 使用与配置团队匹配的 Developer ID Application 身份，开启 Hardened Runtime 并带安全时间戳。存在嵌套可执行代码时，从内到外签名；不通过增加无关的运行时例外来掩盖签名问题。
+1. **组装完整原生应用。** 用对应架构的 Swift 编译器构建 `Contents/MacOS/OmniShare`，目标最低 macOS 12，并将 Go 后端置于 `Contents/MacOS/omnishare-server`。`Info.plist` 的 `CFBundleExecutable` 指向 Swift 启动器。写入最终说明和全部资源，核对两份可执行文件的架构、权限与应用元数据；随后再签名实际分发的完整应用。
+2. **从内到外使用受信任身份签名。** 先签名并验证内嵌 `omnishare-server`，再签名并验证外层 `OmniShare.app`，以封存原生启动器、已签名后端及资源。两层代码都必须使用与配置团队匹配的 Developer ID Application 身份，开启 Hardened Runtime 并带安全时间戳。不要在外层签名后更改或重新签名内层文件，也不要增加无关的运行时例外。PR 演练同样按从内到外的顺序进行 ad-hoc 签名，但不获得正式分发资格。
 3. **提交并核实公证。** 使用 `notarytool` 等待 Apple 返回，明确要求结果为 `Accepted`，并检查公证日志。上传成功或仅得到 submission ID 不算公证成功。
 4. **附加并验证票据。** 使用 `stapler` 将票据附到应用和正式分发的 DMG，并执行票据验证。ZIP 本身不能附加票据；ZIP 需在应用完成 stapling 后重新生成。公开校验和必须对应最后生成的文件。
-5. **验证实际分发包。** 重新解压最终 ZIP、挂载最终 DMG，检查完整签名、身份、Hardened Runtime、票据、Gatekeeper 评估和实际应用启动；资源被篡改的独立副本必须校验失败。保留健康接口版本、页面响应和正常退出证据。
-6. **聚合后发布。** 发布聚合检查必须确认正式签名模式及全部 23 项验证门槛成立，并将证据绑定到最终 DMG/ZIP 的名称与 SHA-256。正式模式要求系统策略启用，两份应用的 `syspolicy_check` 和应用、DMG 的 `spctl` 评估通过。发布后再次核对公开附件。旧标签只允许对应原提交，不重写历史附件来冒充新版本。
+5. **验证实际分发包及完整功能。** 重新解压最终 ZIP；将 DMG 只读挂载，把完整应用复制到含空格的安装目录并推出映像后再运行。分别检查内外完整签名、架构、身份、Hardened Runtime、票据及 Gatekeeper 评估；资源被篡改的独立副本必须校验失败。两个安装路径都必须经 LaunchServices 启动，执行完整核心功能、原生重新打开、正常退出、原数据重启及端口冲突验收。
+6. **聚合后发布。** 发布聚合检查必须确认正式签名模式及全部 **33 项**顶层门槛成立，并严格检查 ZIP、DMG 各自 exercise 7 项和 verify 5 项功能结果，将证据绑定到最终两份文件的名称、字节数与 SHA-256。正式模式要求系统策略启用，两份应用的 `syspolicy_check` 和应用、DMG 的 `spctl` 评估通过。发布后再次核对公开附件。旧标签只允许对应原提交，不重写历史附件来冒充新版本。
 
 这些要求依据 [Apple 公证前置条件](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)、[命令行公证与 stapling](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)和[分发包格式说明](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution)。DMG 提供安装界面和票据容器，不能单独替代 Developer ID 与公证。
 
@@ -65,7 +67,32 @@ macOS Intel 与 Apple 芯片分别在原生运行器上处理对应架构的 Go 
 
 打包阶段生成内部的 `omnishare-macos-<arch>-packaging.json`（schema 1），记录模式、团队、最终 ZIP/DMG 摘要，以及两次公证的 submission ID、状态和票据结果。独立原生运行器重新验证这些产物，生成 `omnishare-macos-<arch>-verification.json`（schema 2）；只有成功的验证报告才进入正式发布资产。
 
-schema 2 报告将版本、架构、`release`/`rehearsal` 模式、最终两份文件的名称/字节数/SHA-256、打包证据摘要、23 项检查和两条实际启动路径绑定在一起。正式模式的 `production_ready: true` 只表示自动化发布门槛已通过，不表示真实 Safari 首装已执行。PR 演练的签名模式为 `ad-hoc`、公证为 `NotSubmitted`、正式分发检查为 `false`，不能被正式发布步骤接受。
+schema 2 报告将版本、架构、`release`/`rehearsal` 模式、最终两份文件的名称/字节数/SHA-256、打包证据摘要、33 项检查和两条实际安装运行路径绑定在一起：
+
+| 顶层检查组 | 数量 | 范围 |
+| --- | ---: | --- |
+| ZIP 布局、签名与篡改负例 | 4 | 应用布局、完整签名、签名经 ZIP 保存、篡改资源被拒绝。 |
+| ZIP 基础运行 | 4 | LaunchServices、健康版本、内嵌页面、正常退出。 |
+| DMG 完整性与安装复制 | 5 | 布局、只读挂载、DMG 签名、内含应用与 ZIP 一致、复制后推出映像仍完整。 |
+| DMG 安装后基础运行 | 4 | LaunchServices、健康版本、内嵌页面、正常退出。 |
+| ZIP 功能与原生生命周期 | 5 | 核心功能、持久化重启、原生退出、运行中重新打开、端口冲突。 |
+| DMG 功能与原生生命周期 | 5 | 对从映像安装的应用独立执行相同五项。 |
+| 正式分发 | 6 | Developer ID、Hardened Runtime、安全时间戳、App 票据、DMG 票据、隔离状态下的系统策略评估。 |
+
+前六组共 27 项为通用门槛。最后 6 项在正式模式必须全部为 `true`；PR 演练采用 `ad-hoc`，公证状态为 `NotSubmitted`，这些分发检查为 `false`，不能进入正式发布。`production_ready: true` 只表示自动化发布门槛通过，不表示真实 Safari 首装已执行。
+
+两个安装路径的安全功能报告分别保存在 `runtime.zip.features` 和 `runtime.dmg.features`，每组都包含：
+
+| 阶段 | 逐项成功的检查 |
+| --- | --- |
+| `exercise`，7 项 | `health_and_embedded_ui`、`first_run_authentication`、`notes_and_trash`、`documents_and_conflicts`、`file_upload_download_and_range`、`share_access_and_revocation`、`encrypted_backup_restore`。 |
+| `verify`，5 项 | `health_and_embedded_ui`、`configuration_persistence`、`note_and_counter_persistence`、`file_persistence`、`document_persistence`。 |
+
+这些报告必须匹配本次版本、阶段并逐项成功。访问密钥、笔记正文等私有状态只用于本次验证，不上传到公开证据中。测试使用含中文、空格、`#` 和 `%` 的独立数据目录，检查退出与重启后仍使用原有数据库。
+
+原生生命周期验收核对启动器与其拥有的后端身份：运行中调用 LaunchServices 重新打开时，两者不能被重复创建；退出通过 `NSRunningApplication.terminate` 请求 AppKit 的正常退出流程，后端必须经私有 stdin EOF 收尾。验证必须看到退出记录中的 `method: "stdin-eof"`、`normal: true`、退出码 0 和 `fallback_used: false`，同时确认进程已经结束。超时信号终止或失败清理不能使此门槛通过。随后占用上次保存的端口，普通启动必须选择并保存可用端口，保留业务数据并通过 5 项重启功能检查。`--port` 或 `OMNISHARE_PORT` 显式指定的端口仍保持严格语义，不能静默改端口。
+
+原生应用本身提供应用菜单和状态栏菜单的“打开 OmniShare”/“退出 OmniShare”，前台快捷键为 `⌘O`/`⌘Q`。上述自动化原生退出调用与菜单使用同一 AppKit 退出生命周期；它没有宣称已通过鼠标操作菜单或真实 Safari 首次下载。本轮新增验收结果以之后的对应原生 CI 运行记录为准。
 
 ## 5. 首次下载验收
 
@@ -77,7 +104,7 @@ schema 2 报告将版本、架构、`release`/`rehearsal` 模式、最终两份�
 2. 用 Safari 从正式发布地址下载最终 DMG 或 ZIP，核对公开 SHA-256，保留系统的下载隔离状态。
 3. 走真实用户路径：打开 DMG，拖入“应用程序”，推出映像，再从“应用程序”启动；ZIP 则由 Finder 解压并复制完整应用。
 4. 确认没有“已损坏”“无法验证开发者”等阻断，无需通过“仍要打开”建立例外。正常的“从互联网下载，是否打开”确认属于系统首次启动提示，可以出现。
-5. 核对浏览器界面、初始化、健康状态和正常退出。另在干净快照上断开网络后重复安装与打开，验证随包票据在离线场景可用。
+5. 核对浏览器界面、初始化与核心功能；关闭标签页后使用“打开 OmniShare”，再通过菜单或 `⌘Q` 正常退出并重新打开，检查数据仍在。另在干净快照上断开网络后重复安装与打开，验证随包票据在离线场景可用。
 6. 记录实际版本、架构、系统版本、下载 URL、文件 SHA-256、验证日期及结果。原生 CI 证据中的 `first_download_verified` 始终为 `false`；真实 Safari 验收另行记录，不能将 CI 公证、模拟隔离策略检查或运行检查改称真实首装。
 
 公证完成仍不能承诺任意设备无条件放行。组织管理策略、受支持系统版本、证书状态及用户的首次打开选择会影响结果。发布承诺以明确的系统支持范围、最终包证据和真实验收结果为准。

@@ -3,11 +3,20 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BundleRoot,
 
-    [string]$EvidenceRoot = "desktop-test-evidence/Windows"
+    [string]$EvidenceRoot = "desktop-test-evidence/Windows",
+    [string]$DesktopExecutable = '',
+    [string]$BackendExecutable = '',
+    [string]$PrivateRoot = ''
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. "$PSScriptRoot/windows-test-support.ps1"
+
+$ownsPrivateRoot = -not $PrivateRoot
+if (-not $PrivateRoot) { $PrivateRoot = Join-Path ([IO.Path]::GetTempPath()) ("omnishare-runtime-" + [Guid]::NewGuid().ToString('N')) }
+New-Item -ItemType Directory -Force -Path $PrivateRoot | Out-Null
+$PrivateRoot = (Resolve-Path -LiteralPath $PrivateRoot).Path
 
 New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 $EvidenceRoot = (Resolve-Path $EvidenceRoot).Path
@@ -76,6 +85,7 @@ function Get-HttpBody {
     )
 
     $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.UseProxy = $false
     $client = [System.Net.Http.HttpClient]::new($handler)
     $client.Timeout = [TimeSpan]::FromMilliseconds($TimeoutMilliseconds)
     try {
@@ -188,7 +198,7 @@ function Start-Backend {
         '--no-browser',
         '--listen', '127.0.0.1',
         '--port', [string]$Port,
-        '--data-dir', $DataDir
+        '--data-dir', "`"$DataDir`""
     )
     $process = Start-Process `
         -FilePath $BackendExe `
@@ -210,11 +220,12 @@ function Write-JUnit {
     if ($Success) {
         $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
-<testsuite name="OmniShare.WindowsDesktopRuntime" tests="4" failures="0">
+<testsuite name="OmniShare.WindowsDesktopRuntime" tests="5" failures="0">
   <testcase classname="desktop.runtime" name="installed-layout-and-icon" />
   <testcase classname="desktop.runtime" name="port-conflict-fallback" />
   <testcase classname="desktop.runtime" name="existing-backend-attach" />
   <testcase classname="desktop.runtime" name="single-instance" />
+  <testcase classname="desktop.runtime" name="attached-backend-preserved-on-quit" />
 </testsuite>
 "@
     }
@@ -232,6 +243,12 @@ function Write-JUnit {
 }
 
 try {
+    $msi = $null
+    if ($DesktopExecutable -and $BackendExecutable) {
+        $desktopExe = Get-Item -LiteralPath $DesktopExecutable
+        $backendExe = Get-Item -LiteralPath $BackendExecutable
+    }
+    else {
     $resolvedBundle = (Resolve-Path $BundleRoot).Path
     $msi = Get-ChildItem -Path $resolvedBundle -Recurse -File -Filter '*.msi' | Select-Object -First 1
     if (-not $msi) {
@@ -272,6 +289,7 @@ try {
     if (-not $desktopExe) {
         throw "Desktop executable was not found in the extracted MSI layout."
     }
+    }
 
     Add-Type -AssemblyName System.Drawing
     $associatedIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($desktopExe.FullName)
@@ -289,7 +307,8 @@ try {
     }
 
     Add-PhaseResult -Name 'installed-layout-and-icon' -Passed $true -Details @{
-        msi = $msi.FullName
+        msi = $(if ($msi) { $msi.FullName } else { $null })
+        actualInstallation = [bool]($DesktopExecutable -and $BackendExecutable)
         desktopExe = $desktopExe.FullName
         backendExe = $backendExe.FullName
         iconEvidence = $iconEvidence
@@ -327,7 +346,7 @@ try {
         throw "The deterministic port-occupier did not become ready on port $preferredPort."
     }
 
-    $fallbackData = Join-Path $EvidenceRoot 'data-port-fallback'
+    $fallbackData = Join-Path $PrivateRoot 'data-port-fallback'
     $desktopPhase1 = Start-Desktop -DesktopExe $desktopExe.FullName -Port $preferredPort -DataDir $fallbackData
     $candidatePorts = (($preferredPort + 1)..($preferredPort + 10))
     $selectedPort = Wait-PageMarker -Ports $candidatePorts -Marker '<title>OmniShare</title>' -TimeoutSeconds 35
@@ -351,17 +370,18 @@ try {
         backendProcesses = $backendCount
     }
 
-    Stop-Process -Id $desktopPhase1.Id -Force -ErrorAction SilentlyContinue
-    Get-ProcessesByExecutable -Executable $backendExe.FullName |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Invoke-WindowsNormalQuit -Process $desktopPhase1
+    Wait-WindowsCondition -Description 'the owned fallback backend to exit after Quit' -Condition {
+        @(Get-ProcessesByExecutable -Executable $backendExe.FullName).Count -eq 0
+    }
     Stop-Job $dummyJob -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 
     # Scenario 2: an existing packaged OmniShare backend is already healthy.
     $attachPort = Get-FreePortBlock
-    $attachData = Join-Path $EvidenceRoot 'data-existing-backend'
-    $standaloneBackendStdout = Join-Path $EvidenceRoot 'standalone-backend.stdout.log'
-    $standaloneBackendStderr = Join-Path $EvidenceRoot 'standalone-backend.stderr.log'
+    $attachData = Join-Path $PrivateRoot 'data-existing-backend'
+    $standaloneBackendStdout = Join-Path $PrivateRoot 'standalone-backend.stdout.log'
+    $standaloneBackendStderr = Join-Path $PrivateRoot 'standalone-backend.stderr.log'
     $standaloneBackend = Start-Backend `
         -BackendExe $backendExe.FullName `
         -Port $attachPort `
@@ -413,6 +433,16 @@ try {
         secondLaunchExited = $secondLaunch.HasExited
     }
 
+    Invoke-WindowsNormalQuit -Process $desktopPhase2
+    $standaloneBackend.Refresh()
+    if ($standaloneBackend.HasExited -or -not (Test-OmniSharePort -Port $attachPort)) {
+        throw 'Normal desktop Quit terminated the independently started, attached backend.'
+    }
+    Add-PhaseResult -Name 'attached-backend-preserved-on-quit' -Passed $true -Details @{
+        externalBackendPid = $standaloneBackend.Id
+        remainedHealthy = $true
+    }
+
     $results.success = $true
     $results.finishedAt = (Get-Date).ToString("o")
     $results | ConvertTo-Json -Depth 8 |
@@ -428,11 +458,11 @@ catch {
     $results | ConvertTo-Json -Depth 8 |
         Set-Content -Path (Join-Path $EvidenceRoot 'windows-runtime-smoke.json') -Encoding UTF8
     Write-JUnit -Success $false -FailureMessage $message
-    Write-Error $message
-    exit 1
+    throw
 }
 finally {
     Stop-TrackedProcesses
     Remove-Item Env:OMNISHARE_PORT -ErrorAction SilentlyContinue
     Remove-Item Env:OMNISHARE_DATA_DIR -ErrorAction SilentlyContinue
+    if ($ownsPrivateRoot) { Remove-Item -LiteralPath $PrivateRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

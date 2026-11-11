@@ -31,9 +31,11 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file")
 	tlsKey := flag.String("tls-key", "", "TLS private key file")
 	noBrowser := flag.Bool("no-browser", false, "do not open the browser automatically")
+	shutdownOnStdinClose := flag.Bool("shutdown-on-stdin-close", false, "shut down when the launching desktop process closes stdin")
 	storageEngine := flag.String("storage-engine", defaultStorageEngine(), "storage engine: sqlite (default) or json")
 	migrateStorage := flag.Bool("migrate-storage", false, "migrate omnishare.json to SQLite and exit")
 	flag.Parse()
+	parentClosed := parentInputClosed(*shutdownOnStdinClose, os.Stdin)
 
 	lock, err := instance.Acquire(*dataDir)
 	if err != nil {
@@ -147,9 +149,12 @@ func main() {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
 	select {
 	case sig := <-quit:
 		log.Printf("received %s, shutting down", sig)
+	case <-parentClosed:
+		log.Printf("desktop parent disconnected, shutting down")
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("server stopped unexpectedly: %v", err)
