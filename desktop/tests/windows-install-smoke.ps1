@@ -222,7 +222,15 @@ try {
             if ($kind -eq 'msi') {
                 $productCode = ([string](Read-MsiProperty -Path $package.FullName -Property ProductCode)).Trim()
                 $productName = ([string](Read-MsiProperty -Path $package.FullName -Property ProductName)).Trim()
-                if ($productCode -notmatch '^\{[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}
+                $parsedCode = [guid]::Empty
+                if (-not [guid]::TryParse($productCode, [ref]$parsedCode)) {
+                    throw 'MSI ProductCode is not a valid GUID.'
+                }
+                $productCode = '{' + $parsedCode.ToString().ToUpperInvariant() + '}'
+                if ($productName -ne 'OmniShare') {
+                    $safeName = $productName -replace '[^A-Za-z0-9 _.-]', '?'
+                    throw "MSI ProductName is unexpected: '$safeName'."
+                }
             }
             # Repeat per package, immediately before mutation. Mark the attempt
             # before awaiting the command: timeout may happen after registration.
