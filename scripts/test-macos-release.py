@@ -535,22 +535,27 @@ class ScopedLaunch:
             if psn:
                 actual_arguments = (actual_arguments[:psn[0]]
                                     + actual_arguments[psn[0] + 1:])
-        # Foundation Process can set argv[0] to the basename, whereas
-        # LaunchServices often uses the absolute path. The kernel-reported
-        # executable path was already verified above; all remaining flags
-        # (including the private data directory and shutdown channel) must
-        # still match byte-for-byte.
-        matching_flags = (len(actual_arguments) == len(expected_arguments)
-                          and actual_arguments[1:] == expected_arguments[1:])
-        matching_argv0 = (bool(actual_arguments) and actual_arguments[0] in
-                          (str(binary), binary.name))
-        if not (matching_flags and matching_argv0):
-            bad = [index for index, (observed, expected) in
-                   enumerate(zip(actual_arguments, expected_arguments))
-                   if observed != expected]
-            require(False, "Refusing a process with different ownership or startup arguments "
-                    f"(argc={len(actual_arguments)}/{len(expected_arguments)}, "
-                    f"mismatch indexes={bad[:6]})")
+        # proc_pidpath above binds the kernel executable path; argv[0] is
+        # process-display text and may be rewritten by LaunchServices. Check
+        # every real argument, not the untrusted process display name.
+        # Foundation standardizes the second --data-dir to an equivalent
+        # canonical file URL, so compare that one by resolved identity.
+        expected_arguments = [str(binary), *arguments]
+        if len(actual_arguments) != len(expected_arguments):
+            raise VerificationError("Refusing a process with different startup argument count")
+        observed_flags = list(actual_arguments[1:])
+        expected_flags = expected_arguments[1:]
+        if binary == self.binary and len(observed_flags) > 8:
+            require(expected_flags[7] == "--data-dir" and
+                    observed_flags[7] == "--data-dir",
+                    "Backend data directory argument is missing")
+            original_dir = Path(observed_flags[8])
+            require(original_dir.is_absolute() and original_dir.resolve() == self.data,
+                    "Backend is using a different data directory")
+            observed_flags[8] = expected_flags[8]
+        require(observed_flags == expected_flags,
+                "Refusing a process with different ownership or startup arguments "
+                f"(mismatch indexes={[i + 1 for i, (one, two) in enumerate(zip(observed_flags, expected_flags)) if one != two][:6]})")
         actual_started = " ".join(values[1:6])
         require(started is None or started == actual_started,
                 "Isolated instance PID was reused")
