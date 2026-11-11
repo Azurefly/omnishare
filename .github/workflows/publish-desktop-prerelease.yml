@@ -142,6 +142,8 @@ jobs:
 
       - name: Test installation evidence and native GUI helpers
         run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils python3-gi libglib2.0-bin
           node --test scripts/installation-evidence.test.cjs desktop/tests/windows-webview-probe.test.mjs
           python3 desktop/tests/linux_installed_smoke_test.py
           python3 desktop/tests/linux_installer_test.py

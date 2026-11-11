@@ -8,6 +8,18 @@ OmniShare 是面向个人、家庭、小团队和内网环境的自托管内容�
 
 从 `0.1.0` 更新到 `0.1.1` 是常规补丁更新，先备份并退出旧进程，再按原安装方式更新即可。**如果仍使用此前的 `1.x`，需要处理从 `0.1.0` 开始的版本号重置：** `0.1.1` 仍低于 `1.x`，安装器可能拒绝直接覆盖，必要时卸载旧应用但保留数据目录。新加密备份仍使用 v3，继续读取 v2 和 ZIP。详见[安装与迁移](#安装与迁移)及 [0.1.1 发布说明](docs/RELEASE_NOTES_v0.1.1.md)。
 
+### 主分支安装修复：尚未发布
+
+当前源码已补充 Windows 和 Ubuntu 的安装、界面启动、正常退出与重启持久化流程，并将这些步骤接入安装包验收。**公开下载仍为 `v0.1.1`，本节改动尚未包含在这些附件中。** 新增原生检查的结果需以对应提交的 CI 证据为准。
+
+| 平台 | 当前源码的改动与验收范围 |
+| --- | --- |
+| Windows x64 | NSIS 明确按当前用户安装；两种安装器嵌入完整 WebView2 离线运行时，构建后验证微软签名。分别执行真实 MSI/NSIS 安装、可见 WebView 首次配置、核心功能、正常退出、重启与卸载。 |
+| Ubuntu x64 | 桌面构建固定在 Ubuntu 22.04，声明并检查 glibc 2.35 基线；在 Ubuntu 22.04 和 24.04 验收实际 DEB 安装及 AppImage `--appimage-extract-and-run`，读取真实 WebKit 界面并检查重启后数据。 |
+| 桌面进程与数据 | 增加原生菜单退出；退出前关闭自己启动的后端并刷盘，连接已有服务时保留该服务。修复含中文、空格、`#`、`%` 的 SQLite 数据目录。 |
+
+Windows 冷机、断网安装和非管理员全流程，AppImage 的 FUSE 挂载启动，以及实体设备托盘交互仍需单独验收。macOS 正式包仍等待签名凭据与 Apple 公证；详见[安装验证与支持边界](docs/INSTALLATION_VALIDATION.md)。
+
 ## 主要功能
 
 | 功能 | 使用方式 |
@@ -47,7 +59,11 @@ OmniShare 是面向个人、家庭、小团队和内网环境的自托管内容�
 
 Windows x64 桌面用户下载 NSIS 安装器或 MSI，安装后启动 OmniShare；桌面端会启动内置后端并打开界面。关闭主窗口后应用继续驻留系统托盘，使用托盘菜单可重新打开窗口或完全退出。
 
+NSIS 使用当前用户的 `%LOCALAPPDATA%\OmniShare`；MSI 使用系统的 `%ProgramFiles%\OmniShare`，安装和卸载需要相应管理员权限。安装目录与业务数据目录分开，更新或卸载前仍应先备份业务数据。主分支新增的离线 WebView2 配置不改变现有 `v0.1.1` 安装包，需要运行时的机器仍应留意当前安装器的网络提示。
+
 Linux x64 桌面用户按发行版选择 AppImage、DEB 或 RPM。后端便携包通过浏览器使用；Windows ZIP 解压后运行 `start-omnishare.cmd`，Linux tar.gz 可直接运行后端或使用包内的用户级 `install.sh`。
+
+下一版本的 Ubuntu 验收目标为 22.04 和 24.04；现有 `v0.1.1` 包不因此获得新的兼容保证。新源码构建的 AppImage 可用 `chmod +x` 后执行 `./OmniShare_<版本>_amd64.AppImage --appimage-extract-and-run`，该方式不依赖 FUSE 挂载，仍需要兼容的系统图形环境。RPM 和其他发行版需要各自的安装与运行验证。
 
 首次启动默认仅监听本机。请先完成[首次配置](#首次配置与网络访问)，再按需要开放局域网。
 
@@ -162,6 +178,8 @@ v3 使用 AES-256-GCM 和 PBKDF2-HMAC-SHA256，认证完整包头、分块顺序
 
 桌面端复用同一 Go 后端和 Web 界面。Rust 管理后端启动、健康检查、端口避让和错误诊断；后端意外退出时 watchdog 会尝试恢复并限制重启频率。发现已有 OmniShare 后端时可连接已有服务，重复启动桌面应用会唤醒已有窗口。
 
+当前源码增加原生“退出”菜单，Windows/Linux 使用 `Ctrl+Q`，macOS Tauri 使用 `Cmd+Q`；托盘退出走同一生命周期。关闭窗口继续驻留，完全退出会先要求自己启动的后端完成关闭并保存待写计数，已经连接的外部后端继续运行。异常终止与正常退出分别记录，不能用强杀结果代替退出验收。
+
 除上述 Go、Node.js/npm 环境外，还需 Rust 工具链与 Tauri 2 平台编译依赖：Windows 使用 MSVC，macOS 使用 Xcode Command Line Tools，Linux 需要 WebKitGTK 开发依赖。
 
 Windows：
@@ -198,7 +216,11 @@ npm --prefix frontend ci --ignore-scripts
 npm --prefix frontend run test:browser
 ```
 
-CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查、六目标后端构建，以及 Windows 安装布局与 watchdog 验证。macOS 新发布流程对最终 ZIP 和 DMG 分别检查结构、架构、签名、实际 `.app` 启动、正常退出及篡改拒绝；正式模式另要求 Developer ID、公证、票据和 Gatekeeper 门槛通过。自动化检查与真实 Safari 首次下载验收分别记录，当前 `0.1.1` 不因此变为已公证版本。浏览器测试使用合成 API 数据，后端鉴权和持久化由 Go/HTTP 测试覆盖。发布前检查包名大小写冲突，发布后核对附件和 SHA-256。详细流程见[桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)。
+CI 包含 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 Rust 检查和六目标后端构建。新增安装验收直接使用本次构建的 MSI、NSIS、DEB 与 AppImage，要求真实桌面界面、正常退出、重启持久化，以及卸载后保留数据。共享后端探针执行 7 项使用检查和 5 项重启检查；界面渲染另由原生 WebView/WebKit 检查确认。Windows 原有端口冲突、已有服务连接、单实例与 watchdog 检查继续保留。
+
+macOS 新发布流程对最终 ZIP 和 DMG 分别检查结构、架构、签名、实际 `.app` 启动、正常退出及篡改拒绝；正式模式另要求 Developer ID、公证、票据和 Gatekeeper 门槛通过。自动化检查与真实 Safari 首次下载验收分别记录，当前 `0.1.1` 不因此变为已公证版本。普通浏览器测试使用合成 API 数据，安装验收使用实际运行的后端与独立测试数据。
+
+下一版本发布门禁要求 29 个附件，最终 `SHA256SUMS.txt` 覆盖其余 28 个文件；安装报告必须匹配实际安装包的大小或 SHA-256，并包含各阶段检查结果。构建成功不能代替安装检查，缺失或失败证据会阻止发布。新增门禁已接入源码，原生结果与待完成范围见[安装验证与支持边界](docs/INSTALLATION_VALIDATION.md)；发布操作见[桌面发布指南](docs/DESKTOP_RELEASE.md)。
 
 ## 当前限制
 
@@ -216,6 +238,7 @@ CI 还执行 Go Race Detector、Staticcheck、独立 HTTP 进程验证、桌面 
 - [安全共享与使用边界](docs/SECURE_SHARING.md)
 - [架构与安全边界](docs/ARCHITECTURE.md)
 - [桌面完整测试流程](docs/DESKTOP_TEST_PLAN.md)
+- [安装验证与支持边界](docs/INSTALLATION_VALIDATION.md)
 - [桌面发布与签名](docs/DESKTOP_RELEASE.md)
 - [安全策略](SECURITY.md)
 - [参与开发](CONTRIBUTING.md)
