@@ -528,12 +528,12 @@ class ScopedLaunchTests(unittest.TestCase):
         app = str(launch.app_binary)
         expected = [app, *launch.args]
         def path(_pid, buffer, _size):
-            raw = os.fsencode(app) + b"\\0"
+            raw = os.fsencode(app) + b"\0"
             MAC.ctypes.memmove(buffer, raw, len(raw))
             return len(raw) - 1
         launch.libproc.proc_pidpath.side_effect = path
         ps = subprocess.CompletedProcess(
-            [], 0, f"{os.getuid()} {launch.app_started} 1\\n", "")
+            [], 0, f"{os.getuid()} {launch.app_started} 1\n", "")
         valid = [app, "-psn_0_123456", *launch.args]
         with patch.object(MAC, "tool", return_value=ps), patch.object(
                 launch, "process_arguments", return_value=valid):
@@ -552,7 +552,7 @@ class ScopedLaunchTests(unittest.TestCase):
         # identity, even if its other arguments match.
         backend = str(launch.binary)
         def backend_path(_pid, buffer, _size):
-            raw = os.fsencode(backend) + b"\\0"
+            raw = os.fsencode(backend) + b"\0"
             MAC.ctypes.memmove(buffer, raw, len(raw))
             return len(raw) - 1
         launch.libproc.proc_pidpath.side_effect = backend_path
