@@ -535,9 +535,22 @@ class ScopedLaunch:
             if psn:
                 actual_arguments = (actual_arguments[:psn[0]]
                                     + actual_arguments[psn[0] + 1:])
-        require(actual_arguments == expected_arguments,
-                "Refusing a process with different ownership or startup arguments "
-                f"(observed argc={len(actual_arguments)}, expected argc={len(expected_arguments)})")
+        # Foundation Process can set argv[0] to the basename, whereas
+        # LaunchServices often uses the absolute path. The kernel-reported
+        # executable path was already verified above; all remaining flags
+        # (including the private data directory and shutdown channel) must
+        # still match byte-for-byte.
+        matching_flags = (len(actual_arguments) == len(expected_arguments)
+                          and actual_arguments[1:] == expected_arguments[1:])
+        matching_argv0 = (bool(actual_arguments) and actual_arguments[0] in
+                          (str(binary), binary.name))
+        if not (matching_flags and matching_argv0):
+            bad = [index for index, (observed, expected) in
+                   enumerate(zip(actual_arguments, expected_arguments))
+                   if observed != expected]
+            require(False, "Refusing a process with different ownership or startup arguments "
+                    f"(argc={len(actual_arguments)}/{len(expected_arguments)}, "
+                    f"mismatch indexes={bad[:6]})")
         actual_started = " ".join(values[1:6])
         require(started is None or started == actual_started,
                 "Isolated instance PID was reused")

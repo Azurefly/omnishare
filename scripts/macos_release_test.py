@@ -548,6 +548,18 @@ class ScopedLaunchTests(unittest.TestCase):
                     launch, "process_arguments", return_value=bad):
                 with self.assertRaises(MAC.VerificationError):
                     launch.app_identity(launch.app_pid)
+        # Swift Foundation may supply just the filename in argv[0]. This is
+        # safe only after proc_pidpath independently binds the trusted binary.
+        backend = str(launch.binary)
+        def backend_path(_pid, buffer, _size):
+            raw = os.fsencode(backend) + b"\0"
+            MAC.ctypes.memmove(buffer, raw, len(raw))
+            return len(raw) - 1
+        launch.libproc.proc_pidpath.side_effect = backend_path
+        with patch.object(MAC, "tool", return_value=ps), patch.object(
+                launch, "process_arguments",
+                return_value=[launch.binary.name, *launch.backend_arguments()]):
+            self.assertEqual(launch.identity(launch.pid), launch.started)
         # The same flag must never be accepted as part of the child backend's
         # identity, even if its other arguments match.
         backend = str(launch.binary)
