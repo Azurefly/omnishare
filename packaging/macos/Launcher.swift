@@ -2,6 +2,35 @@ import AppKit
 import Darwin
 import Foundation
 
+import Security
+
+/// Only trust the exact leaf certificate configured for this local backend.
+/// A public, user-supplied certificate is a pin; no global trust settings or
+/// browser security settings are modified.
+private final class LoopbackCertificatePin: NSObject, URLSessionDelegate {
+    private let expectedPort: Int
+    private let expectedLeaf: Data
+
+    init(port: Int, der: Data) {
+        self.expectedPort = port
+        self.expectedLeaf = der
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.host == "127.0.0.1",
+              challenge.protectionSpace.port == expectedPort,
+              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust,
+              let certificate = SecTrustGetCertificateAtIndex(trust, 0),
+              SecCertificateCopyData(certificate) as Data == expectedLeaf else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+
 // The app owns one backend and one private stdin pipe. Closing that pipe asks
 // Go to drain HTTP requests and flush SQLite; no public shutdown endpoint exists.
 final class OmniShareApplication: NSObject, NSApplicationDelegate {
@@ -12,6 +41,7 @@ final class OmniShareApplication: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var dataDirectory: URL?
     private var serviceURL: URL?
+    private var healthSession: URLSession?
     private var ready = false
     private var stopping = false
     private var fallbackUsed = false
@@ -90,6 +120,28 @@ final class OmniShareApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func localHealthSession(certFile: String, directory: URL, port: Int) throws -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        if certFile.isEmpty { return URLSession(configuration: configuration) }
+        // Go loads the first PEM certificate as the serving leaf. Resolve
+        // relative paths against the backend's real working directory.
+        let file = URL(fileURLWithPath: certFile, relativeTo: directory).standardizedFileURL
+        let pem = try String(contentsOf: file, encoding: .utf8)
+        guard let begin = pem.range(of: "-----BEGIN CERTIFICATE-----"),
+              let end = pem.range(of: "-----END CERTIFICATE-----",
+                                  range: begin.upperBound..<pem.endIndex),
+              let der = Data(base64Encoded: String(pem[begin.upperBound..<end.lowerBound])
+                              .filter { !$0.isWhitespace }),
+              SecCertificateCreateWithData(nil, der as CFData) != nil else {
+            throw NSError(domain: "OmniShare", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "Configured TLS certificate is invalid"])
+        }
+        return URLSession(configuration: configuration,
+                          delegate: LoopbackCertificatePin(port: port, der: der),
+                          delegateQueue: nil)
+    }
+
     private func startBackend() throws {
         let arguments = Array(CommandLine.arguments.dropFirst()).filter { !$0.hasPrefix("-psn_") }
         let environment = ProcessInfo.processInfo.environment
@@ -122,6 +174,7 @@ final class OmniShareApplication: NSObject, NSApplicationDelegate {
         guard (1...65535).contains(port) else { throw NSError(domain: "OmniShare", code: 2) }
         let certificate = option("--tls-cert", in: arguments) ?? (config["tls_cert_file"] as? String ?? "")
         let tls = !certificate.isEmpty
+        healthSession = try localHealthSession(certFile: certificate, directory: directory, port: port)
         serviceURL = URL(string: "\(tls ? "https" : "http")://127.0.0.1:\(port)")
         suppressBrowser = arguments.contains("--no-browser") || (config["auto_open_browser"] as? Bool == false)
         suppressReopenBrowser = arguments.contains("--no-browser")
@@ -191,7 +244,8 @@ final class OmniShareApplication: NSObject, NSApplicationDelegate {
         var request = URLRequest(url: base.appendingPathComponent("api/v1/health"))
         request.timeoutInterval = 2
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+        guard let session = healthSession else { fail("本地健康检查尚未安全初始化。"); return }
+        session.dataTask(with: request) { [weak self] data, response, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.probeInFlight = false
@@ -265,6 +319,8 @@ final class OmniShareApplication: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        healthSession?.invalidateAndCancel()
+        healthSession = nil
         control?.fileHandleForWriting.closeFile()
         log?.closeFile()
     }
