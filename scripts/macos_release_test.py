@@ -523,6 +523,45 @@ class ScopedLaunchTests(unittest.TestCase):
                         with self.assertRaises(MAC.VerificationError):
                             launch.identity(launch.pid, require_parent=True)
 
+    def test_launchservices_serial_is_permitted_only_on_the_native_app(self):
+        launch = self.launch()
+        app = str(launch.app_binary)
+        expected = [app, *launch.args]
+        def path(_pid, buffer, _size):
+            raw = os.fsencode(app) + b"\\0"
+            MAC.ctypes.memmove(buffer, raw, len(raw))
+            return len(raw) - 1
+        launch.libproc.proc_pidpath.side_effect = path
+        ps = subprocess.CompletedProcess(
+            [], 0, f"{os.getuid()} {launch.app_started} 1\\n", "")
+        valid = [app, "-psn_0_123456", *launch.args]
+        with patch.object(MAC, "tool", return_value=ps), patch.object(
+                launch, "process_arguments", return_value=valid):
+            self.assertEqual(launch.app_identity(launch.app_pid), launch.app_started)
+        for bad in (
+                [app, "-psn_0_11", "-psn_0_12", *launch.args],
+                [app, "-psn_0_bad", *launch.args],
+                [app, "-psn_0_123", "--unknown", *launch.args],
+                [app, "-psn_0_123", *launch.args[:-1]]):
+            with self.subTest(argv=bad), patch.object(
+                    MAC, "tool", return_value=ps), patch.object(
+                    launch, "process_arguments", return_value=bad):
+                with self.assertRaises(MAC.VerificationError):
+                    launch.app_identity(launch.app_pid)
+        # The same flag must never be accepted as part of the child backend's
+        # identity, even if its other arguments match.
+        backend = str(launch.binary)
+        def backend_path(_pid, buffer, _size):
+            raw = os.fsencode(backend) + b"\\0"
+            MAC.ctypes.memmove(buffer, raw, len(raw))
+            return len(raw) - 1
+        launch.libproc.proc_pidpath.side_effect = backend_path
+        child = [backend, "-psn_0_123", *launch.backend_arguments()]
+        with patch.object(MAC, "tool", return_value=ps), patch.object(
+                launch, "process_arguments", return_value=child):
+            with self.assertRaises(MAC.VerificationError):
+                launch.identity(launch.pid)
+
     def test_dynamic_port_is_taken_from_exact_child_arguments_and_parent_is_required(self):
         launch = self.launch(None)
         launch.pid, launch.started = None, None

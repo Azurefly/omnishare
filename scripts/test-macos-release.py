@@ -523,8 +523,21 @@ class ScopedLaunch:
         actual_arguments = self.process_arguments(pid)
         if actual_arguments is None:
             return None
-        require(actual_arguments == [str(binary), *arguments],
-                "Refusing a process with different ownership or startup arguments")
+        expected_arguments = [str(binary), *arguments]
+        if binary == self.app_binary and parent is None:
+            # LaunchServices can inject a process serial number into the GUI
+            # application's argv; Swift deliberately ignores the same flag.
+            # Permit only one well-formed OS-generated marker on the app,
+            # never on the backend and never any other unexpected argument.
+            psn = [i for i, value in enumerate(actual_arguments[1:], 1)
+                   if re.fullmatch(r"-psn_0_[0-9]+", value)]
+            require(len(psn) <= 1, "Unexpected multiple LaunchServices serial arguments")
+            if psn:
+                actual_arguments = (actual_arguments[:psn[0]]
+                                    + actual_arguments[psn[0] + 1:])
+        require(actual_arguments == expected_arguments,
+                "Refusing a process with different ownership or startup arguments "
+                f"(observed argc={len(actual_arguments)}, expected argc={len(expected_arguments)})")
         actual_started = " ".join(values[1:6])
         require(started is None or started == actual_started,
                 "Isolated instance PID was reused")
