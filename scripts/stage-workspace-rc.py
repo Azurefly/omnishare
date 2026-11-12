@@ -49,3 +49,4 @@ for path in ['candidate-evidence/windows-install-smoke.json','ubuntu-install-evi
  if p.is_file():evidence['native_report']=json.loads(p.read_text(encoding='utf-8-sig'))
 (out/f'build-evidence-{kind}.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 print(json.dumps({'platform':kind,'files':records,'native_outcome':evidence['native_installation_outcome']}))
+# Candidate evidence is UTF-8 and compatible with Ubuntu 22.04's Python 3.10.

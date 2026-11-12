@@ -24,7 +24,7 @@
   "desktop/package.json": "4f97fe934ff0151361bc3710482eddab5ae7a329a9944ed1c926fdf7efe740ab",
   "desktop/src-tauri/Cargo.toml": "cca4ba239e57785139e7efc2e014630d36d37e8ce5eda12fa2a8415c5bb894ca",
   "desktop/src-tauri/tauri.conf.json": "b2a245041cd4b333d834dc251a65b7cc9ca629508b411826325e3c14ac844c5a",
-  "docs/RELEASE_NOTES_v0.2.0-rc.1.md": "90138ac92a0acd924040f9ff57e95a15f805879f9f4aa21b529acdc845cfa3b3",
+  "docs/RELEASE_NOTES_v0.2.0-rc.1.md": "404451f530c88952905398fc1a302c5d39fc3be9d585f2cce6ea6fa25a2a112a",
   "frontend/package-lock.json": "4503e135718c5809f5b1c55f4e1aa39476fbbe59b21d53745c9019e3d9b249ac",
   "frontend/package.json": "81fbb0ad9ef0a9d60e2f07d88dd10e77b2e5274e201055b58801dace9d807975",
   "frontend/scripts/behavior.test.mjs": "bdc4fa8ea5e274c63fb2ee5420e1a2cac4abb442021307c51c365062eb79e309",
@@ -36,5 +36,5 @@
   "frontend/web/theme.css": "3ea1dac14dfc205efba554cca007fae4c08ec366424dbb43477b8f57095373b3",
   "release/desktop-release.json": "4a8181e8cb0aea80e82a09478f1a775a8fc8aad3513a981116da3aac79c8af93",
   "scripts/test-macos-release.py": "ff82a8d6c3d8fb36450368f011fe4b9a9748b8d33005415a8641c5c901e2200d",
-  "scripts/test-workspace-browser.mjs": "a436c6cf3a2c23b3088e1aba4b79f77c0e6465e49aef051b3cb0bd2baf1c15ba"
+  "scripts/test-workspace-browser.mjs": "391352cb19c39618468f8337c7d601dcdbae718f9f0c13d0b9ab68dff9e0cccb"
 }

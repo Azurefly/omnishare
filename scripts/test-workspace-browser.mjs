@@ -20,6 +20,7 @@ async function start(name){const port=await freePort(),base=`http://127.0.0.1:${
 async function waitText(page,selector,value){await page.waitForFunction(({selector,value})=>document.querySelector(selector)?.value===value,{selector,value},{timeout:12000});}
 try {
  const a=await start('工作站 A'), b=await start('Mac B');
+ await api(a,'/api/v1/notes','POST',{content:'A 本机上的随手记'});
  await api(b,'/api/v1/notes','POST',{content:'另一台设备上的随手记'});
  browser=await chromium.launch();
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
@@ -27,10 +28,16 @@ try {
  await page.goto(a,{waitUntil:'networkidle'});
  await page.locator('#bindDeviceBtn').click();await page.locator('#bindPeerURL').fill(b);await page.locator('#bindPeerSubmitBtn').click();
  await page.waitForFunction(()=>!document.querySelector('#bindPeerDialog').open,null,{timeout:25000});
+ await page.locator('.tab[data-tab="notes"]').click();
  await page.getByText('另一台设备上的随手记',{exact:false}).first().waitFor({timeout:15000});
  assert.equal(new URL(page.url()).origin,a);
  const devices=(await api(b,'/api/v1/devices')).data;
  assert.ok(devices.some(d=>d.bound&&!d.is_local));checks.push('one-sided binding creates reciprocal device registration and merged notes');
+ const other=await context.newPage();other.on('pageerror',e=>errors.push(String(e)));
+ await other.goto(b,{waitUntil:'networkidle'});await other.locator('.tab[data-tab="notes"]').click();
+ await other.getByText('A 本机上的随手记',{exact:false}).first().waitFor({timeout:15000});
+ assert.equal(new URL(other.url()).origin,b);checks.push('B also displays A content in its own workspace');
+ await other.close();await page.bringToFront();
  await page.locator('.tab[data-tab="pads"]').click();await page.locator('#newPadBtn').click();await page.locator('#newPadTitle').fill('跨设备协同验证');await page.locator('#createPadSubmitBtn').click();
  await waitText(page,'#padTitle','跨设备协同验证');checks.push('in-page create dialog works without window.prompt');
  const bpad=(await api(b,'/api/v1/pads','POST',{title:'B 上的文档',content:'initial'})).data;
