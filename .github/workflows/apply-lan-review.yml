@@ -31,7 +31,7 @@ jobs:
               path = Path(record['p'])
               assert not path.is_absolute() and '..' not in path.parts and not str(path).startswith('.'), 'Unsafe review path'
               result = subprocess.run(['git','show','HEAD:'+str(path)],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
-              old = result.stdout if result.returncode == 0 else b''
+              old = result.stdout.replace(b'\r\n',b'\n') if result.returncode == 0 else b''
               assert (hashlib.sha256(old).hexdigest() if result.returncode == 0 else None) == record['o'], 'Reviewed base changed: '+str(path)
               lines = old.decode().splitlines(keepends=True)
               previous = len(lines) + 1
