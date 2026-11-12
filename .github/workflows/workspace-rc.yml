@@ -8,7 +8,7 @@ permissions:
   contents: read
 concurrency:
   group: workspace-rc-publish
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   source:
     name: Validate exact reviewed source
@@ -58,6 +58,7 @@ jobs:
           (cd backend && go vet ./... && go test ./... -race -count=1 -timeout=6m)
           python3 scripts/test-http-integration.py dist/binaries/omnishare-linux-amd64
       - name: Real Chromium workflow, not API mocks
+        timeout-minutes: 5
         run: |
           npm --prefix frontend ci
           cd frontend && npx playwright install --with-deps chromium && cd ..
@@ -180,6 +181,7 @@ jobs:
         id: windows_native
         if: runner.os == 'Windows'
         continue-on-error: true
+        timeout-minutes: 8
         run: ./desktop/tests/windows-runtime-smoke-ci.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'candidate-evidence'
       - name: Record Ubuntu 22.04 native installation acceptance (failure stays in report)
         id: linux_native
@@ -190,12 +192,13 @@ jobs:
           set -euo pipefail
           deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)
           image=$(find desktop/src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -n 1)
-          xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- /usr/bin/python3 desktop/tests/linux-installed-smoke.py \
+          timeout --signal=TERM --kill-after=10s 300s xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- /usr/bin/python3 desktop/tests/linux-installed-smoke.py \
             --deb "$deb" --appimage "$image" --version "$(cat VERSION)" --evidence ubuntu-install-evidence
       - name: Record packaged Mac backend HTTP check (not a GUI or Gatekeeper test)
         id: mac_native
         if: runner.os == 'macOS'
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           backend=$(find macos-stage/OmniShare.app/Contents -type f -name omnishare | head -n 1)
           python3 scripts/test-http-integration.py "$backend"
