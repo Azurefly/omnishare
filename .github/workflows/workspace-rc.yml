@@ -11,63 +11,28 @@ concurrency:
   cancel-in-progress: false
 jobs:
   source:
-    name: Apply exact reviewed changes
+    name: Validate exact reviewed source
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          fetch-depth: 0
-      - name: Reconstruct hash-bound source and commit without force
+          persist-credentials: false
+      - name: Validate reviewed source hashes and release version
         id: source
         shell: python
-        env:
-          EXPECTED_HEAD: ${{ github.sha }}
         run: |
-          import base64,hashlib,json,lzma,os,subprocess
+          import hashlib,json,os,subprocess
           from pathlib import Path
-          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
           assert os.environ['GITHUB_REPOSITORY']=='Azurefly/omnishare'
-          branch='fix/cross-platform-install-20261111'
-          assert os.environ['GITHUB_REF']=='refs/heads/'+branch
-          if Path('.review-workspace/part-1.txt').exists():
-              baseline='d49096332bb536cbb8e329a1d02157d5a2e5c08d'
-              subprocess.run(['git','merge-base','--is-ancestor',baseline,'HEAD'],check=True)
-              allowed=['.github/workflows/workspace-rc.yml','scripts/stage-workspace-rc.py','scripts/publish-workspace-rc.py']
-              changes=git('diff','--name-only',baseline,'HEAD').splitlines()
-              assert all(p.startswith('.review-workspace/') or p in allowed for p in changes), 'Reviewed source moved'
-              raw=lzma.decompress(base64.b64decode(''.join(Path(f'.review-workspace/part-{i}.txt').read_text().strip() for i in range(1,5)),validate=True))
-              assert len(raw)<256000 and hashlib.sha256(raw).hexdigest()=='9b4fb306353630f37d6cfb82d9f8abd850decc6c001cb0c32844f93d17b5c91a'
-              payload=json.loads(raw)
-              for record in payload['files']:
-                  path=Path(record['p'])
-                  assert not path.is_absolute() and '..' not in path.parts and not str(path).startswith('.')
-                  result=subprocess.run(['git','show','HEAD:'+str(path)],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
-                  old=result.stdout.replace(b'\r\n',b'\n') if result.returncode==0 else b''
-                  assert (hashlib.sha256(old).hexdigest() if result.returncode==0 else None)==record['o'], 'Base mismatch: '+str(path)
-                  lines=old.decode().splitlines(keepends=True)
-                  previous=len(lines)+1
-                  for start,end,new in reversed(record['h']):
-                      assert 0<=start<=end<previous
-                      lines[start:end]=new.splitlines(keepends=True);previous=start+1
-                  new=''.join(lines).encode()
-                  assert hashlib.sha256(new).hexdigest()==record['n']
-                  path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(new)
-              Path('release/workspace-source-manifest.json').write_text(json.dumps(payload['manifest'],indent=2)+'\n')
-              subprocess.run(['git','add','--',*payload['manifest'],'release/workspace-source-manifest.json'],check=True)
-              subprocess.run(['git','rm','-r','.review-workspace'],check=True)
-              subprocess.run(['git','diff','--cached','--check'],check=True)
-              assert git('ls-remote','origin','refs/heads/'+branch).split()[0]==os.environ['EXPECTED_HEAD'], 'Branch advanced'
-              git('config','user.name','github-actions[bot]');git('config','user.email','41898282+github-actions[bot]@users.noreply.github.com')
-              subprocess.run(['git','commit','-m','feat(workspace): reciprocal identity-bound devices, unified content and responsive collaboration'],check=True)
-              subprocess.run(['git','push','origin','HEAD:refs/heads/'+branch],check=True)
+          assert os.environ['GITHUB_REF']=='refs/heads/fix/cross-platform-install-20261111'
           manifest=json.loads(Path('release/workspace-source-manifest.json').read_text())
-          for name,want in manifest.items(): assert hashlib.sha256(Path(name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, 'Changed reviewed bytes: '+name
+          for name,want in manifest.items():
+              assert hashlib.sha256(Path(name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, 'Changed reviewed bytes: '+name
           assert Path('VERSION').read_text().strip()=='0.2.0-rc.1'
-          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+git('rev-parse','HEAD')+'\n')
+          sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+sha+'\n')
 
   verify:
     name: Core and actual two-device browser tests
@@ -199,8 +164,8 @@ jobs:
           app=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniShare.app
           backend=$(find "$app/Contents" -type f -name omnishare | head -n 1)
           test -n "$backend"
-          lipo -verify_arch arm64 x86_64 "$backend"
-          lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/omnishare-desktop"
+          lipo "$backend" -verify_arch arm64 x86_64
+          lipo "$app/Contents/MacOS/omnishare-desktop" -verify_arch arm64 x86_64
           codesign --force --sign - --timestamp=none "$backend"
           codesign --force --sign - --timestamp=none "$app"
           codesign --verify --deep --strict "$app"
