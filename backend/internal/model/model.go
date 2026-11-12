@@ -109,16 +109,20 @@ type PublicConfig struct {
 }
 
 type DeviceNode struct {
-	ID          string    `json:"id"`
-	Hostname    string    `json:"hostname"`
-	IP          string    `json:"ip"`
-	Port        int       `json:"port"`
-	URL         string    `json:"url"`
-	NetworkType string    `json:"network_type"`
-	IsLocal     bool      `json:"is_local"`
-	Online      bool      `json:"online"`
-	LatencyMS   int64     `json:"latency_ms"`
-	LastSeen    time.Time `json:"last_seen"`
+	Addresses       []string  `json:"addresses,omitempty"`
+	Bound           bool      `json:"bound"`
+	Status          string    `json:"status,omitempty"`
+	ConnectionError string    `json:"connection_error,omitempty"`
+	ID              string    `json:"id"`
+	Hostname        string    `json:"hostname"`
+	IP              string    `json:"ip"`
+	Port            int       `json:"port"`
+	URL             string    `json:"url"`
+	NetworkType     string    `json:"network_type"`
+	IsLocal         bool      `json:"is_local"`
+	Online          bool      `json:"online"`
+	LatencyMS       int64     `json:"latency_ms"`
+	LastSeen        time.Time `json:"last_seen"`
 }
 
 type AuditEvent struct {

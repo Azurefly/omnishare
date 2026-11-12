@@ -608,7 +608,15 @@ class ScopedLaunch:
             if arguments is None:
                 return False
             prefix = [str(self.binary), *self.args, "--data-dir", str(self.data), "--port"]
-            require(len(arguments) == len(prefix) + 3 and arguments[:len(prefix)] == prefix
+            normalized = list(arguments)
+            if len(normalized) == len(prefix) + 3:
+                normalized[0] = prefix[0]  # kernel executable is checked by identity() below
+                directory_index = len(self.args) + 2
+                observed = Path(normalized[directory_index])
+                require(observed.is_absolute() and observed.resolve() == self.data,
+                        "Backend has a different data directory")
+                normalized[directory_index] = prefix[directory_index]
+            require(len(normalized) == len(prefix) + 3 and normalized[:len(prefix)] == prefix
                     and arguments[-2:] == ["--no-browser", "--shutdown-on-stdin-close"]
                     and re.fullmatch(r"[0-9]{1,5}", arguments[-3]),
                     "Backend has unexpected startup arguments")

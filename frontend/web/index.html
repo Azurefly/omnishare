@@ -89,6 +89,8 @@
               </div>
               <button id="refreshDevicesBtn" type="button" class="icon-button" title="刷新设备列表" aria-label="刷新设备列表"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg></button>
             </div>
+            <button id="bindDeviceBtn" class="button primary small" type="button">添加设备并合并工作区</button>
+            <p id="tailscaleStatus" class="muted-text" aria-live="polite"></p>
             <div id="deviceList" class="device-list"></div>
             <p id="nodeSecuritySummary" class="security-summary" role="status">正在检查当前节点的访问设置…</p>
           </article>
@@ -116,6 +118,7 @@
           <p class="rail-footer">本地优先 · 自主管理</p>
         </aside>
         <main id="mainContent" class="content-column" tabindex="-1">
+          <p id="workspaceStatus" class="workspace-status" role="status">统一工作区 · 正在连接已绑定设备</p>
           <header class="workspace-heading">
             <div><p class="eyebrow">OMNISHARE</p><h1 id="workspaceTitle">工作台</h1></div>
             <p class="workspace-description">内容随手可得，分享由你决定。</p>
@@ -250,6 +253,7 @@
                   <p>选择一篇文档，或新建一篇开始记录。</p>
                 </div>
                 <div id="padForm" class="hidden">
+                  <div id="padConflictActions" class="workspace-status warning hidden"><span>远端版本已更新；本地输入未覆盖。</span><button type="button" id="loadRemotePadBtn" class="button ghost small">保留草稿并载入远端</button><button type="button" id="saveDraftCopyBtn" class="button primary small">草稿另存副本</button></div>
                   <div class="pad-editor-head">
                     <label for="padTitle" class="visually-hidden">文档标题</label><input id="padTitle" class="title-input" placeholder="输入文档标题..." />
                     <div class="pad-editor-actions">
@@ -356,7 +360,7 @@
             <label>备份上限（MB）<input id="cfgBackupMax" type="number" min="1" max="1048576" /><small>导出与恢复共用，默认 16384 MB。</small></label>
           </div>
           <div class="backup-settings">
-            <div><h4>备份与恢复</h4><p>导出时可设置口令生成加密备份。恢复将覆盖当前数据。</p></div>
+            <div><h4>备份与恢复</h4><p>仅备份当前设备的数据，不包含其他设备与绑定关系。恢复仅覆盖当前设备数据。</p></div>
             <div class="inline-actions">
               <button id="backupBtn" type="button" class="button ghost" title="导出 ZIP 备份，或设置口令生成加密 OSB 备份"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-download"></use></svg><span>导出备份</span></button>
               <button id="restoreBtn" type="button" class="button ghost" title="从 ZIP 或 OSB 备份恢复，覆盖当前数据"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-restore"></use></svg><span>从备份恢复</span></button>
@@ -364,7 +368,7 @@
           </div>
         </section>
         <section class="settings-section peer-section" aria-labelledby="settingsPeers">
-          <div class="settings-section-head"><span class="section-number">04</span><div><h3 id="settingsPeers">手动设备节点</h3><p>添加 Tailscale 或跨网段的节点地址。每个节点需要独立验证。</p></div></div>
+          <div class="settings-section-head"><span class="section-number">04</span><div><h3 id="settingsPeers">设备绑定节点</h3><p>添加 Tailscale 或跨网段的节点地址。每个节点需要独立验证。</p></div></div>
           <div id="peerRows" class="peer-rows"></div>
           <button id="addPeerBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>添加节点</span></button>
         </section>
@@ -548,6 +552,22 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- 脚本加载（严格契约顺序） -->
+  <dialog id="newPadDialog" class="modal" aria-labelledby="newPadDialogTitle">
+    <form id="newPadCreateForm"><div class="modal-head"><h2 id="newPadDialogTitle">新建协同文档</h2></div>
+      <label>文档标题<input id="newPadTitle" autocomplete="off" maxlength="200" required></label>
+      <p id="newPadError" class="muted-text" role="alert"></p>
+      <div class="modal-actions"><button type="button" id="cancelNewPadBtn" class="button ghost">取消</button><button type="submit" id="createPadSubmitBtn" class="button primary">创建文档</button></div>
+    </form>
+  </dialog>
+  <dialog id="bindPeerDialog" class="modal" aria-labelledby="bindPeerTitle">
+    <form id="bindPeerForm"><div class="modal-head"><h2 id="bindPeerTitle">绑定设备并合并工作区</h2></div>
+      <label>设备地址<input id="bindPeerURL" placeholder="http://192.168.1.20:8081 或 http://100.x.x.x:8081" autocomplete="off" required></label>
+      <label>对方访问密钥（仅对方已开启保护时填写）<input id="bindPeerKey" type="password" autocomplete="off"></label>
+      <p class="muted-text">绑定后双方可直接读写彼此内容，无需再次添加。本机免密时，可访问本机的人也可访问合并内容。仅绑定可信设备；对方密钥仅用于本次绑定，不会保存。</p>
+      <p id="bindPeerError" class="muted-text" role="alert"></p>
+      <div class="modal-actions"><button type="button" id="cancelBindPeerBtn" class="button ghost">取消</button><button type="submit" id="bindPeerSubmitBtn" class="button primary">绑定并合并</button></div>
+    </form>
+  </dialog>
   <script src="/runtime-bridge.js"></script>
   <script type="module" src="/app.js"></script>
 </body>

@@ -99,6 +99,7 @@ func main() {
 
 	server := api.New(store, cfg, registry)
 	server.SetStorageState(storageState)
+	server.StartNetworkServices(ctx)
 	httpServer := &http.Server{
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,

@@ -33,7 +33,7 @@ const state = {
   deferredInstall: null, editingNote: null,
   uploadQueue: [], activeUploads: 0, uploadSequence: 0, uploadPumping: false, uploadNotice: '',
   requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
-  noteTotal: 0, fileTotal: 0, restoreInFlight: false
+  noteTotal: 0, fileTotal: 0, restoreInFlight: false, workspaceBusy: false, padRefreshSeq: 0, padSelectSeq: 0, workspaceStatus: null, tailscaleStatus: "", padCreating: false, draftCopyBusy: false, peerBinding: false
 }
 
 // Server default is 100; ask explicitly so the response can be paged instead of
@@ -76,7 +76,35 @@ function keyHeaders(key) {
 const authHeaders = () => state.config?.access_key_enabled === false ? {} : keyHeaders(state.accessKey)
 const headers = (extra={}) => ({ ...authHeaders(), ...extra })
 
+function workspacePath(path, method='GET') {
+  const u = new URL(path, location.origin)
+  if (u.origin === location.origin && /^\/api\/v1\/(dashboard|notes|files|pads|shares|trash|audit)$/.test(u.pathname) &&
+      (method === 'GET' || (method === 'DELETE' && u.pathname === '/api/v1/trash'))) u.searchParams.set('scope', 'all')
+  return u.pathname + u.search
+}
+
+function acceptWorkspaceStatus(payload) {
+  if (payload.workspace) {
+    state.workspaceStatus = payload.workspace
+    const unavailable = payload.workspace.nodes.filter(n => !n.online || n.truncated)
+    const banner = $('#workspaceStatus')
+    if (banner) {
+      banner.textContent = unavailable.length
+        ? `部分设备暂不可用：${unavailable.map(n => n.name + (n.cached ? '（上次快照）' : '')).join('、')}；未取得的数据不计入当前统计。`
+        : `统一工作区 · ${payload.workspace.nodes.length} 台设备 · 新内容默认保存在当前设备`
+      banner.classList.toggle('warning', unavailable.length > 0)
+    }
+  }
+  if (payload.discovery) state.tailscaleStatus = payload.discovery.tailscale || ''
+}
+
+function sourceLabel(item) {
+  if (!item.source_node_name) return ''
+  return `<span class="source-label${item.source_online === false ? ' source-offline' : ''}">来自 ${escapeHTML(item.source_node_name)}${item.source_online === false ? ' · 离线快照' : ''}</span>`
+}
+
 async function api(path, options={}) {
+  path = workspacePath(path, options.method || 'GET')
   const res = await fetch(path, {...options, headers: headers(options.headers || {})})
   if (res.status === 401) {
     showAuth()
@@ -88,6 +116,7 @@ async function api(path, options={}) {
     return res
   }
   const payload = await res.json()
+  acceptWorkspaceStatus(payload)
   if (!res.ok || payload.code !== 0) {
     const err = new Error(payload.message || `HTTP ${res.status}`)
     err.status = res.status
@@ -100,14 +129,28 @@ async function api(path, options={}) {
 // api() returns only data; paged lists also need X-Total-Count to know whether
 // the server truncated the result instead of silently dropping the rest.
 async function apiPage(path) {
+  path = workspacePath(path)
   const res = await fetch(path, {headers: headers()})
   if (res.status === 401) {
     showAuth()
     throw new Error('需要访问密钥')
   }
   const payload = await res.json()
+  acceptWorkspaceStatus(payload)
   if (!res.ok) throw new Error(payload.message || `HTTP ${res.status}`)
   return {items: payload.data || [], total: Number(res.headers.get('X-Total-Count') || 0)}
+}
+
+async function apiCollection(path) {
+  const u = new URL(path, location.origin)
+  const items = []
+  for (let offset = 0; offset < 10000; offset += 500) {
+    u.searchParams.set('limit', '500'); u.searchParams.set('offset', String(offset))
+    const page = await apiPage(u.pathname + u.search)
+    items.push(...page.items)
+    if (!page.items.length || items.length >= page.total) break
+  }
+  return items
 }
 
 async function apiBlob(path, options={}) {
@@ -122,6 +165,7 @@ async function apiBlob(path, options={}) {
     let data
     if (type.includes('application/json')) {
       const payload = await res.json()
+  acceptWorkspaceStatus(payload)
       message = payload.message || message
       data = payload.data
     } else {
@@ -274,7 +318,7 @@ function updateAccessKeyControls() {
   $('#cfgAccessKey').placeholder = state.config?.has_access_key ? '留空保留已设置的密钥' : '自行设置，无长度和字符类型要求'
   $('#cfgAccessKeyWarning').textContent = enabled
     ? '开启后访问本节点需要此密钥；支持中文、数字、空格和符号。'
-    : '密钥保护已关闭：可访问本机的局域网设备可以读取、修改和删除内容。请勿暴露到公网。'
+    : '密钥保护已关闭：能访问本机的设备可读写整个合并工作区。请勿暴露到公网。'
 }
 
 function renderPeers(peers) {
@@ -347,13 +391,19 @@ async function saveSettings() {
   }
 }
 
-async function loadNotes(strict=false, append=false) {
+async function loadNotes(strict=false, append=false, preserveWindow=false) {
   const seq = ++state.requestSeq.notes
   const q = encodeURIComponent($('#noteSearch').value.trim())
   const tag = encodeURIComponent($('#noteTagFilter').value)
   const offset = append ? state.notes.length : 0
   try {
-    const page = await apiPage(`/api/v1/notes?q=${q}&tag=${tag}&limit=${PAGE_SIZE}&offset=${offset}`)
+    const count = preserveWindow ? Math.max(PAGE_SIZE, Math.min(state.notes.length, 10000)) : PAGE_SIZE
+    const page = {items:[],total:0}
+    for (let start=0; start<count; start+=500) {
+      const batch=await apiPage(`/api/v1/notes?q=${q}&tag=${tag}&limit=${Math.min(500,count-start)}&offset=${offset+start}`)
+      page.items.push(...batch.items); page.total=batch.total
+      if (offset+page.items.length>=batch.total || batch.items.length===0) break
+    }
     if (seq !== state.requestSeq.notes) return
     state.notes = append ? [...state.notes, ...page.items] : page.items
     state.noteTotal = page.total
@@ -384,7 +434,7 @@ function renderNotes() {
     const restricted = !n.content && !!n.content_redacted
     const restriction = n.is_burn_after_read ? '阅后即焚' : (n.max_read_count > 0 ? `剩余 ${Math.max(0, n.max_read_count - n.read_count)} 次` : '')
     return `
-      <article class="card note-card" data-note-id="${escapeHTML(n.id)}">
+      <article class="card note-card" data-note-id="${escapeHTML(n.id)}">${sourceLabel(n)}
         <div class="note-head">
           <div class="note-meta">
             <span class="tag">${escapeHTML(n.id)}</span>
@@ -673,13 +723,19 @@ async function saveEditNote() {
   }
 }
 
-async function loadFiles(strict=false, append=false) {
+async function loadFiles(strict=false, append=false, preserveWindow=false) {
   const seq = ++state.requestSeq.files
   const q = encodeURIComponent($('#fileSearch').value.trim())
   const type = encodeURIComponent($('#fileType').value)
   const offset = append ? state.files.length : 0
   try {
-    const page = await apiPage(`/api/v1/files?q=${q}&type=${type}&limit=${PAGE_SIZE}&offset=${offset}`)
+    const count = preserveWindow ? Math.max(PAGE_SIZE, Math.min(state.files.length, 10000)) : PAGE_SIZE
+    const page = {items:[],total:0}
+    for (let start=0; start<count; start+=500) {
+      const batch=await apiPage(`/api/v1/files?q=${q}&type=${type}&limit=${Math.min(500,count-start)}&offset=${offset+start}`)
+      page.items.push(...batch.items); page.total=batch.total
+      if (offset+page.items.length>=batch.total || batch.items.length===0) break
+    }
     if (seq !== state.requestSeq.files) return
     state.files = append ? [...state.files, ...page.items] : page.items
     state.fileTotal = page.total
@@ -707,7 +763,7 @@ function renderFiles() {
       <div class="file-info">
         <div class="file-icon">${fileIcon(f)}</div>
         <div class="file-description">
-          <h3 title="${escapeHTML(f.file_name)}">${escapeHTML(f.file_name)}</h3>
+          ${sourceLabel(f)}<h3 title="${escapeHTML(f.file_name)}">${escapeHTML(f.file_name)}</h3>
           <p>${formatBytes(f.file_size)} · ${escapeHTML(f.mime_type)} · 下载 ${f.download_count || 0} 次</p>
         </div>
       </div>
@@ -1068,7 +1124,7 @@ function uploadOne(task) {
 async function loadPads(strict=false) {
   const seq = ++state.requestSeq.pads
   try {
-    const pads = await api(`/api/v1/pads?q=${encodeURIComponent($('#padSearch').value.trim())}`)
+    const pads = await apiCollection(`/api/v1/pads?q=${encodeURIComponent($('#padSearch').value.trim())}`)
     if (seq !== state.requestSeq.pads) return
     state.pads = pads
     renderPads()
@@ -1080,7 +1136,7 @@ async function loadPads(strict=false) {
 function renderPads() {
   $('#padsList').innerHTML = state.pads.length ? state.pads.map(p => `
     <button class="pad-item ${state.currentPad?.id === p.id ? 'active' : ''}" data-pad-id="${escapeHTML(p.id)}">
-      <strong>${escapeHTML(p.title)}</strong>
+      <strong>${escapeHTML(p.title)}</strong>${sourceLabel(p)}
       <span>v${p.version} · ${formatDate(p.updated_at)}</span>
     </button>
   `).join('') : `
@@ -1091,6 +1147,7 @@ function renderPads() {
 }
 
 function renderPadEditor(p) {
+  $('#padConflictActions')?.classList.add('hidden')
   $('#padEmpty').classList.add('hidden')
   $('#padForm').classList.remove('hidden')
   $('#padTitle').value = p.title
@@ -1102,6 +1159,7 @@ function renderPadEditor(p) {
 }
 
 async function selectPad(id) {
+  const selectSeq = ++state.padSelectSeq
   if (state.currentPad?.id === id) return
   if (state.currentPadDirty) {
     const saved = await savePad(false)
@@ -1110,6 +1168,7 @@ async function selectPad(id) {
   clearTimeout(state.saveTimer)
   try {
     const p = await api(`/api/v1/pads/${encodeURIComponent(id)}`)
+    if (selectSeq !== state.padSelectSeq) return
     state.currentPad = { ...p }
     state.currentPadDirty = false
     state.padSaveBlocked = false
@@ -1119,21 +1178,95 @@ async function selectPad(id) {
   }
 }
 
-async function createPad() {
-  const title = prompt('文档标题', '新协同文档')
-  if (!title) return
+function createPad() {
+  $('#newPadTitle').value = '新协同文档'
+  $('#newPadError').textContent = ''
+  $('#newPadDialog').showModal()
+  $('#newPadTitle').focus()
+}
+
+async function submitNewPad() {
+  if (state.padCreating) return
+  const title = $('#newPadTitle').value.trim()
+  if (!title) { $('#newPadError').textContent = '请填写文档标题'; return }
+  state.padCreating = true
+  $('#createPadSubmitBtn').disabled = true
   try {
+    if (state.currentPadDirty && !await savePad(false)) throw new Error('当前文档未保存，请先处理草稿或冲突')
     const p = await api('/api/v1/pads', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({title, content: `# ${title}\n\n`})
     })
+    $('#newPadDialog').close()
     toast('文档已创建')
     await Promise.all([loadPads(), loadDashboard()])
     await selectPad(p.id)
+  } catch (err) { $('#newPadError').textContent = err.message }
+  finally { state.padCreating = false; $('#createPadSubmitBtn').disabled = false }
+}
+
+async function refreshCurrentPad() {
+  const current = state.currentPad
+  if (!current || state.saveInFlight) return
+  const seq = ++state.padRefreshSeq
+  try {
+    const remote = await api(`/api/v1/pads/${encodeURIComponent(current.id)}`)
+    if (seq !== state.padRefreshSeq || state.currentPad?.id !== current.id || state.saveInFlight) return
+    if (remote.version === state.currentPad.version) return
+    if (state.currentPadDirty) {
+      preservePadDraft()
+      state.padSaveBlocked = true
+      clearTimeout(state.saveTimer)
+      $('#saveState').textContent = '远端已更新 · 本地草稿保留'
+      $('#padConflictActions').classList.remove('hidden')
+      return
+    }
+    const editor = $('#padContent'), start = editor.selectionStart, end = editor.selectionEnd, scroll = editor.scrollTop
+    state.currentPad = {...remote}
+    renderPadEditor(remote)
+    if (typeof editor.setSelectionRange === 'function' && Number.isInteger(start)) editor.setSelectionRange(Math.min(start, remote.content.length), Math.min(end, remote.content.length))
+    editor.scrollTop = scroll
   } catch (err) {
-    toast(err.message, true)
+    if (state.currentPad?.id === current.id) {
+      $('#saveState').textContent = err.status === 404 ? '文档已删除 · 保留当前内容' : '连接中断 · 保留当前内容'
+      if (state.currentPadDirty) preservePadDraft()
+    }
   }
+}
+
+async function refreshWorkspace() {
+  if (document.hidden || state.workspaceBusy || $('#authDialog').open || state.restoreInFlight) return
+  state.workspaceBusy = true
+  try {
+    await loadDashboard()
+    const loaders = {dashboard:()=>loadNotes(false,false,true), notes:()=>loadNotes(false,false,true), files:()=>loadFiles(false,false,true), pads:loadPads, shares:loadShares, trash:loadTrash, activity:loadAudit}
+    if (loaders[state.activeTab]) await loaders[state.activeTab]()
+    if (state.activeTab === 'pads') await refreshCurrentPad()
+  } finally { state.workspaceBusy = false }
+}
+
+async function loadRemotePadVersion() {
+  if (!state.currentPad || state.saveInFlight) return
+  preservePadDraft()
+  const id = state.currentPad.id
+  try {
+    const remote = await api(`/api/v1/pads/${encodeURIComponent(id)}`)
+    if (state.currentPad?.id !== id) return
+    state.currentPad = {...remote}; state.currentPadDirty = false; state.padSaveBlocked = false
+    renderPadEditor(remote); $('#padConflictActions').classList.add('hidden')
+    toast('已载入远端版本；原草稿仍保留在本次会话中')
+  } catch (err) { toast(err.message, true) }
+}
+
+async function savePadDraftCopy() {
+  const draft = padSnapshot(); if (!draft) return
+  try {
+    const copy = await api('/api/v1/pads', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:(draft.title+'（草稿副本）').slice(0,200),content:draft.content})})
+    preservePadDraft(draft)
+    state.currentPad = {...copy}; state.currentPadDirty = false; state.padSaveBlocked = false
+    renderPadEditor(copy); $('#padConflictActions').classList.add('hidden'); await loadPads()
+    toast('草稿副本已保存到当前设备')
+  } catch (err) { toast(err.message, true) }
 }
 
 function padSnapshot() {
@@ -1180,6 +1313,7 @@ function enqueuePadSave(snapshot, showToast=true) {
 }
 
 async function performPadSave(snapshot, showToast=true) {
+  state.saveInFlight = true
   const isCurrent = state.currentPad?.id === snapshot.id
   if (isCurrent) $('#saveState').textContent = '保存中...'
   const known = isCurrent ? state.currentPad.version : (state.pads.find(p => p.id === snapshot.id)?.version || snapshot.version)
@@ -1207,7 +1341,7 @@ async function performPadSave(snapshot, showToast=true) {
     return true
   } catch (err) {
     preservePadDraft(snapshot)
-    if (err.status === 409) state.padSaveBlocked = true
+    if (err.status === 409) { state.padSaveBlocked = true; $('#padConflictActions')?.classList.remove('hidden') }
     if (state.currentPad?.id === snapshot.id) {
       $('#saveState').textContent = err.status === 409 ? '版本冲突' : '保存失败'
       $('#saveState').className = 'badge muted'
@@ -1219,7 +1353,7 @@ async function performPadSave(snapshot, showToast=true) {
       await loadPads()
     }
     return false
-  }
+  } finally { state.saveInFlight = false }
 }
 
 async function savePad(showToast=true) {
@@ -1290,7 +1424,7 @@ async function createShare() {
 
 async function loadShares(strict=false) {
   try {
-    state.shares = await api('/api/v1/shares')
+    state.shares = await apiCollection('/api/v1/shares')
     renderShares()
   } catch (err) {
     reportLoadError(err, strict)
@@ -1315,7 +1449,7 @@ function renderShares() {
             <span class="tag">${labels[link.object_type] || escapeHTML(link.object_type)}</span>
             <span class="badge ${cls === 'danger' ? 'muted' : ''}">${status}</span>
           </div>
-          <h3>${escapeHTML(link.name)}</h3>
+          ${sourceLabel(link)}<h3>${escapeHTML(link.name)}</h3>
           <p class="muted-text">访问 ${limit} · 到期 ${link.expires_at ? formatDate(link.expires_at) : '长期有效'}</p>
           <code class="share-url">${escapeHTML(link.url)}</code>
         </div>
@@ -1348,7 +1482,7 @@ async function revokeShare(id) {
 
 async function loadTrash(strict=false) {
   try {
-    state.trash = await api(`/api/v1/trash?type=${encodeURIComponent($('#trashType')?.value || '')}`)
+    state.trash = await apiCollection(`/api/v1/trash?type=${encodeURIComponent($('#trashType')?.value || '')}`)
     renderTrash()
   } catch (err) {
     reportLoadError(err, strict)
@@ -1364,7 +1498,7 @@ function renderTrash() {
           <span class="tag">${labels[item.object_type] || escapeHTML(item.object_type)}</span>
           <span>删除于 ${formatDate(item.deleted_at)}</span>
         </div>
-        <h3>${escapeHTML(item.name)}</h3>
+        ${sourceLabel(item)}<h3>${escapeHTML(item.name)}</h3>
         ${item.size ? `<p class="muted-text">${formatBytes(item.size)}</p>` : ''}
       </div>
       <div class="file-actions">
@@ -1407,7 +1541,7 @@ async function emptyTrash() {
   if (!confirm('确定要清空整个回收站吗？所有暂存文件与记录将永久不可恢复！')) return
   try {
     await api('/api/v1/trash', {method:'DELETE'})
-    toast('回收站已完全清空')
+    toast(state.workspaceStatus?.partial ? '在线设备回收站已处理；离线设备未清空' : '所有已绑定设备的回收站已清空', !!state.workspaceStatus?.partial)
     await Promise.all([loadTrash(), loadDashboard()])
   } catch (err) {
     toast(err.message, true)
@@ -1428,7 +1562,7 @@ function renderAudit() {
   $('#auditList').innerHTML = state.audits.length ? state.audits.map(e => `
     <article class="timeline-item">
       <span class="timeline-action">${labels[e.action] || escapeHTML(e.action)} · ${escapeHTML(e.object)}</span>
-      <div class="timeline-summary">${escapeHTML(e.summary || e.object_id || '—')}</div>
+      ${sourceLabel(e)}<div class="timeline-summary">${escapeHTML(e.summary || e.object_id || '—')}</div>
       <time class="timeline-time">${formatDate(e.created_at)}</time>
     </article>
   `).join('') : `
@@ -1474,55 +1608,57 @@ function renderNodeSecurity() {
   const summary = $('#nodeSecuritySummary')
   if (!summary || !state.config) return
   summary.textContent = (state.config.access_key_enabled ?? state.config.has_access_key)
-    ? '访问密钥已启用 · 每个节点独立验证'
+    ? '访问密钥已启用 · 绑定设备通过身份签名协作'
     : '局域网免密访问 · 可在设置中开启密钥保护'
+}
+
+function openBindDialog(url='') {
+  $('#bindPeerURL').value = url
+  $('#bindPeerKey').value = ''
+  $('#bindPeerError').textContent = ''
+  $('#bindPeerDialog').showModal()
+  $('#bindPeerURL').focus()
+}
+
+async function submitPeerBinding() {
+  if (state.peerBinding) return
+  state.peerBinding = true; $('#bindPeerSubmitBtn').disabled = true
+  $('#bindPeerError').textContent = '正在连接并完成双向绑定…'
+  try {
+    await api('/api/v1/peers/bind', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('#bindPeerURL').value.trim(),access_key:$('#bindPeerKey').value})})
+    $('#bindPeerKey').value = ''; $('#bindPeerDialog').close()
+    toast('双向绑定成功，两端工作区已合并')
+    await Promise.all([loadDevices(),loadAll()]); await refreshWorkspace()
+  } catch (err) { $('#bindPeerError').textContent = err.message }
+  finally { state.peerBinding = false; $('#bindPeerSubmitBtn').disabled = false }
+}
+
+async function unbindDevice(id) {
+  try {
+    const result = await api(`/api/v1/peers/${encodeURIComponent(id)}`,{method:'DELETE'})
+    toast(result.reciprocal_removed ? '双方已解除绑定' : '本机已解除绑定；对方离线，尚未移除其登记')
+    await loadDevices(); await refreshWorkspace()
+  } catch (err) { toast(err.message,true) }
 }
 
 function renderDevices() {
   const groups = [
-    { title: '当前节点', devices: state.devices.filter(d => d.is_local) },
-    { title: '在线节点', devices: state.devices.filter(d => !d.is_local && d.online) },
-    { title: '离线节点', devices: state.devices.filter(d => !d.is_local && !d.online) }
+    {title:'当前设备',devices:state.devices.filter(d => d.is_local)},
+    {title:'已绑定 · 统一工作区',devices:state.devices.filter(d => !d.is_local && d.bound)},
+    {title:'发现的设备',devices:state.devices.filter(d => !d.is_local && !d.bound)}
   ]
-  const renderDevice = d => {
-    const url = safeDeviceURL(d.url)
-    const network = ({lan:'局域网发现', manual:'手动添加', tailscale:'Tailscale'})[d.network_type] || d.network_type || '网络节点'
-    const latency = Number(d.latency_ms)
-    const connection = d.is_local ? '本节点' : (d.online ? '在线' : '离线')
-    return `
-      <div class="device">
-        <div class="device-heading">
-          <span class="device-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></span>
-          <div class="device-main"><h3>${escapeHTML(d.hostname || '未命名节点')}</h3></div>
-          <span class="device-state ${d.online ? '' : 'offline'}">${connection}</span>
-        </div>
-        <div class="device-meta">${escapeHTML(network)}${!d.is_local && d.online && Number.isFinite(latency) && latency > 0 ? ` · ${Math.round(latency)} ms` : ''}</div>
-        ${url ? `<a class="device-url" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" aria-label="打开 ${escapeHTML(d.hostname || '节点')}：${escapeHTML(url)}">${escapeHTML(url)}</a>` : '<span class="muted-text">地址无效，无法打开</span>'}
-        <p class="device-note">${d.is_local ? '当前工作区的数据保存在此节点' : '打开后需独立验证；发现设备不会授予访问权限'}</p>
-      </div>
-    `
-  }
-  const markup = state.devices.length ? groups.filter(group => group.devices.length).map(group => `
-    <section class="device-group">
-      <h3 class="device-group-title">${group.title}<span>${group.devices.length}</span></h3>
-      ${group.devices.map(renderDevice).join('')}
-    </section>
-  `).join('') : `
-    <div class="empty">
-      <p>暂无可用节点</p>
-      <small>可在设置中添加局域网或 Tailscale 地址。</small>
-    </div>
-  `
+  const markup = groups.filter(g => g.devices.length).map(g => `<section class="device-group"><h3 class="device-group-title">${g.title}<span>${g.devices.length}</span></h3>${g.devices.map(d => {
+    const addresses = [...new Set([d.url,...(d.addresses||[])].map(safeDeviceURL).filter(Boolean))]
+    return `<div class="device" data-device-id="${escapeHTML(d.id)}">
+      <div class="device-heading"><h3>${escapeHTML(d.hostname || 'OmniShare')}</h3><span class="device-state ${d.online?'':'offline'}">${d.is_local?'本机':d.online?'在线':escapeHTML(d.status||'不可达')}</span></div>
+      ${addresses.map(address => `<code class="device-url">${escapeHTML(address)}${address===safeDeviceURL(d.url)&&d.online?' · 当前连接':''}</code>`).join('')}
+      <p class="device-note">${d.connection_error ? escapeHTML(d.connection_error) : d.is_local?'新内容默认保存于此；列表包含所有已绑定设备':d.bound?'内容已合并，直接在当前界面查看和操作':'发现设备不会授予访问权限；绑定后双方合并工作区'}</p>
+      ${d.is_local?'':d.bound?'<button class="button ghost small unbind-device">解除绑定</button>':`<button class="button primary small bind-device" data-url="${escapeHTML(d.url||'')}">绑定并合并</button>`}
+    </div>`
+  }).join('')}</section>`).join('')
   const list = $('#deviceList')
-  // Compare our source markup rather than the browser-normalized innerHTML.
-  // An unchanged poll must not replace a focused link or text selection.
-  if (list._deviceMarkup !== markup) {
-    const focused = document.activeElement
-    const focusedURL = focused && list.contains(focused) ? focused.getAttribute('href') : ''
-    list.innerHTML = markup
-    list._deviceMarkup = markup
-    if (focusedURL) [...list.querySelectorAll('.device-url')].find(link => link.getAttribute('href') === focusedURL)?.focus({preventScroll:true})
-  }
+  if (list._deviceMarkup !== markup) { list.innerHTML = markup; list._deviceMarkup = markup }
+  const status = $('#tailscaleStatus'); if (status) status.textContent = state.tailscaleStatus || '局域网自动发现已启用；Tailscale 状态正在检测'
 }
 
 const TAB_CONFIG = {
@@ -1573,6 +1709,7 @@ async function exportBackup() {
       let message = `HTTP ${res.status}`
       try {
         const payload = await res.json()
+  acceptWorkspaceStatus(payload)
         message = payload.message || message
       } catch { /* non-JSON error */ }
       throw new Error(message)
@@ -1733,6 +1870,19 @@ function restoreBackup() {
 }
 
 function bindEvents() {
+  $('#newPadCreateForm').addEventListener('submit', e => { e.preventDefault(); void submitNewPad() })
+  $('#cancelNewPadBtn').addEventListener('click', () => $('#newPadDialog').close())
+  $('#loadRemotePadBtn').addEventListener('click', () => void loadRemotePadVersion())
+  $('#saveDraftCopyBtn').addEventListener('click', () => void savePadDraftCopy())
+  $('#bindDeviceBtn').addEventListener('click', () => openBindDialog())
+  $('#bindPeerForm').addEventListener('submit', e => { e.preventDefault(); void submitPeerBinding() })
+  $('#cancelBindPeerBtn').addEventListener('click', () => $('#bindPeerDialog').close())
+  $('#deviceList').addEventListener('click', e => {
+    const bind = e.target.closest('.bind-device')
+    if (bind) { openBindDialog(bind.dataset.url); return }
+    const unbind = e.target.closest('.unbind-device')
+    if (unbind) void unbindDevice(unbind.closest('[data-device-id]').dataset.deviceId)
+  })
   const sidebar = $('.sidebar-disclosure')
   if (sidebar && window.matchMedia) {
     const narrow = window.matchMedia('(max-width: 980px)')
@@ -1846,7 +1996,7 @@ function bindEvents() {
     if (!card) return
     const link = state.shares.find(x => x.id === card.dataset.shareId)
     if (e.target.closest('.copy-share')) copyText(link.url).then(() => toast('分享链接已复制'))
-    if (e.target.closest('.open-share')) window.open(link.url, '_blank', 'noopener')
+    if (e.target.closest('.open-share')) { try { const url = new URL(link.url, location.href); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error('分享地址无效'); window.open(url.href, '_blank', 'noopener') } catch (err) { toast(err.message, true) } }
     if (e.target.closest('.revoke-share')) revokeShare(link.id)
   })
 
@@ -1877,7 +2027,7 @@ function bindEvents() {
   $('#restoreBtn').addEventListener('click', openRestoreDialog)
   $('#restoreSubmitBtn').addEventListener('click', restoreBackup)
   $('#saveSettingsBtn').addEventListener('click', saveSettings)
-  $('#addPeerBtn').addEventListener('click', () => addPeerRow())
+  $('#addPeerBtn').addEventListener('click', () => { $('#settingsDialog').close(); openBindDialog() })
   $('#peerRows').addEventListener('click', e => {
     if (e.target.closest('.remove-peer')) e.target.closest('.peer-row').remove()
   })
@@ -1928,7 +2078,9 @@ async function start() {
   await loadAll()
   switchTab(state.activeTab)
   // A background tab must not keep polling the local server on a timer.
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadDevices() })
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadDevices(); void refreshWorkspace() } })
+  window.addEventListener('focus', () => void refreshWorkspace())
+  setInterval(() => { void refreshWorkspace() }, 2000)
   setInterval(() => { if (!document.hidden) loadHealth() }, 15000)
   setInterval(() => {
     if (!document.hidden) loadDevices()

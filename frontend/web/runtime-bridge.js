@@ -113,7 +113,7 @@
     const seen = new Set()
 
     if (local.length) {
-      const primary = { ...local[0], id: 'local-primary', network_type: '本机' }
+      const primary = { ...local[0], id: local[0].id || 'local-primary', network_type: '本机' }
       primary.address_count = local.length
       output.push(primary)
       seen.add(`url:${String(primary.url || '').toLowerCase().replace(/\/$/, '')}`)
@@ -121,7 +121,7 @@
 
     for (const device of remote) {
       const normalizedURL = String(device?.url || '').toLowerCase().replace(/\/$/, '')
-      const key = normalizedURL ? `url:${normalizedURL}` : `id:${device?.id || ''}`
+      const key = device?.id?.startsWith('node-') ? `id:${device.id}` : normalizedURL ? `url:${normalizedURL}` : `id:${device?.id || ''}`
       if (seen.has(key)) continue
       seen.add(key)
       output.push(device)
@@ -161,7 +161,8 @@
       try {
         if (!init.signal) {
           const controller = new AbortController()
-          timeout = window.setTimeout(() => controller.abort(), 6000)
+          const budget = info.url.pathname === '/api/v1/peers/bind' ? 25000 : info.url.searchParams.get('scope') === 'all' ? 18000 : info.url.pathname === '/api/v1/devices' ? 12000 : 8000
+          timeout = window.setTimeout(() => controller.abort(), budget)
           options = { ...init, signal: controller.signal }
         }
         const response = await nativeFetch(input, options)

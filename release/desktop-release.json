@@ -1,8 +1,8 @@
 {
-  "tag": "v0.1.1",
-  "name": "OmniShare v0.1.1",
-  "notes": "docs/RELEASE_NOTES_v0.1.1.md",
-  "prerelease": false,
+  "tag": "v0.2.0-rc.1",
+  "name": "OmniShare v0.2.0-rc.1",
+  "notes": "docs/RELEASE_NOTES_v0.2.0-rc.1.md",
+  "prerelease": true,
   "platforms": [
     "desktop-windows-x86_64",
     "desktop-linux-x86_64",
@@ -21,5 +21,5 @@
     "minimum_system_version": "12.0",
     "reason": "Server app ZIPs are sealed and verified on native Intel and Apple silicon macOS runners. Ad-hoc signatures do not establish Developer ID trust or notarization."
   },
-  "release_date": "2026-11-08"
+  "release_date": "2026-11-12"
 }

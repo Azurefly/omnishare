@@ -110,7 +110,7 @@ func addressIP(addr net.Addr) net.IP {
 }
 
 func usableLocalIP(ip net.IP) bool {
-	return ip != nil && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast()
+	return ip != nil && !benchmarkRange.Contains(ip) && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast()
 }
 
 func localAddressScore(value, listenAddress, outbound string) int {

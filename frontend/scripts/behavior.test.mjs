@@ -63,7 +63,7 @@ function createApp(options = {}) {
   vm.runInContext(source, context, { filename: 'app.js' })
   const app = vm.runInContext(`({ state, authHeaders, sessionGet, sessionSet,
     sessionRemove, keyHeaders, fillSettings, saveSettings, showAuth, updateAccessKeyControls, exportBackup, preservePadDraft, performPadSave,
-    restoreBackup, openRestoreDialog })`, context)
+    restoreBackup, openRestoreDialog, createPad, submitNewPad, refreshCurrentPad, workspacePath, submitPeerBinding })`, context)
   return { app, element, stored, downloads, blobs, requests, replacedURLs }
 }
 
@@ -306,4 +306,59 @@ test('the enabled switch saves literal CLEAR, __KEEP__ and whitespace keys', asy
     assert.equal(payload.access_key,key)
     assert.equal(app.state.accessKey,key)
   }
+})
+
+
+test('native dialog-free document creation opens an in-page form and submits once', async () => {
+  let calls = 0, resolveCreate
+  const {app, element} = createApp({fetch: async (url, options) => {
+    if (options?.method === 'POST') { calls++; return new Promise(resolve => { resolveCreate = resolve }) }
+    return Response.json({code:0, data:url.includes('/pads/') ? {id:'pad-new',title:'new',content:'hello',version:1} : url.includes('/pads') ? [] : {}})
+  }})
+  app.createPad()
+  assert.equal(element('#newPadDialog').open, true)
+  element('#newPadTitle').value = 'new'
+  const first = app.submitNewPad(); const second = app.submitNewPad()
+  assert.equal(calls, 1)
+  assert.equal(element('#createPadSubmitBtn').disabled, true)
+  resolveCreate(Response.json({code:0,data:{id:'pad-new',title:'new',content:'hello',version:1}}, {status:201}))
+  await Promise.all([first, second])
+  assert.equal(element('#newPadDialog').open, false)
+  assert.equal(app.state.currentPad.id,'pad-new')
+  assert.equal(element('#createPadSubmitBtn').disabled,false)
+})
+
+test('remote document refresh updates a clean editor but preserves dirty drafts', async () => {
+  const remote = {id:'remote-pad',title:'New title',content:'remote text',version:2}
+  const {app, element, stored} = createApp({fetch:async () => Response.json({code:0,data:remote})})
+  app.state.currentPad = {...remote,version:1}
+  await app.refreshCurrentPad()
+  assert.equal(element('#padContent').value,'remote text')
+  app.state.currentPad = {...remote,version:1}; app.state.currentPadDirty = true
+  element('#padContent').value='local unsaved text'; element('#padTitle').value='local'
+  await app.refreshCurrentPad()
+  assert.equal(element('#padContent').value,'local unsaved text')
+  assert.equal(app.state.currentPad.version,1)
+  assert.equal(app.state.padSaveBlocked,true)
+  assert.equal(JSON.parse(stored.get('omnishare.padDraft.remote-pad')).content,'local unsaved text')
+})
+
+test('a refresh response arriving after new typing cannot overwrite the editor', async () => {
+  let complete
+  const {app, element} = createApp({fetch:async () => new Promise(r => {complete=r})})
+  app.state.currentPad = {id:'p',title:'old',content:'old',version:1}
+  const refresh = app.refreshCurrentPad()
+  app.state.currentPadDirty = true; element('#padContent').value='typed while awaiting fetch'; element('#padTitle').value='draft'
+  complete(Response.json({code:0,data:{id:'p',title:'remote',content:'remote',version:2}}))
+  await refresh
+  assert.equal(element('#padContent').value,'typed while awaiting fetch')
+  assert.equal(app.state.currentPad.version,1)
+})
+
+test('workspace scope is applied only to collections, not local config or writes', () => {
+  const {app} = createApp()
+  assert.equal(app.workspacePath('/api/v1/notes?q=hello'),'/api/v1/notes?q=hello&scope=all')
+  assert.equal(app.workspacePath('/api/v1/notes','POST'),'/api/v1/notes')
+  assert.equal(app.workspacePath('/api/v1/config'),'/api/v1/config')
+  assert.equal(app.workspacePath('/api/v1/pads/node-test~p'),'/api/v1/pads/node-test~p')
 })
