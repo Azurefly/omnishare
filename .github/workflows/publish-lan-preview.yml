@@ -1,0 +1,29 @@
+name: Publish reviewed LAN preview
+on:
+  push:
+    branches: ['fix/cross-platform-install-20261111']
+    paths:
+      - '.github/workflows/publish-lan-preview.yml'
+      - '.github/scripts/publish-lan-preview.py'
+      - 'release/lan-preview-4e9e809.json'
+      - 'docs/RELEASE_NOTES_v0.1.1-lan.1.md'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: omnishare-lan-preview-v0.1.1-lan.1
+  cancel-in-progress: false
+jobs:
+  publish-preview:
+    if: github.repository == 'Azurefly/omnishare' && github.ref == 'refs/heads/fix/cross-platform-install-20261111'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Validate pinned artifacts, publish a prerelease, and prepare documentation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/publish-lan-preview.py
