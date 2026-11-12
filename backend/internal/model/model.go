@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const CurrentConfigSchema = 2
+const CurrentConfigSchema = 3
 
 // QuickNote is a short-lived or persistent text object.
 type QuickNote struct {
@@ -73,6 +73,8 @@ type AppConfig struct {
 	AuditMaxEvents      int          `json:"audit_max_events"`
 	AllowedOrigins      []string     `json:"allowed_origins,omitempty"`
 	Peers               []PeerConfig `json:"peers"`
+	AccessKeyEnabled    *bool        `json:"access_key_enabled,omitempty"`
+	KeepAccessKey       bool         `json:"keep_access_key,omitempty"`
 	AccessKey           string       `json:"access_key,omitempty"`
 	AccessKeyHash       string       `json:"access_key_hash,omitempty"`
 	AccessKeySalt       string       `json:"access_key_salt,omitempty"`
@@ -100,6 +102,7 @@ type PublicConfig struct {
 	AuditRetentionDays int          `json:"audit_retention_days"`
 	AuditMaxEvents     int          `json:"audit_max_events"`
 	HasAccessKey       bool         `json:"has_access_key"`
+	AccessKeyEnabled   bool         `json:"access_key_enabled"`
 	TLSEnabled         bool         `json:"tls_enabled"`
 	AllowedOrigins     []string     `json:"allowed_origins,omitempty"`
 	Peers              []PeerConfig `json:"peers"`

@@ -11,4 +11,5 @@
 <key>CFBundleExecutable</key><string>OmniShare</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSLocalNetworkUsageDescription</key><string>发现同一局域网中的 OmniShare 设备并共享文件与笔记。</string>
 </dict></plist>

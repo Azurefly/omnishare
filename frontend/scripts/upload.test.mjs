@@ -361,7 +361,7 @@ test('retries use current credentials and always target the same-origin upload e
   app.retryUpload(app.state.uploadQueue[0])
   assert.equal(requests.length, 2)
   assert.equal(requests[1].url, '/api/v1/files/upload')
-  assert.equal(requests[1].headers['X-OmniShare-Init-Token'], 'new-bootstrap-token')
+  assert.equal(requests[1].headers['X-OmniShare-Init-Token'], undefined)
   assert.equal(requests[1].headers['X-OmniShare-Key'], undefined)
   assert.equal(requests[1].body.get('ttl_seconds'), '60')
 })

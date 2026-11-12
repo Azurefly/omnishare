@@ -21,6 +21,7 @@ import (
 )
 
 const multicastAddress = "239.255.42.99:48281"
+const maxDiscoveredPeers = 1024
 
 type announcement struct {
 	ID        string `json:"id"`
@@ -30,9 +31,11 @@ type announcement struct {
 	Protocol  string `json:"protocol"`
 	PublicKey string `json:"public_key"`
 	Signature string `json:"signature"`
+	Scheme    string `json:"scheme,omitempty"`
 }
 
 type Registry struct {
+	startOnce  sync.Once
 	mu         sync.RWMutex
 	peers      map[string]model.DeviceNode
 	localID    string
@@ -52,10 +55,20 @@ func NewRegistry() *Registry {
 	return NewRegistryWithIdentity(identity(key.Public().(ed25519.PublicKey)), key)
 }
 
+// Start is compatible with older HTTP callers; discovery never requires a
+// shared access key or pairing. Packet signatures are automatic node identity.
 func (r *Registry) Start(ctx context.Context, nodeName string, port int) {
-	go r.listen(ctx)
-	go r.announce(ctx, nodeName, port)
-	go r.evict(ctx)
+	r.StartWithScheme(ctx, nodeName, port, "http")
+}
+
+func (r *Registry) StartWithScheme(ctx context.Context, nodeName string, port int, scheme string) {
+	if len(r.privateKey) != ed25519.PrivateKeySize || port < 1 || port > 65535 || (scheme != "http" && scheme != "https") {
+		return
+	}
+	r.startOnce.Do(func() {
+		go r.networkLoop(ctx, nodeName, port, scheme)
+		go r.evict(ctx)
+	})
 }
 
 func (r *Registry) List() []model.DeviceNode {
@@ -97,42 +110,163 @@ func (r *Registry) List() []model.DeviceNode {
 	return out
 }
 
-func (r *Registry) listen(ctx context.Context) {
-	group, err := net.ResolveUDPAddr("udp4", multicastAddress)
+type lanInterface struct {
+	iface  net.Interface
+	ip     net.IP
+	subnet *net.IPNet
+}
+
+type lanEndpoint struct {
+	receive, send *net.UDPConn
+	done          chan struct{}
+}
+
+func activeInterfaces() map[string]lanInterface {
+	out := map[string]lanInterface{}
+	interfaces, err := net.Interfaces()
 	if err != nil {
-		log.Printf("[LAN discovery] resolve: %v", err)
-		return
+		return out
 	}
-	conn, err := net.ListenMulticastUDP("udp4", nil, group)
-	if err != nil {
-		log.Printf("[LAN discovery] listen unavailable: %v", err)
-		return
-	}
-	defer conn.Close()
-	_ = conn.SetReadBuffer(64 * 1024)
-	go func() { <-ctx.Done(); _ = conn.Close() }()
-	buf := make([]byte, 4096)
-	for {
-		n, addr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Printf("[LAN discovery] read: %v", err)
-			}
-			return
-		}
-		var a announcement
-		if n > 2048 || json.Unmarshal(buf[:n], &a) != nil || !validAnnouncement(a, r.localID, time.Now()) {
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagMulticast == 0 {
 			continue
 		}
-		node := model.DeviceNode{ID: a.ID, Hostname: a.Name, IP: addr.IP.String(), Port: a.Port, URL: "http://" + net.JoinHostPort(addr.IP.String(), strconv.Itoa(a.Port)), NetworkType: "lan", Online: true, LastSeen: time.Now()}
-		r.mu.Lock()
-		r.peers[a.ID] = node
-		r.mu.Unlock()
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, subnet, err := net.ParseCIDR(address.String())
+			if err != nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			out[fmt.Sprintf("%d/%s", iface.Index, ip)] = lanInterface{iface: iface, ip: ip.To4(), subnet: subnet}
+		}
+	}
+	return out
+}
+
+// Each eligible interface joins and sends on the same LAN. Refreshing the set
+// also recovers after sleep, a Wi-Fi switch, VPN changes or a transient bind error.
+func (r *Registry) networkLoop(ctx context.Context, name string, port int, scheme string) {
+	group, err := net.ResolveUDPAddr("udp4", multicastAddress)
+	if err != nil {
+		return
+	}
+	endpoints := map[string]*lanEndpoint{}
+	closeEndpoint := func(e *lanEndpoint) { _ = e.receive.Close(); _ = e.send.Close(); <-e.done }
+	defer func() {
+		for _, e := range endpoints {
+			closeEndpoint(e)
+		}
+	}()
+	refresh := func() {
+		interfaces := activeInterfaces()
+		for key, e := range endpoints {
+			_, exists := interfaces[key]
+			select {
+			case <-e.done:
+				exists = false
+			default:
+			}
+			if !exists {
+				closeEndpoint(e)
+				delete(endpoints, key)
+			}
+		}
+		for key, entry := range interfaces {
+			if _, exists := endpoints[key]; exists {
+				continue
+			}
+			receiver, err := net.ListenMulticastUDP("udp4", &entry.iface, group)
+			if err != nil {
+				continue
+			}
+			sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: entry.ip})
+			if err != nil {
+				_ = receiver.Close()
+				continue
+			}
+			if err = configureMulticast(sender, entry.ip); err != nil {
+				_ = receiver.Close()
+				_ = sender.Close()
+				continue
+			}
+			_ = receiver.SetReadBuffer(64 * 1024)
+			e := &lanEndpoint{receive: receiver, send: sender, done: make(chan struct{})}
+			endpoints[key] = e
+			go func(e *lanEndpoint, subnet *net.IPNet) {
+				defer close(e.done)
+				buf := make([]byte, 4096)
+				for {
+					n, source, err := e.receive.ReadFromUDP(buf)
+					if err != nil {
+						return
+					}
+					if subnet.Contains(source.IP) {
+						r.observe(buf[:n], source.IP, time.Now())
+					}
+				}
+			}(e, entry.subnet)
+		}
+	}
+	send := func() {
+		payload := r.announcementPayload(name, port, scheme, time.Now())
+		for _, e := range endpoints {
+			_ = e.send.SetWriteDeadline(time.Now().Add(time.Second))
+			_, _ = e.send.WriteToUDP(payload, group)
+		}
+	}
+	refresh()
+	if len(endpoints) == 0 {
+		log.Printf("[LAN discovery] no multicast interface available; retrying automatically")
+	}
+	send()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+			send()
+		}
 	}
 }
 
+func (r *Registry) observe(payload []byte, source net.IP, now time.Time) bool {
+	if source == nil || source.To4() == nil || source.IsUnspecified() || source.IsMulticast() || len(payload) > 2048 {
+		return false
+	}
+	var a announcement
+	if json.Unmarshal(payload, &a) != nil || !validAnnouncement(a, r.localID, now) {
+		return false
+	}
+	scheme := "http"
+	if a.Protocol == "omnishare/3" {
+		scheme = a.Scheme
+	}
+	node := model.DeviceNode{ID: a.ID, Hostname: a.Name, IP: source.String(), Port: a.Port,
+		URL:         scheme + "://" + net.JoinHostPort(source.String(), strconv.Itoa(a.Port)),
+		NetworkType: "lan", Online: true, LastSeen: now}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.peers[a.ID]; !exists && len(r.peers) >= maxDiscoveredPeers {
+		return false
+	}
+	r.peers[a.ID] = node
+	return true
+}
+
 func validAnnouncement(a announcement, localID string, now time.Time) bool {
-	if a.Protocol != "omnishare/2" || a.ID == "" || a.ID == localID || a.Port < 1 || a.Port > 65535 || len([]rune(a.Name)) == 0 || len([]rune(a.Name)) > 80 {
+	if (a.Protocol != "omnishare/2" && a.Protocol != "omnishare/3") || a.ID == "" || a.ID == localID || a.Port < 1 || a.Port > 65535 || len([]rune(a.Name)) == 0 || len([]rune(a.Name)) > 80 {
+		return false
+	}
+	if a.Protocol == "omnishare/2" && a.Scheme != "" {
+		return false
+	}
+	if a.Protocol == "omnishare/3" && a.Scheme != "http" && a.Scheme != "https" {
 		return false
 	}
 	if delta := now.Unix() - a.SentAt; delta < -10 || delta > 10 {
@@ -149,47 +283,32 @@ func validAnnouncement(a announcement, localID string, now time.Time) bool {
 	return ed25519.Verify(ed25519.PublicKey(pub), canonical(a), sig)
 }
 
-func (r *Registry) announce(ctx context.Context, nodeName string, port int) {
-	if len(r.privateKey) != ed25519.PrivateKeySize || port < 1 || port > 65535 {
-		return
+func (r *Registry) announcementPayload(nodeName string, port int, scheme string, now time.Time) []byte {
+	name := strings.TrimSpace(nodeName)
+	if name == "" {
+		name = "OmniShare"
 	}
-	addr, err := net.ResolveUDPAddr("udp4", multicastAddress)
-	if err != nil {
-		return
+	if runes := []rune(name); len(runes) > 80 {
+		name = string(runes[:80])
 	}
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		log.Printf("[LAN discovery] announce unavailable: %v", err)
-		return
+	// Continue emitting v2 for HTTP so already-deployed v2 nodes discover us.
+	a := announcement{ID: r.localID, Name: name, Port: port, SentAt: now.Unix(), Protocol: "omnishare/2",
+		PublicKey: base64.RawStdEncoding.EncodeToString(r.privateKey.Public().(ed25519.PublicKey))}
+	if scheme == "https" {
+		a.Protocol = "omnishare/3"
+		a.Scheme = scheme
 	}
-	defer conn.Close()
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	send := func() {
-		name := strings.TrimSpace(nodeName)
-		if runes := []rune(name); len(runes) > 80 {
-			name = string(runes[:80])
-		}
-		a := announcement{ID: r.localID, Name: name, Port: port, SentAt: time.Now().Unix(), Protocol: "omnishare/2", PublicKey: base64.RawStdEncoding.EncodeToString(r.privateKey.Public().(ed25519.PublicKey))}
-		a.Signature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(r.privateKey, canonical(a)))
-		payload, err := json.Marshal(a)
-		if err == nil && len(payload) <= 2048 {
-			_, _ = conn.Write(payload)
-		}
-	}
-	send()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			send()
-		}
-	}
+	a.Signature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(r.privateKey, canonical(a)))
+	payload, _ := json.Marshal(a)
+	return payload
 }
 
 func canonical(a announcement) []byte {
-	return []byte(fmt.Sprintf("%s\n%s\n%d\n%d\n%s\n%s", a.ID, a.Name, a.Port, a.SentAt, a.Protocol, a.PublicKey))
+	value := fmt.Sprintf("%s\n%s\n%d\n%d\n%s\n%s", a.ID, a.Name, a.Port, a.SentAt, a.Protocol, a.PublicKey)
+	if a.Protocol == "omnishare/3" {
+		value += "\n" + a.Scheme
+	}
+	return []byte(value)
 }
 
 func identity(pub ed25519.PublicKey) string {

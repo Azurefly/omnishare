@@ -268,17 +268,7 @@ final class OmniShareApplication: NSObject, NSApplicationDelegate {
 
     @objc private func openWorkspace(_ sender: Any?) {
         guard ready, let base = serviceURL else { return }
-        var target = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-        if let directory = dataDirectory {
-            let tokenURL = directory.appendingPathComponent("init-token")
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: tokenURL.path),
-               attributes[.type] as? FileAttributeType == .typeRegular,
-               let permissions = attributes[.posixPermissions] as? NSNumber, permissions.intValue & 0o077 == 0,
-               let token = try? String(contentsOf: tokenURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-               token.count >= 32, token.count <= 512, !token.contains(where: { $0.isWhitespace }) {
-                target.queryItems = [URLQueryItem(name: "init_token", value: token)]
-            }
-        }
+        let target = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         if let url = target.url, !NSWorkspace.shared.open(url) {
             let alert = NSAlert()
             alert.messageText = "无法打开默认浏览器"

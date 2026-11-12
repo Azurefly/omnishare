@@ -119,9 +119,8 @@ func TestDesktopParentPipeShutdownPreservesBufferedCounters(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	token, err := os.ReadFile(filepath.Join(dir, "init-token"))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(dir, "init-token")); !os.IsNotExist(err) {
+		t.Fatal("desktop first run unexpectedly created an init token")
 	}
 	request := func(method, path, body string, status int) model.QuickNote {
 		t.Helper()
@@ -129,7 +128,6 @@ func TestDesktopParentPipeShutdownPreservesBufferedCounters(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("X-OmniShare-Init-Token", strings.TrimSpace(string(token)))
 		req.Header.Set("Content-Type", "application/json")
 		response, err := client.Do(req)
 		if err != nil {

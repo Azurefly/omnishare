@@ -17,13 +17,10 @@ function sessionRemove(key) {
   try { sessionStorage.removeItem(key) } catch { /* page memory only */ }
 }
 
-// First run: the backend prints a loopback-only URL carrying this token. Keep it
-// in sessionStorage and strip it from the address bar so it does not leak into
-// history or referrers.
-const INIT_TOKEN_KEY = 'omnishare.initToken'
-const urlInitToken = new URLSearchParams(location.search).get('init_token') || ''
-if (urlInitToken) {
-  sessionSet(INIT_TOKEN_KEY, urlInitToken)
+// Drop obsolete initialization tokens from old links and session storage.
+// They are never used as credentials in the LAN-first application.
+sessionRemove('omnishare.initToken')
+if (new URLSearchParams(location.search).has('init_token')) {
   const clean = new URL(location.href)
   clean.searchParams.delete('init_token')
   history.replaceState(null, '', clean.pathname + clean.search + clean.hash)
@@ -32,7 +29,7 @@ if (urlInitToken) {
 const state = {
   activeTab: 'dashboard', notes: [], files: [], pads: [], shares: [], trash: [], audits: [], devices: [], stats: {}, config: null,
   currentPad: null, currentPadDirty: false, padSaveBlocked: false, saveTimer: null, saveInFlight: false, queuedPadSave: null,
-  accessKey: sessionGet('omnishare.accessKey') || '', initToken: sessionGet(INIT_TOKEN_KEY) || '',
+  accessKey: sessionGet('omnishare.accessKey') || '',
   deferredInstall: null, editingNote: null,
   uploadQueue: [], activeUploads: 0, uploadSequence: 0, uploadPumping: false, uploadNotice: '',
   requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
@@ -66,9 +63,17 @@ const toast = (message, error=false) => {
   el._timer = setTimeout(() => { el.className = 'toast' }, 2800)
 }
 
-const authHeaders = () => state.accessKey
-  ? {'X-OmniShare-Key': state.accessKey}
-  : (state.initToken ? {'X-OmniShare-Init-Token': state.initToken} : {})
+function keyHeaders(key) {
+  // Keep ordinary printable ASCII compatible with existing clients. Encode
+  // every other value, including leading/trailing spaces, without trimming.
+  if (!key) return {}
+  if (/^[\x21-\x7e]+$/.test(key)) return {'X-OmniShare-Key': key}
+  const bytes = new TextEncoder().encode(key)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return {'X-OmniShare-Key-Base64': btoa(binary)}
+}
+const authHeaders = () => state.config?.access_key_enabled === false ? {} : keyHeaders(state.accessKey)
 const headers = (extra={}) => ({ ...authHeaders(), ...extra })
 
 async function api(path, options={}) {
@@ -131,16 +136,19 @@ async function apiBlob(path, options={}) {
 }
 
 function showAuth() {
+  // A different client may have enabled protection since our last config poll.
+  if (state.config) state.config.access_key_enabled = true
   if (!$('#authDialog').open) $('#authDialog').showModal()
   $('#authKey').focus()
 }
 
 async function verifyAuth() {
-  const key = $('#authKey').value.trim()
+  const key = $('#authKey').value
   try {
-    const res = await fetch('/api/v1/auth/verify', {method:'POST', headers:{'X-OmniShare-Key':key}})
+    const res = await fetch('/api/v1/auth/verify', {method:'POST', headers:keyHeaders(key)})
     if (!res.ok) throw new Error('密钥不正确')
     state.accessKey = key
+    if (state.config) state.config.access_key_enabled = true
     sessionSet('omnishare.accessKey', key)
     $('#authError').textContent = ''
     $('#authDialog').close()
@@ -227,6 +235,10 @@ function renderStats() {
 async function loadConfig(strict=false) {
   try {
     state.config = await api('/api/v1/config')
+    if (state.config.access_key_enabled === false) {
+      state.accessKey = ''
+      sessionRemove('omnishare.accessKey')
+    }
     $('#dataDirText').textContent = '本机私有存储（路径未通过 API 暴露）'
     $('#uploadLimit').textContent = `单文件上限 ${formatBytes(state.config.max_upload_mb * 1024 * 1024)}`
     renderNodeSecurity()
@@ -246,13 +258,23 @@ function fillSettings() {
   $('#cfgBackupMax').value = state.config.backup_max_mb || 16384
   $('#cfgAutoOpen').checked = !!state.config.auto_open_browser
   $('#cfgAllowLAN').checked = !!state.config.allow_lan
-  $('#cfgListenAddress').value = state.config.listen_address || '127.0.0.1'
+  $('#cfgListenAddress').value = state.config.listen_address || (state.config.allow_lan ? '0.0.0.0' : '127.0.0.1')
   $('#cfgPublicBaseURL').value = state.config.public_base_url || ''
   $('#cfgAllowedOrigins').value = (state.config.allowed_origins || []).join(', ')
   $('#cfgAccessKey').value = ''
-  $('#cfgInitToken').value = ''
-  $('#cfgInitTokenRow').classList.toggle('hidden', !!state.config.has_access_key)
+  $('#cfgAccessKeyEnabled').checked = state.config.access_key_enabled ?? !!state.config.has_access_key
+  updateAccessKeyControls()
   renderPeers(state.config.peers || [])
+}
+
+function updateAccessKeyControls() {
+  const enabled = $('#cfgAccessKeyEnabled').checked
+  $('#cfgAccessKeyRow').classList.toggle('hidden', !enabled)
+  $('#cfgAccessKey').disabled = !enabled
+  $('#cfgAccessKey').placeholder = state.config?.has_access_key ? '留空保留已设置的密钥' : '自行设置，无长度和字符类型要求'
+  $('#cfgAccessKeyWarning').textContent = enabled
+    ? '开启后访问本节点需要此密钥；支持中文、数字、空格和符号。'
+    : '密钥保护已关闭：可访问本机的局域网设备可以读取、修改和删除内容。请勿暴露到公网。'
 }
 
 function renderPeers(peers) {
@@ -276,7 +298,12 @@ function addPeerRow(peer={id:'', name:'', url:''}) {
 }
 
 async function saveSettings() {
-  const secret = $('#cfgAccessKey').value.trim()
+  const secret = $('#cfgAccessKey').value
+  const protection = $('#cfgAccessKeyEnabled').checked
+  if (protection && secret === '' && !state.config?.has_access_key) {
+    toast('请先填写访问密钥，或关闭密钥保护', true)
+    return
+  }
   const peers = $$('#peerRows .peer-row').map(row => ({
     id: row.dataset.id,
     name: row.querySelector('.peer-name').value.trim(),
@@ -294,24 +321,21 @@ async function saveSettings() {
     listen_address: $('#cfgListenAddress').value.trim(),
     public_base_url: $('#cfgPublicBaseURL').value.trim(),
     allowed_origins: $('#cfgAllowedOrigins').value.split(/[,，]/).map(v => v.trim()).filter(Boolean),
-    access_key: secret === '' ? '__KEEP__' : (secret === 'CLEAR' ? '' : secret),
+    access_key_enabled: protection,
+    keep_access_key: !protection || secret === '',
+    access_key: protection ? secret : '',
     peers
   }
   const requestHeaders = { 'Content-Type': 'application/json' }
-  if (secret === 'CLEAR') requestHeaders['X-OmniShare-Confirm']='CLEAR-ACCESS-KEY'
-  // Before any key exists the server only accepts config writes carrying the
-  // one-time token from <data-dir>/init-token.
-  const initToken = $('#cfgInitToken').value.trim()
-  if (!state.config?.has_access_key && initToken) requestHeaders['X-OmniShare-Init-Token'] = initToken
 
   try {
     state.config = await api('/api/v1/config', {method:'PUT', headers:requestHeaders, body:JSON.stringify(payload)})
     renderNodeSecurity()
-    if (secret && secret !== 'CLEAR') {
+    if (protection && secret !== '') {
       state.accessKey = secret
       sessionSet('omnishare.accessKey', secret)
     }
-    if (secret === 'CLEAR') {
+    if (!protection) {
       state.accessKey = ''
       sessionRemove('omnishare.accessKey')
     }
@@ -1449,9 +1473,9 @@ function safeDeviceURL(value) {
 function renderNodeSecurity() {
   const summary = $('#nodeSecuritySummary')
   if (!summary || !state.config) return
-  summary.textContent = state.config.has_access_key
+  summary.textContent = (state.config.access_key_enabled ?? state.config.has_access_key)
     ? '访问密钥已启用 · 每个节点独立验证'
-    : '当前节点未设置访问密钥 · 可在设置中启用'
+    : '局域网免密访问 · 可在设置中开启密钥保护'
 }
 
 function renderDevices() {
@@ -1839,6 +1863,10 @@ function bindEvents() {
 
   $('#refreshAuditBtn').addEventListener('click', loadAudit)
   $('#refreshDevicesBtn').addEventListener('click', () => loadDevices())
+  $('#cfgAccessKeyEnabled').addEventListener('change', updateAccessKeyControls)
+  $('#cfgAllowLAN').addEventListener('change', () => {
+    $('#cfgListenAddress').value = $('#cfgAllowLAN').checked ? '0.0.0.0' : '127.0.0.1'
+  })
   $('#settingsBtn').addEventListener('click', () => {
     fillSettings()
     $('#settingsDialog').showModal()
@@ -1900,10 +1928,11 @@ async function start() {
   await loadAll()
   switchTab(state.activeTab)
   // A background tab must not keep polling the local server on a timer.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadDevices() })
   setInterval(() => { if (!document.hidden) loadHealth() }, 15000)
   setInterval(() => {
     if (!document.hidden) loadDevices()
-  }, 30000)
+  }, 5000)
 }
 
 start()

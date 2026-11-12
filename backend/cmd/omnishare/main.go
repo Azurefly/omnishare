@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,7 +26,7 @@ func main() {
 	port := flag.Int("port", 0, "HTTP port override")
 	dataDir := flag.String("data-dir", defaultDataDir(), "data directory")
 	name := flag.String("name", "", "node name override")
-	listenAddress := flag.String("listen", "", "listen address override; LAN addresses require an access key")
+	listenAddress := flag.String("listen", "", "listen address override (default: all IPv4 interfaces)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file")
 	tlsKey := flag.String("tls-key", "", "TLS private key file")
 	noBrowser := flag.Bool("no-browser", false, "do not open the browser automatically")
@@ -91,14 +90,15 @@ func main() {
 	registry := discovery.NewRegistryWithIdentity(nodeID, discoveryKey)
 	// Discovery starts only after the HTTP listener is known to be available.
 	if current.AllowLAN {
-		registry.Start(ctx, current.NodeName, current.Port)
+		scheme := "http"
+		if current.TLSCertFile != "" {
+			scheme = "https"
+		}
+		registry.StartWithScheme(ctx, current.NodeName, current.Port, scheme)
 	}
 
 	server := api.New(store, cfg, registry)
 	server.SetStorageState(storageState)
-	if tokenPath := server.InitTokenPath(); tokenPath != "" {
-		log.Printf("first-run setup: writing config requires header X-OmniShare-Init-Token; the one-time token is in %s (mode 0600, delete after setting an access key)", tokenPath)
-	}
 	httpServer := &http.Server{
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -129,13 +129,6 @@ func main() {
 	}
 	localURL := fmt.Sprintf("%s://%s", scheme, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", current.Port)))
 	browserURL := localURL
-	if token := server.InitToken(); token != "" {
-		// First run: protected reads are denied until the browser presents this
-		// loopback-only token, so hand it over directly instead of asking the
-		// user to copy the file by hand.
-		browserURL = localURL + "/?init_token=" + url.QueryEscape(token)
-		log.Printf("first-run URL (token valid only on this machine until an access key is set): %s", browserURL)
-	}
 	log.Printf("OmniShare v%s started: %s", api.Version, localURL)
 	log.Printf("Listen: %s | Data: %s | LAN: %t | TLS: %t", addr, current.DataDir, current.AllowLAN, current.TLSCertFile != "")
 	if !*noBrowser && current.AutoOpenBrowser {

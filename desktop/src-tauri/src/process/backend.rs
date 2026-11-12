@@ -172,8 +172,6 @@ impl BackendProcess {
             .arg("--shutdown-on-stdin-close")
             .arg("--data-dir")
             .arg(data_dir)
-            .arg("--listen")
-            .arg(DEFAULT_BACKEND_HOST)
             .arg("--port")
             .arg(self.port.to_string())
             .env("OMNISHARE_DESKTOP", "1")

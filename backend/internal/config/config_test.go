@@ -11,19 +11,20 @@ import (
 	"omnishare/internal/model"
 )
 
-func TestSecureDefaultsAndHashedSecretPersistence(t *testing.T) {
+func TestLANDefaultsAndHashedSecretPersistence(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, 0, "test-node")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := m.Get()
-	if cfg.Port != 8081 || cfg.ListenAddress != "127.0.0.1" || cfg.AllowLAN || m.HasAccessKey() {
+	if cfg.Port != 8081 || cfg.ListenAddress != "0.0.0.0" || !cfg.AllowLAN || m.HasAccessKey() || m.AccessKeyEnabled() {
 		t.Fatalf("defaults=%+v", cfg)
 	}
 	secret := "0123456789abcdef-strong"
 	req := cfg
 	req.AccessKey = secret
+	req.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	req.AllowLAN = true
 	req.ListenAddress = "0.0.0.0"
 	req.Peers = []model.PeerConfig{{Name: "peer", URL: "http://100.64.0.2:8081/"}, {Name: "dup", URL: "http://100.64.0.2:8081"}}
@@ -57,17 +58,19 @@ func TestSecureDefaultsAndHashedSecretPersistence(t *testing.T) {
 	}
 }
 
-func TestLANRequiresStrongKeyAndPeerValidation(t *testing.T) {
+func TestLANAllowsShortKeyAndRejectsUnsafePeer(t *testing.T) {
 	m, _ := New(t.TempDir(), 0, "node")
 	cfg := m.Get()
 	cfg.AllowLAN = true
 	cfg.ListenAddress = "0.0.0.0"
 	cfg.AccessKey = "short"
-	if err := m.Update(cfg); err == nil {
-		t.Fatal("expected weak key rejection")
+	cfg.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
+	if err := m.Update(cfg); err != nil {
+		t.Fatalf("short key rejected: %v", err)
 	}
 	cfg = m.Get()
 	cfg.AccessKey = "0123456789abcdef"
+	cfg.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	cfg.AllowLAN = true
 	cfg.ListenAddress = "0.0.0.0"
 	cfg.Peers = []model.PeerConfig{{URL: "file:///etc/passwd"}}
@@ -85,6 +88,7 @@ func TestCorruptPrimaryRecoversFromBackup(t *testing.T) {
 	cfg := m.Get()
 	cfg.NodeName = "generation-two"
 	cfg.AccessKey = "__KEEP__"
+	cfg.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	if err := m.Update(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +190,7 @@ func TestSuccessfulKeyCacheIsInvalidatedOnRotation(t *testing.T) {
 	}
 	first := m.Get()
 	first.AccessKey = "0123456789abcdef-first"
+	first.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	if err := m.Update(first); err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +199,7 @@ func TestSuccessfulKeyCacheIsInvalidatedOnRotation(t *testing.T) {
 	}
 	rotated := m.Get()
 	rotated.AccessKey = "0123456789abcdef-second"
+	rotated.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	if err := m.Update(rotated); err != nil {
 		t.Fatal(err)
 	}

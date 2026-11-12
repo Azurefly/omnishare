@@ -173,7 +173,7 @@ func TestDownloadRejectsStatePathEscapingUploads(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(store, cfg)
-	testAuthToken = s.initToken
+	testAuthToken = s.InitToken()
 	w := request(t, s.Handler(), "GET", "/api/v1/files/f_traversal/download", nil, "", "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("traversal download served: %d %s", w.Code, w.Body.String())

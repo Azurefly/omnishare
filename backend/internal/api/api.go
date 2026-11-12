@@ -64,10 +64,6 @@ type Server struct {
 	shareIP   map[string]int
 	counted   map[string]time.Time
 
-	// initToken guards the first configuration write before any access key
-	// exists; see init_token.go.
-	initToken     string
-	initTokenPath string
 	// dataMu keeps each data request on one generation of state/config/blobs.
 	// Ordinary requests share the read lock; only the final restore swap takes
 	// the write lock. Uploading and validating an archive do not block requests.
@@ -181,9 +177,7 @@ func New(store storage.Backend, cfg *config.Manager, registries ...*discovery.Re
 		ticketKey: key, auth: map[string]*authState{}, requestIP: map[string]int{}, shareIP: map[string]int{}, counted: map[string]time.Time{},
 		denied: map[string]*deniedBucket{}, deniedWindow: time.Minute,
 	}
-	if err := server.ensureInitToken(); err != nil {
-		panic(fmt.Sprintf("initialize first-run token: %v", err))
-	}
+	server.finishInitialization() // Remove an obsolete token file; never generate or read it.
 	return server
 }
 
@@ -289,7 +283,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 	}
 	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-OmniShare-Key, X-OmniShare-Confirm")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-OmniShare-Key, X-OmniShare-Key-Base64, X-OmniShare-Confirm")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, DELETE, OPTIONS")
 	return true
 }
@@ -412,16 +406,6 @@ func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorized(r) {
 			s.recordDenied(r)
-			if !s.cfg.HasAccessKey() {
-				// First-run writes keep the explicit 403 "init token required"
-				// contract; reads default-deny with a 401 that explains the flow.
-				if r.Method == http.MethodGet || r.Method == http.MethodHead {
-					respond(w, http.StatusUnauthorized, 401, "instance is not initialised: use the token-bearing local URL printed at startup or the X-OmniShare-Init-Token header", nil)
-				} else {
-					respond(w, http.StatusForbidden, 403, "init token required", nil)
-				}
-				return
-			}
 			respond(w, http.StatusUnauthorized, 401, "access key required", nil)
 			return
 		}
@@ -487,30 +471,30 @@ func (s *Server) FlushDeniedAudits() {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	if !s.cfg.HasAccessKey() {
-		// Uninitialised instances deny every protected endpoint by default, both
-		// reads and writes. The loopback-only one-time token is the only way in,
-		// so a local process cannot claim the node by racing the first config
-		// write and the user still gets a first-run path.
-		return s.initTokenValid(r)
+	if !s.cfg.AccessKeyEnabled() {
+		return true
 	}
-	return s.cfg.VerifyAccessKey(r.Header.Get("X-OmniShare-Key"))
-}
-
-// InitToken exposes the current one-time token so startup can hand a
-// token-bearing local URL to the browser. It is empty after initialisation.
-func (s *Server) InitToken() string {
-	if s.cfg.HasAccessKey() {
-		return ""
+	key := r.Header.Get("X-OmniShare-Key")
+	// UTF-8 base64 supports Chinese, whitespace and symbols without relying
+	// on browsers allowing non-Latin1 characters in HTTP header values.
+	if encoded, ok := r.Header[http.CanonicalHeaderKey("X-OmniShare-Key-Base64")]; ok {
+		if len(encoded) != 1 {
+			return false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded[0])
+		if err != nil {
+			return false
+		}
+		key = string(decoded)
 	}
-	return s.initToken
+	return s.cfg.VerifyAccessKey(key)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	s.storageMu.RLock()
 	state := s.storageState
 	s.storageMu.RUnlock()
-	data := map[string]interface{}{"status": "ok", "version": Version}
+	data := map[string]interface{}{"status": "ok", "version": Version, "access_key_enabled": s.cfg.AccessKeyEnabled()}
 	if state.Engine != "" {
 		data["storage"] = state.Engine
 		data["storage_migrated"] = !state.MigrationPending && !state.MigrationFailed
@@ -525,6 +509,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) verifyAuth(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.AccessKeyEnabled() {
+		respond(w, http.StatusOK, 0, "access key protection is disabled", nil)
+		return
+	}
 	ip := clientIP(r)
 	if retry := s.authRetryAfter(ip); retry > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
@@ -632,27 +620,12 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
-	// Before a key exists every loopback process could otherwise claim this
-	// instance by writing the first config. The token is readable only by the
-	// account that owns the data directory.
-	if !s.cfg.HasAccessKey() && !s.initTokenValid(r) {
-		respond(w, http.StatusForbidden, 403, "first-run setup requires X-OmniShare-Init-Token (see the init-token file in the data directory)", nil)
-		return
-	}
 	var req model.AppConfig
 	if err := decodeJSON(r, &req); err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
 	}
 	current := s.cfg.Get()
-	if req.AccessKey == "" && current.AccessKeyHash != "" && r.Header.Get("X-OmniShare-Confirm") != "CLEAR-ACCESS-KEY" {
-		respond(w, http.StatusBadRequest, 400, "clearing the access key requires X-OmniShare-Confirm: CLEAR-ACCESS-KEY", nil)
-		return
-	}
-	if req.AllowLAN && req.AccessKey == "__KEEP__" && current.AccessKeyHash == "" {
-		respond(w, http.StatusBadRequest, 400, "set a strong access key before enabling LAN access", nil)
-		return
-	}
 	if err := s.cfg.Update(req); err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return

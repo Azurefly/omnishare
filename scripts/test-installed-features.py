@@ -99,16 +99,11 @@ class InstalledFeatures:
     def exercise(self):
         self.health()
         self.current_check = "first_run_authentication"
-        require(self.request("GET", "/api/v1/notes", authenticated=False)[0] == 401,
-                "Fresh installed data must deny unauthenticated content access")
+        require(self.request("GET", "/api/v1/notes", authenticated=False)[0] == 200,
+                "Fresh installed data must allow token-free access")
         token_path = self.data_dir / "init-token"
-        info = token_path.lstat()
-        require(stat.S_ISREG(info.st_mode) and not token_path.is_symlink(), "Invalid initialization token file")
-        if os.name != "nt":
-            require(info.st_mode & 0o077 == 0, "Initialization token permissions are too broad")
-        token = token_path.read_text().strip()
-        require(len(token) >= 32 and not any(c.isspace() for c in token), "Invalid initialization token")
-        self.auth = {"X-OmniShare-Init-Token": token}
+        require(not token_path.exists(), "Obsolete initialization token was created")
+        self.auth = {}
         key = secrets.token_urlsafe(36)
         config = self.api("GET", "/api/v1/config")
         require(config.get("has_access_key") is False, "Exercise requires fresh, isolated installation data")
@@ -117,10 +112,10 @@ class InstalledFeatures:
             "listen_address": "127.0.0.1", "allow_lan": False,
             "auto_open_browser": False, "max_upload_mb": 32,
             "backup_max_mb": 64, "retention_days": 0, "trash_retention_days": 14,
-            "allowed_origins": [], "peers": [], "access_key": key,
+            "allowed_origins": [], "peers": [], "access_key_enabled": True, "access_key": key,
         })
-        require(config.get("has_access_key") is True and not token_path.exists(),
-                "First-run credential was not consumed")
+        require(config.get("has_access_key") is True and config.get("access_key_enabled") is True and not token_path.exists(),
+                "Optional protection was not enabled without a bootstrap token")
         self.auth = {"X-OmniShare-Key": key}
         require(key not in (self.data_dir / "config.json").read_text(),
                 "Configuration stored the access key in plaintext")

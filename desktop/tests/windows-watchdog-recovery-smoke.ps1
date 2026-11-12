@@ -221,19 +221,8 @@ try {
         throw "Recovery setup expected one desktop and one backend; found desktop=$($desktopBefore.Count), backend=$($backendBefore.Count)."
     }
 
-    # This fresh test instance is deliberately uninitialised. Authenticate the
-    # device probe with its local setup token; do not relax default-deny reads.
-    $initTokenPath = Join-Path $dataDir 'init-token'
-    if (-not (Test-Path $initTokenPath)) {
-        throw "The test instance did not create its first-run init-token."
-    }
-    $initToken = (Get-Content -Raw -Path $initTokenPath).Trim()
-    if (-not $initToken) {
-        throw "The test instance init-token is empty."
-    }
-    $devicesPayload = Get-Json -Url "http://127.0.0.1:$port/api/v1/devices" -Headers @{
-        'X-OmniShare-Init-Token' = $initToken
-    }
+    # A fresh LAN-first instance exposes devices without setup credentials.
+    $devicesPayload = Get-Json -Url "http://127.0.0.1:$port/api/v1/devices"
     if ($null -eq $devicesPayload -or $devicesPayload.code -ne 0) {
         throw "Device API did not return a successful response."
     }

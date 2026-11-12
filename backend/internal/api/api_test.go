@@ -38,7 +38,7 @@ func newTestServer(t *testing.T) (*Server, http.Handler, *config.Manager) {
 		t.Fatal(err)
 	}
 	s := New(store, cfg)
-	testAuthToken = s.initToken
+	testAuthToken = s.InitToken()
 	return s, s.Handler(), cfg
 }
 
@@ -138,6 +138,7 @@ func TestAuthProtectionNoQueryKeyAndRateLimit(t *testing.T) {
 	s, h, cfg := newTestServer(t)
 	current := cfg.Get()
 	current.AccessKey = "0123456789abcdef"
+	current.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	current.AllowLAN = true
 	current.ListenAddress = "0.0.0.0"
 	if err := cfg.Update(current); err != nil {
@@ -447,7 +448,7 @@ func TestConfigAPIActuallySetsWriteOnlyAccessKey(t *testing.T) {
 	r.Host = "127.0.0.1:8081"
 	r.RemoteAddr = "127.0.0.1:12345"
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-OmniShare-Init-Token", s.initToken)
+	r.Header.Set("X-OmniShare-Init-Token", s.InitToken())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {

@@ -339,10 +339,10 @@
         <section class="settings-section" aria-labelledby="settingsSecurity">
           <div class="settings-section-head"><span class="section-number">02</span><div><h3 id="settingsSecurity">访问与网络</h3><p>控制谁可以连接。网络设置保存后需重启服务。</p></div></div>
           <div class="settings-grid">
-            <label class="full">访问密钥<input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="留空保持不变；输入 CLEAR 清除" /><small>浏览器中的密钥只保留在当前会话，不写入链接或长期存储。</small></label>
-            <label class="full hidden" id="cfgInitTokenRow">初始化令牌<input id="cfgInitToken" autocomplete="off" placeholder="粘贴 data 目录下 init-token 文件中的令牌" /><small>未设置访问密钥时，首次配置需要此令牌。设置密钥成功后令牌文件会被删除。</small></label>
-            <label class="switch-row full"><span>允许局域网访问</span><input id="cfgAllowLAN" type="checkbox" /><small>开启前，请设置至少 16 字节的访问密钥。</small></label>
-            <label class="full">监听地址<input id="cfgListenAddress" placeholder="127.0.0.1" /><small>127.0.0.1 仅供本机使用；0.0.0.0 监听全部 IPv4 网络接口。</small></label>
+            <label class="switch-row full"><span>启用访问密钥保护</span><input id="cfgAccessKeyEnabled" type="checkbox" role="switch" /><small id="cfgAccessKeyWarning">默认关闭，局域网设备可直接使用。请勿暴露到公网。</small></label>
+            <label class="full hidden" id="cfgAccessKeyRow">访问密钥<input id="cfgAccessKey" type="password" autocomplete="new-password" placeholder="自行设置，无长度和字符类型要求" /><small>不限制长度或字符组合，密钥只保留在浏览器当前会话中，不写入设备链接。</small></label>
+            <label class="switch-row full"><span>允许局域网访问与自动发现</span><input id="cfgAllowLAN" type="checkbox" role="switch" /><small>新安装默认开启，同一局域网中的 OmniShare 节点会自动显示，无需密钥或手动配对。</small></label>
+            <label class="full">监听地址<input id="cfgListenAddress" placeholder="0.0.0.0" /><small>127.0.0.1 仅供本机使用；0.0.0.0 监听全部 IPv4 网络接口。</small></label>
             <label class="full">公开基础地址<input id="cfgPublicBaseURL" type="url" placeholder="https://share.example.com:8081" /><small>用于生成分享链接；留空时仅接受可信 Host。</small></label>
             <label class="full">允许的跨域来源<input id="cfgAllowedOrigins" placeholder="https://app.example.com" /><small>默认不允许跨域。仅填写完整、可信的来源地址，多个地址用逗号分隔。</small></label>
           </div>

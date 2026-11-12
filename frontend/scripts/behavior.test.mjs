@@ -44,7 +44,7 @@ function createApp(options = {}) {
     removeItem: key => stored.delete(key)
   }
   const context = vm.createContext({
-    URL: BrowserURL, URLSearchParams, AbortController, Blob, FormData,
+    URL: BrowserURL, URLSearchParams, AbortController, Blob, FormData, TextEncoder, btoa,
     location: new URL(options.url || 'http://localhost/'),
     history: { replaceState: (_state, _title, url) => replacedURLs.push(url) },
     document: {
@@ -62,18 +62,18 @@ function createApp(options = {}) {
   })
   vm.runInContext(source, context, { filename: 'app.js' })
   const app = vm.runInContext(`({ state, authHeaders, sessionGet, sessionSet,
-    sessionRemove, exportBackup, preservePadDraft, performPadSave,
+    sessionRemove, keyHeaders, fillSettings, saveSettings, showAuth, updateAccessKeyControls, exportBackup, preservePadDraft, performPadSave,
     restoreBackup, openRestoreDialog })`, context)
   return { app, element, stored, downloads, blobs, requests, replacedURLs }
 }
 
-test('first-run credentials survive a denied storage accessor and leave the URL', () => {
+test('obsolete init tokens leave the URL but are never accepted or persisted', () => {
   const { app, replacedURLs } = createApp({
     url: 'http://localhost/?view=pads&init_token=test-token#editor',
     storageGetter() { throw new DOMException('Storage denied', 'SecurityError') }
   })
-  assert.equal(app.state.initToken, 'test-token')
-  assert.equal(app.authHeaders()['X-OmniShare-Init-Token'], 'test-token')
+  assert.equal(app.state.initToken, undefined)
+  assert.equal(app.authHeaders()['X-OmniShare-Init-Token'], undefined)
   assert.deepEqual(replacedURLs, ['/?view=pads#editor'])
   app.sessionSet('omnishare.accessKey', 'page-only-key')
   assert.equal(app.sessionGet('omnishare.accessKey'), 'page-only-key')
@@ -93,9 +93,9 @@ test('failed storage writes and removals cannot revive an old credential', () =>
   assert.equal(app.sessionGet('omnishare.accessKey'), null)
 })
 
-test('ordinary sessions persist the bootstrap token and drafts', () => {
+test('ordinary sessions remove bootstrap tokens and preserve drafts', () => {
   const { app, stored } = createApp({ url: 'http://localhost/?init_token=initial' })
-  assert.equal(stored.get('omnishare.initToken'), 'initial')
+  assert.equal(stored.has('omnishare.initToken'), false)
   app.preservePadDraft({ id: 'other-pad', title: 'Draft', content: 'text', version: 2 })
   assert.equal(JSON.parse(stored.get('omnishare.padDraft.other-pad')).content, 'text')
 })
@@ -248,4 +248,62 @@ test('restoring twice sends one request, preserves the password, and unlocks on 
   assert.equal(requests.length, 2)
   requests[1].onabort()
   assert.equal(app.state.restoreInFlight, false)
+})
+
+
+test('optional key protection transports short and arbitrary UTF-8 keys without trimming', () => {
+  const {app} = createApp()
+  for (const key of ['1', 'a', '中文🔑', ' ', ' x ', 'CLEAR', '__KEEP__']) {
+    const h = app.keyHeaders(key)
+    const decoded = h['X-OmniShare-Key'] ?? Buffer.from(h['X-OmniShare-Key-Base64'], 'base64').toString('utf8')
+    assert.equal(decoded, key)
+  }
+  app.state.config = {access_key_enabled:false}
+  app.state.accessKey = 'a stored key'
+  assert.deepEqual(Object.keys(app.authHeaders()), [])
+  app.showAuth()
+  assert.equal(app.state.config.access_key_enabled, true)
+  assert.equal(Buffer.from(app.authHeaders()['X-OmniShare-Key-Base64'], 'base64').toString('utf8'), 'a stored key')
+})
+
+test('optional switch does not require a key, token or clearing confirmation when disabled', async () => {
+  const calls=[]
+  const cfg={access_key_enabled:false,has_access_key:false,allow_lan:true,listen_address:'0.0.0.0'}
+  const {app,element}=createApp({fetch:async(url,options={})=>{
+    calls.push({url,options})
+    return Response.json({code:0,data:url.includes('/config')?cfg:url.includes('/health')?{version:'test'}:[]})
+  }})
+  app.state.config=cfg
+  app.fillSettings()
+  assert.equal(element('#cfgAccessKey').disabled,true)
+  assert.equal(element('#cfgAllowLAN').checked,true)
+  await app.saveSettings()
+  const request=calls.find(x=>x.options.method==='PUT')
+  const payload=JSON.parse(request.options.body)
+  assert.equal(payload.access_key_enabled,false)
+  assert.equal(payload.keep_access_key,true)
+  assert.equal(request.options.headers['X-OmniShare-Init-Token'],undefined)
+  assert.equal(request.options.headers['X-OmniShare-Confirm'],undefined)
+})
+
+test('the enabled switch saves literal CLEAR, __KEEP__ and whitespace keys', async () => {
+  for (const key of ['1','CLEAR','__KEEP__',' 🔑 中文 ']) {
+    const calls=[]
+    const {app,element}=createApp({fetch:async(url,options={})=>{
+      calls.push({url,options})
+      return Response.json({code:0,data:url.includes('/config')?{has_access_key:true,access_key_enabled:true}:url.includes('/health')?{version:'test'}:[]})
+    }})
+    app.state.config={has_access_key:false,access_key_enabled:false,allow_lan:true}
+    app.fillSettings()
+    element('#cfgAccessKeyEnabled').checked=true
+    app.updateAccessKeyControls()
+    assert.equal(element('#cfgAccessKey').disabled,false)
+    element('#cfgAccessKey').value=key
+    await app.saveSettings()
+    const payload=JSON.parse(calls.find(x=>x.options.method==='PUT').options.body)
+    assert.equal(payload.access_key_enabled,true)
+    assert.equal(payload.keep_access_key,false)
+    assert.equal(payload.access_key,key)
+    assert.equal(app.state.accessKey,key)
+  }
 })
