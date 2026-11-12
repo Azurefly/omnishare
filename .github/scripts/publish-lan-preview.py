@@ -13,6 +13,7 @@ import zipfile
 REPO = 'Azurefly/omnishare'
 SOURCE = '4e9e809bd5a70e4bbaa4c6bc71adfab05cc56dde'
 TAG = 'v0.1.1-lan.1'
+TAG_COMMIT = '0892507dd541d2b903beddcf026d789f1360d5d5'
 DOC_BRANCH = 'docs/lan-preview-20261112'
 NOTES = Path('docs/RELEASE_NOTES_v0.1.1-lan.1.md')
 
@@ -28,6 +29,20 @@ def api(path, optional=False):
             return None
         raise RuntimeError(f'GitHub API request failed: {path}')
     return json.loads(result.stdout)
+
+
+def find_release():
+    # GitHub's by-tag endpoint excludes drafts. List authenticated releases
+    # and match exactly; paginate instead of interpreting 404 as absence.
+    found = []
+    for page in range(1, 101):
+        batch = api(f'releases?per_page=100&page={page}')
+        found.extend(r for r in batch if r['tag_name'] == TAG)
+        if len(batch) < 100:
+            if len(found) > 1:
+                raise RuntimeError('Multiple releases match this preview tag')
+            return found[0] if found else None
+    raise RuntimeError('Release inventory exceeded its safety limit')
 
 
 def digest(path):
@@ -151,7 +166,9 @@ def main():
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     if head != os.environ['GITHUB_SHA']:
         raise RuntimeError('Checkout differs from the triggering commit')
-    command(['git', 'merge-base', '--is-ancestor', SOURCE, head])
+    command(['git', 'merge-base', '--is-ancestor', SOURCE, TAG_COMMIT])
+    command(['git', 'merge-base', '--is-ancestor', TAG_COMMIT, head])
+    command(['git', 'diff', '--exit-code', TAG_COMMIT, head, '--', str(NOTES), 'release/lan-preview-4e9e809.json'])
     command(['git', 'diff', '--exit-code', SOURCE, head, '--', 'backend', 'frontend', 'desktop', 'packaging', 'scripts', 'VERSION', 'release/desktop-release.json'])
     ci = api('actions/runs/43173998528')
     if ci['head_sha'] != SOURCE or ci['conclusion'] != 'success':
@@ -174,19 +191,18 @@ def main():
                 raise RuntimeError('Artifact transport checksum mismatch')
             archives[record['id']] = archive
         output = root / 'assets'
-        expected = stage(manifest, archives, output, NOTES, head)
+        expected = stage(manifest, archives, output, NOTES, TAG_COMMIT)
         tag = api(f'git/ref/tags/{TAG}', optional=True)
-        if tag is None:
-            command(['git', 'push', 'origin', f'{head}:refs/tags/{TAG}'])
-            tag = api(f'git/ref/tags/{TAG}')
-        if tag['object']['type'] != 'commit' or tag['object']['sha'] != head:
-            raise RuntimeError('Existing tag differs; refusing to move it')
-        release = api(f'releases/tags/{TAG}', optional=True)
+        if tag is None or tag['object']['type'] != 'commit' or tag['object']['sha'] != TAG_COMMIT:
+            raise RuntimeError('Reviewed tag is missing or changed; refusing to move it')
+        release = find_release()
         if release is None:
-            command(['gh', 'release', 'create', TAG, '--repo', REPO, '--target', head, '--verify-tag', '--draft', '--prerelease', '--latest=false', '--title', 'OmniShare v0.1.1-lan.1 · 局域网预览版', '--notes-file', str(NOTES)])
-            release = api(f'releases/tags/{TAG}')
+            command(['gh', 'release', 'create', TAG, '--repo', REPO, '--target', TAG_COMMIT, '--verify-tag', '--draft', '--prerelease', '--latest=false', '--title', 'OmniShare v0.1.1-lan.1 · 局域网预览版', '--notes-file', str(NOTES)])
+            release = find_release()
+            if release is None:
+                raise RuntimeError('Created draft was not found')
         tag = api(f'git/ref/tags/{TAG}')
-        if tag['object']['type'] != 'commit' or tag['object']['sha'] != head or not release['prerelease'] or release['body'].strip() != NOTES.read_text().strip():
+        if tag['object']['type'] != 'commit' or tag['object']['sha'] != TAG_COMMIT or not release['prerelease'] or release['body'].strip() != NOTES.read_text().strip():
             raise RuntimeError('Existing release/tag differs; refusing to replace it')
         existing = verify_assets(release['id'], expected, complete=not release['draft'])
         if release['draft']:
@@ -199,7 +215,7 @@ def main():
         if final['draft'] or not final['prerelease']:
             raise RuntimeError('Preview publication state is incorrect')
         verify_assets(final['id'], expected, complete=True)
-        print(json.dumps({'release': final['html_url'], 'assets': len(expected), 'source': SOURCE, 'tag_commit': head, 'prerelease': True}))
+        print(json.dumps({'release': final['html_url'], 'assets': len(expected), 'source': SOURCE, 'tag_commit': TAG_COMMIT, 'prerelease': True}))
     prepare_main_docs(NOTES)
     with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
         summary.write(f'Published [{TAG}]({final["html_url"]}) with 12 byte-verified assets. Stable release unchanged.\n\nDocumentation branch: `{DOC_BRANCH}` (docs-only; ready for PR).\n')
