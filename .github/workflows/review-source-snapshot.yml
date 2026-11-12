@@ -1,0 +1,23 @@
+name: Review source snapshot
+on:
+  push:
+    branches: ['fix/cross-platform-install-20261111']
+    paths: ['.github/workflows/review-source-snapshot.yml']
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Archive tracked review source only
+        run: git archive --format=zip --output="$RUNNER_TEMP/omnishare-reviewed-source.zip" HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: omnishare-reviewed-source
+          path: ${{ runner.temp }}/omnishare-reviewed-source.zip
+          retention-days: 1
+          if-no-files-found: error
