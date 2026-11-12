@@ -1,0 +1,277 @@
+name: Build and publish unified workspace RC
+on:
+  push:
+    branches: ['fix/cross-platform-install-20261111']
+    paths: ['.github/workflows/workspace-rc.yml', '.review-workspace/**', 'scripts/stage-workspace-rc.py', 'scripts/publish-workspace-rc.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: workspace-rc-publish
+  cancel-in-progress: false
+jobs:
+  source:
+    name: Apply exact reviewed changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Reconstruct hash-bound source and commit without force
+        id: source
+        shell: python
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          import base64,hashlib,json,lzma,os,subprocess
+          from pathlib import Path
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          assert os.environ['GITHUB_REPOSITORY']=='Azurefly/omnishare'
+          branch='fix/cross-platform-install-20261111'
+          assert os.environ['GITHUB_REF']=='refs/heads/'+branch
+          if Path('.review-workspace/part-1.txt').exists():
+              baseline='d49096332bb536cbb8e329a1d02157d5a2e5c08d'
+              subprocess.run(['git','merge-base','--is-ancestor',baseline,'HEAD'],check=True)
+              allowed=['.github/workflows/workspace-rc.yml','scripts/stage-workspace-rc.py','scripts/publish-workspace-rc.py']
+              changes=git('diff','--name-only',baseline,'HEAD').splitlines()
+              assert all(p.startswith('.review-workspace/') or p in allowed for p in changes), 'Reviewed source moved'
+              raw=lzma.decompress(base64.b64decode(''.join(Path(f'.review-workspace/part-{i}.txt').read_text().strip() for i in range(1,5)),validate=True))
+              assert len(raw)<256000 and hashlib.sha256(raw).hexdigest()=='9b4fb306353630f37d6cfb82d9f8abd850decc6c001cb0c32844f93d17b5c91a'
+              payload=json.loads(raw)
+              for record in payload['files']:
+                  path=Path(record['p'])
+                  assert not path.is_absolute() and '..' not in path.parts and not str(path).startswith('.')
+                  result=subprocess.run(['git','show','HEAD:'+str(path)],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+                  old=result.stdout.replace(b'\r\n',b'\n') if result.returncode==0 else b''
+                  assert (hashlib.sha256(old).hexdigest() if result.returncode==0 else None)==record['o'], 'Base mismatch: '+str(path)
+                  lines=old.decode().splitlines(keepends=True)
+                  previous=len(lines)+1
+                  for start,end,new in reversed(record['h']):
+                      assert 0<=start<=end<previous
+                      lines[start:end]=new.splitlines(keepends=True);previous=start+1
+                  new=''.join(lines).encode()
+                  assert hashlib.sha256(new).hexdigest()==record['n']
+                  path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(new)
+              Path('release/workspace-source-manifest.json').write_text(json.dumps(payload['manifest'],indent=2)+'\n')
+              subprocess.run(['git','add','--',*payload['manifest'],'release/workspace-source-manifest.json'],check=True)
+              subprocess.run(['git','rm','-r','.review-workspace'],check=True)
+              subprocess.run(['git','diff','--cached','--check'],check=True)
+              assert git('ls-remote','origin','refs/heads/'+branch).split()[0]==os.environ['EXPECTED_HEAD'], 'Branch advanced'
+              git('config','user.name','github-actions[bot]');git('config','user.email','41898282+github-actions[bot]@users.noreply.github.com')
+              subprocess.run(['git','commit','-m','feat(workspace): reciprocal identity-bound devices, unified content and responsive collaboration'],check=True)
+              subprocess.run(['git','push','origin','HEAD:refs/heads/'+branch],check=True)
+          manifest=json.loads(Path('release/workspace-source-manifest.json').read_text())
+          for name,want in manifest.items(): assert hashlib.sha256(Path(name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, 'Changed reviewed bytes: '+name
+          assert Path('VERSION').read_text().strip()=='0.2.0-rc.1'
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+git('rev-parse','HEAD')+'\n')
+
+  verify:
+    name: Core and actual two-device browser tests
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+      - run: |
+          bash scripts/build-release.sh
+          npm --prefix desktop run test:contracts
+          python3 scripts/macos_release_test.py
+          (cd backend && go vet ./... && go test ./... -race -count=1 -timeout=6m)
+          python3 scripts/test-http-integration.py dist/binaries/omnishare-linux-amd64
+      - name: Real Chromium workflow, not API mocks
+        run: |
+          npm --prefix frontend ci
+          cd frontend && npx playwright install --with-deps chromium && cd ..
+          node scripts/test-workspace-browser.mjs dist/binaries/omnishare-linux-amd64
+      - name: Stage new portable builds and passed browser report
+        run: |
+          python3 scripts/stage-workspace-rc.py server
+          cp frontend/test-results/workspace/results.json rc-assets/workspace-browser-results.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workspace-rc-server
+          path: rc-assets/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: workspace-browser-evidence
+          path: frontend/test-results/workspace/
+          if-no-files-found: warn
+
+  desktop:
+    name: Build ${{ matrix.name }} candidate and record native result
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-22.04
+          - name: macOS
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            xvfb dbus-x11 xdotool at-spi2-core libatk-adaptor python3-pyatspi python3-gi scrot desktop-file-utils binutils fonts-noto-cjk
+      - name: Compile exact application and resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix frontend run build
+          npm --prefix desktop ci
+          npm --prefix desktop run test:contracts
+          mkdir -p desktop/src-tauri/resources
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare.exe ./cmd/omnishare)
+          elif [ "$RUNNER_OS" = macOS ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            (cd backend && GOOS=darwin GOARCH=arm64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-arm64 ./cmd/omnishare)
+            (cd backend && GOOS=darwin GOARCH=amd64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-amd64 ./cmd/omnishare)
+            lipo -create desktop/src-tauri/resources/omnishare-{arm64,amd64} -output desktop/src-tauri/resources/omnishare
+            rm desktop/src-tauri/resources/omnishare-{arm64,amd64}
+            chmod +x desktop/src-tauri/resources/omnishare
+          else
+            (cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare)
+          fi
+      - name: Prepare Linux verified bundle tools
+        id: tools
+        if: runner.os == 'Linux'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/prepare-linux-appimage-tools.py
+      - name: Prepare Windows verified bundle tools
+        if: runner.os == 'Windows'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare-windows-bundle-tools.py
+      - name: Build Windows installers
+        if: runner.os == 'Windows'
+        run: npm --prefix desktop run build
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        env:
+          LDAI_RUNTIME_FILE: ${{ steps.tools.outputs.runtime_path }}
+        run: |
+          npm --prefix desktop run prebuild
+          (cd desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
+          npm --prefix desktop run build -- --bundles deb,appimage
+      - name: Build and integrity-sign Universal Mac candidate
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          npm --prefix desktop run build -- --target universal-apple-darwin --bundles app
+          app=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniShare.app
+          backend=$(find "$app/Contents" -type f -name omnishare | head -n 1)
+          test -n "$backend"
+          lipo -verify_arch arm64 x86_64 "$backend"
+          lipo -verify_arch arm64 x86_64 "$app/Contents/MacOS/omnishare-desktop"
+          codesign --force --sign - --timestamp=none "$backend"
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict "$app"
+          mkdir -p macos-rc macos-stage
+          ditto "$app" macos-stage/OmniShare.app
+          ln -s /Applications macos-stage/Applications
+          hdiutil create -volname 'OmniShare 0.2.0 RC1' -srcfolder macos-stage -format UDZO macos-rc/OmniShare.dmg
+      - name: Verify full Microsoft WebView2 inputs
+        if: runner.os == 'Windows'
+        run: ./desktop/tests/windows-webview-runtime-evidence.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'candidate-evidence'
+      - name: Record native Windows installation acceptance (failure stays in report)
+        id: windows_native
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: ./desktop/tests/windows-runtime-smoke-ci.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'candidate-evidence'
+      - name: Record Ubuntu 22.04 native installation acceptance (failure stays in report)
+        id: linux_native
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)
+          image=$(find desktop/src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -n 1)
+          xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- /usr/bin/python3 desktop/tests/linux-installed-smoke.py \
+            --deb "$deb" --appimage "$image" --version "$(cat VERSION)" --evidence ubuntu-install-evidence
+      - name: Record packaged Mac backend HTTP check (not a GUI or Gatekeeper test)
+        id: mac_native
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          backend=$(find macos-stage/OmniShare.app/Contents -type f -name omnishare | head -n 1)
+          python3 scripts/test-http-integration.py "$backend"
+      - name: Stage candidates and precise validation boundaries
+        shell: bash
+        env:
+          NATIVE_OUTCOME: ${{ runner.os == 'Windows' && steps.windows_native.outcome || runner.os == 'Linux' && steps.linux_native.outcome || steps.mac_native.outcome }}
+        run: python scripts/stage-workspace-rc.py '${{ matrix.name }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workspace-rc-${{ matrix.name }}
+          path: rc-assets/*
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: workspace-native-evidence-${{ matrix.name }}
+          path: |
+            candidate-evidence/
+            ubuntu-install-evidence/
+          if-no-files-found: warn
+
+  publish:
+    name: Publish verified prerelease assets, never stable Latest
+    needs: [source, verify, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: workspace-rc-*
+          path: rc-assets
+          merge-multiple: true
+      - name: Verify each build source and asset, upload draft, verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.source.outputs.sha }}
+        run: python3 scripts/publish-workspace-rc.py
