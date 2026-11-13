@@ -43,6 +43,7 @@ class InstalledSmokeSafetyTests(unittest.TestCase):
         session = smoke.ApplicationSession.__new__(smoke.ApplicationSession)
         session.flavor = "deb"
         session.private = Path("/unused-private-dir")
+        session.evidence = session.private / "evidence"
         session.data = session.private / "用户 数据 # %"
         session.env, session.log, session.marker = {}, io.BytesIO(), "test-owned-marker"
         session.gui, session.port = ModalGUI(), 49152

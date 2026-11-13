@@ -129,6 +129,44 @@ func (s *Server) federated(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// Invalidating before and after an attempted mutation also covers uncertain
+// network outcomes. An earlier list response must not repopulate a snapshot
+// containing an object the user just changed or removed.
+func (s *Server) invalidateWorkspaceCache(node string) {
+	s.peers.mu.Lock()
+	defer s.peers.mu.Unlock()
+	s.peers.cacheEpoch++
+	for key := range s.peers.cache {
+		if strings.HasPrefix(key, node+"/") {
+			delete(s.peers.cache, key)
+		}
+	}
+}
+
+func workspaceTimestamp(item map[string]interface{}, resource string) time.Time {
+	field := "updated_at"
+	if resource == "trash" {
+		field = "deleted_at"
+	}
+	raw := stringField(item, field)
+	if raw == "" {
+		raw = stringField(item, "created_at")
+	}
+	stamp, _ := time.Parse(time.RFC3339Nano, raw)
+	return stamp
+}
+
+func peerActionTimeout(method, path string) time.Duration {
+	path = strings.SplitN(path, "?", 2)[0]
+	if (method == http.MethodGet || method == http.MethodHead) &&
+		strings.HasPrefix(path, "/api/v1/files/") &&
+		(strings.HasSuffix(path, "/download") || strings.HasSuffix(path, "/stream")) {
+		return 30 * time.Minute
+	}
+	return 18 * time.Second
+}
+
 func (s *Server) sourceData(ctx context.Context, r *http.Request, next http.Handler, resource string, p *peerBinding) sourceResult {
 	cfg := s.cfg.Get()
 	node := workspaceNode{ID: cfg.NodeID, Name: cfg.NodeName, Online: true, UpdatedAt: time.Now().UTC()}
@@ -136,6 +174,13 @@ func (s *Server) sourceData(ctx context.Context, r *http.Request, next http.Hand
 		node.ID = p.Identity.ID
 		node.Name = p.Identity.Name
 	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		s.invalidateWorkspaceCache(node.ID)
+		defer s.invalidateWorkspaceCache(node.ID)
+	}
+	s.peers.mu.Lock()
+	epoch := s.peers.cacheEpoch
+	s.peers.mu.Unlock()
 	q := r.URL.Query()
 	q.Del("scope")
 	q.Del("offset")
@@ -242,7 +287,9 @@ func (s *Server) sourceData(ctx context.Context, r *http.Request, next http.Hand
 				}
 			}
 		}
-		s.peers.cache[key] = workspaceCache{Data: append([]byte(nil), data...), At: node.UpdatedAt, Total: total}
+		if epoch == s.peers.cacheEpoch {
+			s.peers.cache[key] = workspaceCache{Data: append([]byte(nil), data...), At: node.UpdatedAt, Total: total}
+		}
 		s.peers.mu.Unlock()
 	}
 	if failure != nil {
@@ -338,22 +385,11 @@ func (s *Server) aggregateWorkspace(w http.ResponseWriter, r *http.Request, next
 					return pa
 				}
 			}
-			field := "updated_at"
-			if resource == "trash" {
-				field = "deleted_at"
+			left, right := workspaceTimestamp(a, resource), workspaceTimestamp(b, resource)
+			if left.Equal(right) {
+				return stringField(a, "id")+stringField(a, "source_node_id") < stringField(b, "id")+stringField(b, "source_node_id")
 			}
-			left, _ := a[field].(string)
-			right, _ := b[field].(string)
-			if left == "" {
-				left, _ = a["created_at"].(string)
-			}
-			if right == "" {
-				right, _ = b["created_at"].(string)
-			}
-			if left == right {
-				return stringField(a, "id") < stringField(b, "id")
-			}
-			return left > right
+			return left.After(right)
 		})
 		total := len(all)
 		w.Header().Set("X-Total-Count", strconv.Itoa(total))
@@ -417,7 +453,11 @@ func (s *Server) proxyObject(w http.ResponseWriter, r *http.Request, id, path st
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 18*time.Second)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		s.invalidateWorkspaceCache(id)
+		defer s.invalidateWorkspaceCache(id)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), peerActionTimeout(r.Method, path))
 	defer cancel()
 	resp, err := s.peerRequest(ctx, p, r.Method, path, body, r.Header)
 	if err != nil {

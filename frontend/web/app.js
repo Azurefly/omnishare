@@ -33,7 +33,7 @@ const state = {
   deferredInstall: null, editingNote: null,
   uploadQueue: [], activeUploads: 0, uploadSequence: 0, uploadPumping: false, uploadNotice: '',
   requestSeq: {notes:0, files:0, pads:0, devices:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
-  noteTotal: 0, fileTotal: 0, restoreInFlight: false, workspaceBusy: false, padRefreshSeq: 0, padSelectSeq: 0, workspaceStatus: null, tailscaleStatus: "", padCreating: false, draftCopyBusy: false, peerBinding: false
+  noteTotal: 0, fileTotal: 0, restoreInFlight: false, workspaceBusy: false, padRefreshSeq: 0, padRefreshBusy: false, padSaveEpoch: 0, padSelectSeq: 0, workspaceStatus: null, tailscaleStatus: "", padCreating: false, draftCopyBusy: false, peerBinding: false
 }
 
 // Server default is 100; ask explicitly so the response can be paged instead of
@@ -1207,12 +1207,15 @@ async function submitNewPad() {
 
 async function refreshCurrentPad() {
   const current = state.currentPad
-  if (!current || state.saveInFlight) return
+  if (!current || state.saveInFlight || state.padRefreshBusy) return
+  state.padRefreshBusy = true
   const seq = ++state.padRefreshSeq
   try {
     const remote = await api(`/api/v1/pads/${encodeURIComponent(current.id)}`)
     if (seq !== state.padRefreshSeq || state.currentPad?.id !== current.id || state.saveInFlight) return
-    if (remote.version === state.currentPad.version) return
+    // A GET started before a successful save may arrive after that save.
+    // Versions are monotonic; never replace the editor with an older reply.
+    if (remote.version <= state.currentPad.version) return
     if (state.currentPadDirty) {
       preservePadDraft()
       state.padSaveBlocked = true
@@ -1231,27 +1234,40 @@ async function refreshCurrentPad() {
       $('#saveState').textContent = err.status === 404 ? '文档已删除 · 保留当前内容' : '连接中断 · 保留当前内容'
       if (state.currentPadDirty) preservePadDraft()
     }
-  }
+  } finally { state.padRefreshBusy = false }
 }
 
 async function refreshWorkspace() {
-  if (document.hidden || state.workspaceBusy || $('#authDialog').open || state.restoreInFlight) return
+  if (document.hidden || $('#authDialog').open || state.restoreInFlight) return
+  // Keep the open editor responsive even while a different offline node makes
+  // aggregated lists slow. Each editor refresh is single-flight independently.
+  const editorRefresh = state.activeTab === 'pads' ? refreshCurrentPad() : Promise.resolve()
+  if (state.workspaceBusy) { await editorRefresh; return }
   state.workspaceBusy = true
   try {
-    await loadDashboard()
     const loaders = {dashboard:()=>loadNotes(false,false,true), notes:()=>loadNotes(false,false,true), files:()=>loadFiles(false,false,true), pads:loadPads, shares:loadShares, trash:loadTrash, activity:loadAudit}
-    if (loaders[state.activeTab]) await loaders[state.activeTab]()
-    if (state.activeTab === 'pads') await refreshCurrentPad()
+    await Promise.all([loadDashboard(), loaders[state.activeTab]?.(), editorRefresh])
   } finally { state.workspaceBusy = false }
+}
+
+function samePadSnapshot(snapshot) {
+  const current = padSnapshot()
+  return !!current && current.id === snapshot.id && current.version === snapshot.version &&
+    current.title === snapshot.title && current.content === snapshot.content
 }
 
 async function loadRemotePadVersion() {
   if (!state.currentPad || state.saveInFlight) return
-  preservePadDraft()
-  const id = state.currentPad.id
+  const draft = padSnapshot()
+  preservePadDraft(draft)
+  clearTimeout(state.saveTimer)
+  ++state.padSaveEpoch
   try {
-    const remote = await api(`/api/v1/pads/${encodeURIComponent(id)}`)
-    if (state.currentPad?.id !== id) return
+    const remote = await api(`/api/v1/pads/${encodeURIComponent(draft.id)}`)
+    if (!samePadSnapshot(draft) || state.saveInFlight || remote.version < state.currentPad.version) {
+      toast('期间已有新的编辑或保存，已保留当前内容，请重新选择远端版本')
+      return
+    }
     state.currentPad = {...remote}; state.currentPadDirty = false; state.padSaveBlocked = false
     renderPadEditor(remote); $('#padConflictActions').classList.add('hidden')
     toast('已载入远端版本；原草稿仍保留在本次会话中')
@@ -1259,14 +1275,25 @@ async function loadRemotePadVersion() {
 }
 
 async function savePadDraftCopy() {
-  const draft = padSnapshot(); if (!draft) return
+  const draft = padSnapshot()
+  if (!draft || state.draftCopyBusy) return
+  state.draftCopyBusy = true
+  $('#saveDraftCopyBtn').disabled = true
+  clearTimeout(state.saveTimer)
+  ++state.padSaveEpoch
   try {
     const copy = await api('/api/v1/pads', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:(draft.title+'（草稿副本）').slice(0,200),content:draft.content})})
     preservePadDraft(draft)
-    state.currentPad = {...copy}; state.currentPadDirty = false; state.padSaveBlocked = false
-    renderPadEditor(copy); $('#padConflictActions').classList.add('hidden'); await loadPads()
-    toast('草稿副本已保存到当前设备')
+    // An in-flight copy belongs to the snapshot, not to newer typing or a
+    // different document selected while the request was travelling.
+    if (samePadSnapshot(draft) && !state.saveInFlight) {
+      state.currentPad = {...copy}; state.currentPadDirty = false; state.padSaveBlocked = false
+      renderPadEditor(copy); $('#padConflictActions').classList.add('hidden')
+    }
+    await loadPads()
+    toast('草稿副本已保存到当前设备；期间的新编辑保留不变')
   } catch (err) { toast(err.message, true) }
+  finally { state.draftCopyBusy = false; $('#saveDraftCopyBtn').disabled = false }
 }
 
 function padSnapshot() {
@@ -1308,11 +1335,14 @@ function markPadDirty() {
 
 function enqueuePadSave(snapshot, showToast=true) {
   if (!snapshot) return Promise.resolve(true)
-  state.padSaveChain = state.padSaveChain.catch(() => false).then(() => performPadSave(snapshot, showToast))
+  const epoch = state.padSaveEpoch
+  state.padSaveChain = state.padSaveChain.catch(() => false).then(() =>
+    epoch === state.padSaveEpoch ? performPadSave(snapshot, showToast) : false)
   return state.padSaveChain
 }
 
 async function performPadSave(snapshot, showToast=true) {
+  if (state.currentPad?.id === snapshot.id && state.padSaveBlocked) return false
   state.saveInFlight = true
   const isCurrent = state.currentPad?.id === snapshot.id
   if (isCurrent) $('#saveState').textContent = '保存中...'
@@ -1341,7 +1371,13 @@ async function performPadSave(snapshot, showToast=true) {
     return true
   } catch (err) {
     preservePadDraft(snapshot)
-    if (err.status === 409) { state.padSaveBlocked = true; $('#padConflictActions')?.classList.remove('hidden') }
+    if (err.status === 409) {
+      ++state.padSaveEpoch
+      if (state.currentPad?.id === snapshot.id) {
+        state.padSaveBlocked = true
+        $('#padConflictActions')?.classList.remove('hidden')
+      }
+    }
     if (state.currentPad?.id === snapshot.id) {
       $('#saveState').textContent = err.status === 409 ? '版本冲突' : '保存失败'
       $('#saveState').className = 'badge muted'

@@ -63,7 +63,7 @@ function createApp(options = {}) {
   vm.runInContext(source, context, { filename: 'app.js' })
   const app = vm.runInContext(`({ state, authHeaders, sessionGet, sessionSet,
     sessionRemove, keyHeaders, fillSettings, saveSettings, showAuth, updateAccessKeyControls, exportBackup, preservePadDraft, performPadSave,
-    restoreBackup, openRestoreDialog, createPad, submitNewPad, refreshCurrentPad, workspacePath, submitPeerBinding })`, context)
+    restoreBackup, openRestoreDialog, createPad, submitNewPad, refreshCurrentPad, refreshWorkspace, loadRemotePadVersion, savePadDraftCopy, enqueuePadSave, workspacePath, submitPeerBinding })`, context)
   return { app, element, stored, downloads, blobs, requests, replacedURLs }
 }
 
@@ -361,4 +361,84 @@ test('workspace scope is applied only to collections, not local config or writes
   assert.equal(app.workspacePath('/api/v1/notes','POST'),'/api/v1/notes')
   assert.equal(app.workspacePath('/api/v1/config'),'/api/v1/config')
   assert.equal(app.workspacePath('/api/v1/pads/node-test~p'),'/api/v1/pads/node-test~p')
+})
+
+
+test('a late refresh cannot revert a document that finished saving meanwhile', async () => {
+  let reply
+  const {app, element} = createApp({fetch: () => new Promise(resolve => { reply = resolve })})
+  app.state.currentPad = {id:'p', version:1, title:'title', content:'v1'}
+  element('#padTitle').value = 'title'; element('#padContent').value = 'v1'
+  const pending = app.refreshCurrentPad()
+  app.state.currentPad = {id:'p', version:2, title:'title', content:'saved v2'}
+  element('#padContent').value = 'saved v2'
+  reply(Response.json({code:0,data:{id:'p',version:1,title:'title',content:'v1'}}))
+  await pending
+  assert.equal(app.state.currentPad.version, 2)
+  assert.equal(element('#padContent').value, 'saved v2')
+  assert.equal(app.state.padRefreshBusy, false)
+})
+
+test('editor refresh continues while aggregate workspace loading is busy', async () => {
+  let calls = 0, reply
+  const {app, element} = createApp({fetch: () => { calls++; return new Promise(resolve => {reply = resolve}) }})
+  app.state.activeTab = 'pads'; app.state.workspaceBusy = true
+  app.state.currentPad = {id:'p',version:1,title:'title',content:'old'}
+  const pending = app.refreshWorkspace()
+  await app.refreshWorkspace() // no overlapping GET of the current editor
+  assert.equal(calls, 1)
+  reply(Response.json({code:0,data:{id:'p',version:2,title:'title',content:'new'}}))
+  await pending
+  assert.equal(element('#padContent').value, 'new')
+  assert.equal(app.state.workspaceBusy, true)
+})
+
+test('loading a remote version must not discard typing that occurred during the request', async () => {
+  let reply
+  const {app, element, stored} = createApp({fetch: () => new Promise(resolve => {reply = resolve})})
+  app.state.currentPad = {id:'p',version:1}; app.state.currentPadDirty = true
+  element('#padTitle').value = 'title'; element('#padContent').value = 'original draft'
+  const pending = app.loadRemotePadVersion()
+  element('#padContent').value = 'new typing'
+  reply(Response.json({code:0,data:{id:'p',version:2,title:'title',content:'remote'}}))
+  await pending
+  assert.equal(element('#padContent').value, 'new typing')
+  assert.equal(app.state.currentPadDirty, true)
+  assert.equal(JSON.parse(stored.get('omnishare.padDraft.p')).content, 'original draft')
+})
+
+test('draft copy is single-flight and does not switch away from newer typing', async () => {
+  let copies = 0, reply
+  const {app, element, stored} = createApp({fetch: async (_url, options) => {
+    if (options?.method === 'POST') { copies++; return new Promise(resolve => {reply = resolve}) }
+    return Response.json({code:0,data:[]})
+  }})
+  app.state.currentPad = {id:'p',version:1}; app.state.currentPadDirty = true
+  element('#padTitle').value = 'title'; element('#padContent').value = 'original draft'
+  const pending = app.savePadDraftCopy()
+  await app.savePadDraftCopy()
+  assert.equal(copies, 1); assert.equal(element('#saveDraftCopyBtn').disabled, true)
+  element('#padContent').value = 'newer draft'
+  reply(Response.json({code:0,data:{id:'copy',version:1,title:'copy',content:'original draft'}}))
+  await pending
+  assert.equal(app.state.currentPad.id, 'p')
+  assert.equal(element('#padContent').value, 'newer draft')
+  assert.equal(JSON.parse(stored.get('omnishare.padDraft.p')).content, 'newer draft')
+  assert.equal(element('#saveDraftCopyBtn').disabled, false)
+})
+
+test('queued autosaves are cancelled after a version conflict', async () => {
+  let saves = 0
+  const {app, element} = createApp({fetch: async (_url, options) => {
+    if (options?.method === 'PUT') { saves++; return Response.json({code:1,message:'conflict'},{status:409}) }
+    return Response.json({code:0,data:[]})
+  }})
+  app.state.currentPad = {id:'p',version:1}; app.state.currentPadDirty = true
+  element('#padTitle').value = 'title'; element('#padContent').value = 'new typing'
+  const snapshot = {id:'p',version:1,title:'title',content:'draft'}
+  const first = app.enqueuePadSave(snapshot, false)
+  const queued = app.enqueuePadSave({...snapshot,content:'another draft'}, false)
+  assert.equal(await first, false); assert.equal(await queued, false)
+  assert.equal(saves, 1)
+  assert.equal(element('#padContent').value, 'new typing')
 })

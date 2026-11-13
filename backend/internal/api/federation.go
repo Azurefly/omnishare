@@ -52,6 +52,7 @@ type peerState struct {
 	revoked    map[string]bool
 	owner      string
 	nonces     map[string]time.Time
+	cacheEpoch uint64
 	cache      map[string]workspaceCache
 	routes     map[string]string
 	loadError  error
@@ -136,6 +137,7 @@ func (s *Server) writePeersLocked(peers map[string]peerBinding, revoked map[stri
 	s.peers.bindings = peers
 	s.peers.revoked = revoked
 	s.peers.cache = map[string]workspaceCache{}
+	s.peers.cacheEpoch++
 	return nil
 }
 func (s *Server) removePeer(id string) error {

@@ -60,6 +60,7 @@ def run(arguments, *, env=None, timeout=30, input_text=None, check=True):
 
 
 def wait_for(predicate, description, timeout=60):
+    print("CHECK " + description, flush=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()
@@ -140,17 +141,26 @@ class AccessibleGUI:
             dispatched += 1
         desktop = self.atspi.Registry.getDesktop(0)
         applications = []
+        # WebKit may register its web-process accessibility root separately
+        # from GTK. Accept only this test instance's marker-owned processes.
+        allowed_pids = {pid}
+        owner = process_info(pid)
+        if owner:
+            marker = owner["environment"].get(MARKER.encode())
+            if marker:
+                allowed_pids.update(item["pid"] for item in owned_processes(os.fsdecode(marker)))
+        deadline = time.monotonic() + 3
         for index in range(desktop.childCount):
             try:
                 app = desktop.getChildAtIndex(index)
-                if app.get_process_id() == pid:
+                if app.get_process_id() in allowed_pids:
                     app.setCacheMask(self.cache_none)
                     applications.append(app)
             except Exception:
                 continue
         pending = [(app, 0) for app in applications]
         found = []
-        while pending and len(found) < 5000:
+        while pending and len(found) < 1000 and time.monotonic() < deadline:
             node, depth = pending.pop()
             if depth > 40:
                 continue
@@ -294,6 +304,8 @@ class ApplicationSession:
         self.window = wait_for(find_window, "a visible native application window", 30)
         self.focus()
         if first:
+            # This is a fresh isolated profile before any access key is entered.
+            run(["scrot", str(self.evidence / (self.flavor + "-first-window.png"))])
             wait_for(lambda: self.gui.rendered(self.pid, "首次启动设置"), "the first-run page in WebKit", 90)
             field = wait_for(lambda: self.gui.find(self.pid, "本地服务端口"), "the first-run port control")
             self.gui.enter(field, str(self.port))

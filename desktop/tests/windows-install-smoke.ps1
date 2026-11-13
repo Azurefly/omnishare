@@ -126,13 +126,46 @@ function Invoke-CoreFeatures {
 
 function Start-InstalledGui {
     param([string]$Executable, [int]$DebugPort, [string]$Profile)
-    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort --remote-debugging-address=127.0.0.1"
+    $flags = "--remote-debugging-port=$DebugPort --remote-debugging-address=127.0.0.1"
+    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $flags
     $env:WEBVIEW2_USER_DATA_FOLDER = $Profile
-    $process = Start-Process -FilePath $Executable -PassThru
-    $script:currentDesktop = $process
-    $null = Assert-WindowsVisibleWindow -Process $process
-    Assert-WindowsDebugListener -Port $DebugPort -DesktopProcessId $process.Id
-    return $process
+    # Microsoft documents this per-executable policy as an alternative to the
+    # environment variable. Wry supplies its own browser options on release
+    # builds; some WebView2 versions do not append the environment flags.
+    # Scope this to the installed executable, never '*', and restore it as soon
+    # as the runtime has started. No application code enables a debugger.
+    $policy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    $name = [IO.Path]::GetFileName($Executable)
+    $created = -not (Test-Path -LiteralPath $policy)
+    if (-not $created -and $null -ne (Get-ItemProperty -LiteralPath $policy).PSObject.Properties[$name]) {
+        throw 'Refusing to replace an existing WebView2 policy for this application.'
+    }
+    $owned = $false
+    try {
+        $null = New-Item -Path $policy -Force
+        $null = New-ItemProperty -LiteralPath $policy -Name $name -Value $flags -PropertyType String
+        $owned = $true
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = $Executable
+        $start.UseShellExecute = $false
+        $process = [Diagnostics.Process]::Start($start)
+        $script:currentDesktop = $process
+        $null = Assert-WindowsVisibleWindow -Process $process
+        Assert-WindowsDebugListener -Port $DebugPort -DesktopProcessId $process.Id
+        return $process
+    }
+    finally {
+        if ($owned) {
+            $value = (Get-ItemProperty -LiteralPath $policy).PSObject.Properties[$name]
+            if ($null -ne $value -and [string]$value.Value -ceq $flags) {
+                Remove-ItemProperty -LiteralPath $policy -Name $name
+            }
+        }
+        if ($created -and (Test-Path -LiteralPath $policy)) {
+            $key = Get-Item -LiteralPath $policy
+            if ($key.ValueCount -eq 0 -and $key.SubKeyCount -eq 0) { Remove-Item -LiteralPath $policy }
+        }
+    }
 }
 
 function Invoke-InstalledGuiProbe {
