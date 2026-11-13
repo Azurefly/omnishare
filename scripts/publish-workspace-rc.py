@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Publish only the explicit 0.2.0-rc.1 candidate after byte verification."""
+"""Publish only the explicit 0.2.0-rc.2 candidate after byte verification."""
 import hashlib,json,os,re,subprocess,time
 from pathlib import Path
-REPO='Azurefly/omnishare';VERSION='0.2.0-rc.1';TAG='v'+VERSION
+REPO='Azurefly/omnishare';VERSION='0.2.0-rc.2';TAG='v'+VERSION
 SOURCE=os.environ['SOURCE_COMMIT'];RUN=os.environ['GITHUB_RUN_ID']
 root=Path('rc-assets')
 def gh(*args,raw=False):
@@ -15,6 +15,8 @@ def api(path):return gh('api',f'repos/{REPO}/{path}')
 assert re.fullmatch(r'[a-f0-9]{40}',SOURCE)
 assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==SOURCE
 assert Path('VERSION').read_text().strip()==VERSION
+assert os.environ['GITHUB_REPOSITORY']==REPO and os.environ['GITHUB_REF']=='refs/heads/main'
+subprocess.run(['git','merge-base','--is-ancestor',SOURCE,'origin/main'],check=True)
 reports={}
 files=[]
 for kind in ['server','Windows','Linux','macOS']:
@@ -62,7 +64,7 @@ if existing:
  release=existing[0];assert release['prerelease'] is True
 else:
  # Create via REST and use the returned draft ID, rather than public tag lookup.
- payload={'tag_name':TAG,'target_commitish':SOURCE,'name':'OmniShare '+TAG+' · 统一工作区候选版','body':notes,'draft':True,'prerelease':True,'make_latest':'false'}
+ payload={'tag_name':TAG,'target_commitish':SOURCE,'name':'OmniShare '+TAG+' · 协同稳定性修复候选版','body':notes,'draft':True,'prerelease':True,'make_latest':'false'}
  Path('/tmp/workspace-release.json').write_text(json.dumps(payload))
  release=gh('api','--method','POST',f'repos/{REPO}/releases','--input','/tmp/workspace-release.json')
 assets=api(f"releases/{release['id']}/assets?per_page=100")

@@ -2,11 +2,11 @@
 
 面向个人、家庭、小团队和内网的自托管内容工作区。随手记、文件与视频、协同文档、分享、回收站和活动记录集中使用，支持浏览器和桌面端。
 
-## 统一工作区候选版：v0.2.0-rc.1
+## 统一工作区候选版：v0.2.0-rc.2
 
-**[下载安装包](https://github.com/Azurefly/omnishare/releases/tag/v0.2.0-rc.1)** · [完整更新与验证边界](docs/RELEASE_NOTES_v0.2.0-rc.1.md)
+**[下载安装包](https://github.com/Azurefly/omnishare/releases/tag/v0.2.0-rc.2)** · [完整更新与验证边界](docs/RELEASE_NOTES_v0.2.0-rc.2.md)
 
-两台设备绑定后，在任意一端直接查看和操作双方内容，不再专门打开另一台电脑的应用界面。程序和安装器的版本均为 `0.2.0-rc.1`，不是旧版二进制改名。
+两台设备绑定后，在任意一端直接查看和操作双方内容，不再专门打开另一台电脑的应用界面。程序和安装器的版本均为 `0.2.0-rc.2`，不是旧版二进制改名。
 
 > 这是候选版本，不是已完成全部实体机验收的稳定版。macOS 尚未完成 Developer ID 签名与 Apple 公证，仍可能被系统阻止打开。各安装包的实际构建、原生检查结果和失败范围见发布页附件 `build-manifest.json`。旧正式版保留，本版不替换稳定 Latest。
 
@@ -18,7 +18,11 @@
 
 修改会写回内容所属设备；新建内容默认保存在当前接入设备。数据不互相覆盖，也不自动复制所有文件。备份、恢复、端口、数据目录和密钥开关仍针对当前设备，不是整个工作区的一份混合配置。
 
-### 这一版的变化
+### RC2 新增修复
+
+RC2 从合并后的 `main` 重新构建，包含文档刷新竞态修复、冲突草稿保护、远端写入缓存失效、长文件传输超时分离、时间排序及 Tailscale 扫描取消修复。原生安装验收仍按本次发布报告逐项披露，未解决项见 [Issue #36](https://github.com/Azurefly/omnishare/issues/36)。
+
+### 统一工作区功能
 
 | 范围 | 行为 |
 | --- | --- |
@@ -36,16 +40,16 @@
 
 | 系统 | 附件 |
 | --- | --- |
-| Windows x64 | `OmniShare-v0.2.0-rc.1-windows-x64-setup.exe` 或 `.msi` |
-| Ubuntu x64 | `OmniShare-v0.2.0-rc.1-ubuntu-amd64.deb` |
-| Linux x64 | `OmniShare-v0.2.0-rc.1-linux-amd64.AppImage` |
-| macOS 12+，Intel / Apple 芯片 | `OmniShare-v0.2.0-rc.1-macos-universal.dmg`，未公证 |
+| Windows x64 | `OmniShare-v0.2.0-rc.2-windows-x64-setup.exe` 或 `.msi` |
+| Ubuntu x64 | `OmniShare-v0.2.0-rc.2-ubuntu-amd64.deb` |
+| Linux x64 | `OmniShare-v0.2.0-rc.2-linux-amd64.AppImage` |
+| macOS 12+，Intel / Apple 芯片 | `OmniShare-v0.2.0-rc.2-macos-universal.dmg`，未公证 |
 | Windows / Linux x64、ARM64 | 文件名含 `portable` 的“后端＋浏览器”便携包，不是原生桌面窗口 |
 
 Ubuntu 安装示例：
 
 ```bash
-sudo apt install ./OmniShare-v0.2.0-rc.1-ubuntu-amd64.deb
+sudo apt install ./OmniShare-v0.2.0-rc.2-ubuntu-amd64.deb
 ```
 
 下载后用同页 `SHA256SUMS.txt` 核对。候选版需要按发布页的实际检查结果评估；“构建成功”不等于“所有操作系统的完整原生验收通过”。
@@ -58,6 +62,6 @@ sudo apt install ./OmniShare-v0.2.0-rc.1-ubuntu-amd64.deb
 
 ## 源码与旧版本
 
-`main` 包含统一工作区、双向设备绑定和协同文档改动。源码构建方式见 [开发说明](CONTRIBUTING.md)。主分支在候选版之后继续修复刷新竞态、冲突草稿和远端缓存/下载；这些后续源码修复不代表已替换 `v0.2.0-rc.1` 的公开二进制。请以具体 Release 标签与附件的构建来源为准。
+`main` 包含统一工作区、双向设备绑定和协同文档改动。源码构建方式见 [开发说明](CONTRIBUTING.md)。RC2 已纳入合并前的刷新竞态、冲突草稿和远端缓存/下载修复。原 `v0.2.0-rc.1` 的标签和附件保持不变，不包含这些后续修复。请以具体 Release 标签与附件的构建来源为准。
 
 原有使用说明保存在 [0.1.1 使用文档](README-v0.1.1.md)，其初始化 Token 和网络默认值仅适用于旧版。新版不需要 init Token。当前候选包的签名与平台验收限制仍见发布说明，源码合并并不等于 Apple 公证完成。
