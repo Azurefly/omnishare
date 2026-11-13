@@ -3,62 +3,10 @@ package api
 import (
 	"net"
 	"net/url"
-	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"omnishare/internal/model"
 )
-
-// summarizedLocalDevices returns one product device, not one card per network
-// interface. The selected address is only the preferred route to this device.
-// localIPs and outbound come from the caller's cached interface snapshot so a
-// poll does not repeat getifaddrs and UDP-dial syscalls.
-func summarizedLocalDevices(name string, port int, tls bool, listenAddress string, localIPs []string, outbound string) []model.DeviceNode {
-	scheme := "http"
-	if tls {
-		scheme = "https"
-	}
-
-	candidates := make([]model.DeviceNode, 0, 4)
-	for _, value := range localIPs {
-		ip := net.ParseIP(value)
-		if !usableLocalIP(ip) {
-			continue
-		}
-		candidates = append(candidates, model.DeviceNode{
-			ID:          "local-primary",
-			Hostname:    name,
-			IP:          value,
-			Port:        port,
-			URL:         scheme + "://" + net.JoinHostPort(value, strconv.Itoa(port)),
-			NetworkType: networkType(value),
-			IsLocal:     true,
-			Online:      true,
-			LastSeen:    time.Now(),
-		})
-	}
-
-	if len(candidates) == 0 {
-		value := "127.0.0.1"
-		return []model.DeviceNode{{
-			ID: "local-primary", Hostname: name, IP: value, Port: port,
-			URL:         scheme + "://" + net.JoinHostPort(value, strconv.Itoa(port)),
-			NetworkType: "loopback", IsLocal: true, Online: true, LastSeen: time.Now(),
-		}}
-	}
-
-	sort.SliceStable(candidates, func(i, j int) bool {
-		left := localAddressScore(candidates[i].IP, listenAddress, outbound)
-		right := localAddressScore(candidates[j].IP, listenAddress, outbound)
-		if left != right {
-			return left > right
-		}
-		return candidates[i].IP < candidates[j].IP
-	})
-	return candidates[:1]
-}
 
 func dedupeDeviceNodes(devices []model.DeviceNode) []model.DeviceNode {
 	out := make([]model.DeviceNode, 0, len(devices))

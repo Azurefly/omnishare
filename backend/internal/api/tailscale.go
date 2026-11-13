@@ -71,7 +71,7 @@ func readTailStatus(ctx context.Context) (tailStatus, error) {
 		return data, errors.New("无法读取 Tailscale 状态，请确认已登录且当前用户有读取权限")
 	}
 	if json.Unmarshal(out.Bytes(), &data) != nil || data.BackendState != "Running" {
-		return data, errors.New("Tailscale 未连接或状态无效")
+		return data, errors.New("tailscale 未连接或状态无效")
 	}
 	return data, nil
 }
@@ -156,14 +156,12 @@ func (s *Server) refreshTailDevices(parent context.Context) {
 	var mu sync.Mutex
 	found := []peerIdentity{}
 	sem := make(chan struct{}, 4)
+scanPeers:
 	for _, k := range keys {
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
-			break
-		}
-		if ctx.Err() != nil {
-			break
+			break scanPeers
 		}
 		wg.Add(1)
 		go func(p *tailPeer) {

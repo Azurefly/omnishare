@@ -199,7 +199,7 @@ func (s *Server) sourceData(ctx context.Context, r *http.Request, next http.Hand
 		path := "/api/v1/" + resource + "?" + q.Encode()
 		var raw []byte
 		status := 200
-		headers := http.Header{}
+		var headers http.Header
 		if p == nil {
 			req := r.Clone(ctx)
 			u, _ := url.Parse(path)
@@ -510,19 +510,19 @@ type peerMedia struct {
 func (s *Server) servePeerMedia(w http.ResponseWriter, r *http.Request) {
 	var ticket peerMedia
 	if s.verifySignedValue(r.PathValue("ticket"), &ticket) != nil || time.Now().Unix() >= ticket.Expires || !strings.HasPrefix(ticket.Path, "/media/") || strings.ContainsAny(strings.TrimPrefix(ticket.Path, "/media/"), "/?#\\") {
-		http.Error(w, "media ticket expired", 410)
+		http.Error(w, "media ticket expired", http.StatusGone)
 		return
 	}
 	p, ok := s.boundPeer(ticket.Peer)
 	if !ok {
-		http.Error(w, "device unbound", 410)
+		http.Error(w, "device unbound", http.StatusGone)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	resp, err := s.peerRequest(ctx, p, r.Method, ticket.Path, nil, r.Header)
 	if err != nil {
-		http.Error(w, "remote file temporarily unavailable", 502)
+		http.Error(w, "remote file temporarily unavailable", http.StatusBadGateway)
 		return
 	}
 	allowLongTransfer(w)

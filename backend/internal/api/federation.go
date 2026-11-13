@@ -61,7 +61,6 @@ type peerState struct {
 	tailSelf   []string
 	tailNames  map[string]bool
 	tailNodes  []peerIdentity
-	tailCancel context.CancelFunc
 }
 type bindingFile struct {
 	Owner   string                 `json:"owner"`
