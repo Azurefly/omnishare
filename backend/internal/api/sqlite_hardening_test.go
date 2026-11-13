@@ -29,6 +29,7 @@ func requireAccessKey(t *testing.T, cfg *config.Manager) {
 	t.Helper()
 	current := cfg.Get()
 	current.AccessKey = "test-key-0123456789"
+	current.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	if err := cfg.Update(current); err != nil {
 		t.Fatal(err)
 	}

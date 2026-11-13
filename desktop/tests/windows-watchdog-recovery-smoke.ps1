@@ -1,11 +1,20 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$EvidenceRoot
+    [string]$EvidenceRoot,
+    [string]$DesktopExecutable = '',
+    [string]$BackendExecutable = '',
+    [string]$PrivateRoot = ''
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. "$PSScriptRoot/windows-test-support.ps1"
+
+$ownsPrivateRoot = -not $PrivateRoot
+if (-not $PrivateRoot) { $PrivateRoot = Join-Path ([IO.Path]::GetTempPath()) ("omnishare-watchdog-" + [Guid]::NewGuid().ToString('N')) }
+New-Item -ItemType Directory -Force -Path $PrivateRoot | Out-Null
+$PrivateRoot = (Resolve-Path -LiteralPath $PrivateRoot).Path
 
 New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 $EvidenceRoot = (Resolve-Path $EvidenceRoot).Path
@@ -15,6 +24,8 @@ $results = [ordered]@{
     success = $false
 }
 $desktopProcess = $null
+$desktopExe = $null
+$backendExe = $null
 
 function Add-PhaseResult {
     param(
@@ -122,9 +133,10 @@ function Write-JUnit {
     if ($Success) {
         $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
-<testsuite name="OmniShare.WindowsBackendRecovery" tests="2" failures="0">
+<testsuite name="OmniShare.WindowsBackendRecovery" tests="3" failures="0">
   <testcase classname="desktop.recovery" name="managed-backend-watchdog-restart" />
   <testcase classname="desktop.discovery" name="single-local-device-summary" />
+  <testcase classname="desktop.recovery" name="normal-exit-after-recovery" />
 </testsuite>
 "@
     }
@@ -160,6 +172,11 @@ function Stop-TestProcesses {
 }
 
 try {
+    if ($DesktopExecutable -and $BackendExecutable) {
+        $desktopExe = Get-Item -LiteralPath $DesktopExecutable
+        $backendExe = Get-Item -LiteralPath $BackendExecutable
+    }
+    else {
     $extractRoot = Join-Path $EvidenceRoot 'msi-layout'
     if (-not (Test-Path $extractRoot)) {
         throw "MSI installed layout was not found at $extractRoot. Run windows-runtime-smoke.ps1 first."
@@ -182,12 +199,13 @@ try {
     if (-not $desktopExe) {
         throw "Desktop executable was not found in the MSI installed layout."
     }
+    }
 
     Stop-TestProcesses -DesktopExe $desktopExe.FullName -BackendExe $backendExe.FullName
     Start-Sleep -Seconds 2
 
     $port = Get-FreePort
-    $dataDir = Join-Path $EvidenceRoot 'data-watchdog-recovery'
+    $dataDir = Join-Path $PrivateRoot 'data-watchdog-recovery'
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
     $env:OMNISHARE_PORT = [string]$port
     $env:OMNISHARE_DATA_DIR = $dataDir
@@ -203,19 +221,8 @@ try {
         throw "Recovery setup expected one desktop and one backend; found desktop=$($desktopBefore.Count), backend=$($backendBefore.Count)."
     }
 
-    # This fresh test instance is deliberately uninitialised. Authenticate the
-    # device probe with its local setup token; do not relax default-deny reads.
-    $initTokenPath = Join-Path $dataDir 'init-token'
-    if (-not (Test-Path $initTokenPath)) {
-        throw "The test instance did not create its first-run init-token."
-    }
-    $initToken = (Get-Content -Raw -Path $initTokenPath).Trim()
-    if (-not $initToken) {
-        throw "The test instance init-token is empty."
-    }
-    $devicesPayload = Get-Json -Url "http://127.0.0.1:$port/api/v1/devices" -Headers @{
-        'X-OmniShare-Init-Token' = $initToken
-    }
+    # A fresh LAN-first instance exposes devices without setup credentials.
+    $devicesPayload = Get-Json -Url "http://127.0.0.1:$port/api/v1/devices"
     if ($null -eq $devicesPayload -or $devicesPayload.code -ne 0) {
         throw "Device API did not return a successful response."
     }
@@ -266,6 +273,15 @@ try {
         backendProcesses = $backendAfter.Count
     }
 
+    Invoke-WindowsNormalQuit -Process $desktopProcess
+    Wait-WindowsCondition -Description 'the recovered owned backend to exit after Quit' -Condition {
+        @(Get-ProcessesByExecutable -Executable $backendExe.FullName).Count -eq 0
+    }
+    Add-PhaseResult -Name 'normal-exit-after-recovery' -Passed $true -Details @{
+        replacementBackendPid = $backendAfter[0].ProcessId
+        exited = $true
+    }
+
     $results.success = $true
     $results.finishedAt = (Get-Date).ToString("o")
     $results | ConvertTo-Json -Depth 8 |
@@ -298,4 +314,5 @@ finally {
     }
     Remove-Item Env:OMNISHARE_PORT -ErrorAction SilentlyContinue
     Remove-Item Env:OMNISHARE_DATA_DIR -ErrorAction SilentlyContinue
+    if ($ownsPrivateRoot) { Remove-Item -LiteralPath $PrivateRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

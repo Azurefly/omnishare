@@ -234,6 +234,7 @@ test('discovered devices are escaped and are never represented as authorized pee
   const markup = element('#deviceList').innerHTML
   assert.match(markup, /&lt;img src=x&gt;/)
   assert.match(markup, /发现设备不会授予访问权限/)
-  assert.match(markup, /rel="noopener noreferrer"/)
+  assert.match(markup, /bind-device/)
+  assert.doesNotMatch(markup, /target="_blank"|href="https:\/\/other.example/)
   assert.doesNotMatch(markup, /session-key-never-in-url|已信任|已配对/)
 })

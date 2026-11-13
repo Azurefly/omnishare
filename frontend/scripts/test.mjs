@@ -8,7 +8,8 @@ const routes=['/api/v1/dashboard','/api/v1/notes','/api/v1/files','/api/v1/pads'
 for(const route of routes) if(!js.includes(route)) throw new Error(`missing route ${route}`)
 for(const forbidden of ['localStorage','authorizedURL','?key=']) if(js.includes(forbidden)) throw new Error(`unsafe frontend pattern remains: ${forbidden}`)
 if(!js.includes('sessionStorage'))throw new Error('access key is not session-scoped')
-if(!js.includes("'X-OmniShare-Confirm'='CLEAR-ACCESS-KEY'")&&!js.includes("requestHeaders['X-OmniShare-Confirm']='CLEAR-ACCESS-KEY'"))throw new Error('access-key clearing confirmation missing')
+if(!html.includes('id="cfgAccessKeyEnabled"')||!js.includes('access_key_enabled: protection'))throw new Error('optional key switch missing')
+if(html.includes('cfgInitToken')||js.includes("'X-OmniShare-Init-Token'"))throw new Error('obsolete init token flow remains')
 // The upload concurrency bound is exercised through real queue/retry behavior
 // in upload.test.mjs, not by matching a particular spelling of the scheduler.
 

@@ -58,8 +58,6 @@ sudo apt install ./OmniShare-v0.2.0-rc.1-ubuntu-amd64.deb
 
 ## 源码与旧版本
 
-统一工作区功能位于 [PR #33](https://github.com/Azurefly/omnishare/pull/33) 和本次 Release 对应标签；**默认 `main` 的应用源码暂未合入该功能**。下载本版或检出本版标签，不能把旧 `main` 构建当作新版。此页更新属于发布文档更新，不表示功能 PR 已合并。
+`main` 包含统一工作区、双向设备绑定和协同文档改动。源码构建方式见 [开发说明](CONTRIBUTING.md)。主分支在候选版之后继续修复刷新竞态、冲突草稿和远端缓存/下载；这些后续源码修复不代表已替换 `v0.2.0-rc.1` 的公开二进制。请以具体 Release 标签与附件的构建来源为准。
 
-旧 `v0.1.1` / `v0.1.1-lan.1` 的下载、数据目录、迁移、部署与维护说明保留在 [旧版完整说明](README-v0.1.1.md)，仅适用于对应版本；它们的 init Token 等旧规则不适用于本版。
-
-历史更新见 [CHANGELOG](CHANGELOG.md)。本版细节见 [0.2.0-rc.1 发布说明](docs/RELEASE_NOTES_v0.2.0-rc.1.md)。
+原有使用说明保存在 [0.1.1 使用文档](README-v0.1.1.md)，其初始化 Token 和网络默认值仅适用于旧版。新版不需要 init Token。当前候选包的签名与平台验收限制仍见发布说明，源码合并并不等于 Apple 公证完成。

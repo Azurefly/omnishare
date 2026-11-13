@@ -31,7 +31,7 @@ jobs:
       matrix:
         include:
           - name: Linux
-            os: ubuntu-latest
+            os: ubuntu-22.04
             artifact: omnishare-desktop-Linux
           - name: Windows
             os: windows-latest
@@ -47,6 +47,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate native Windows installation helpers before building
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/tests/windows-test-support.test.ps1
+
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
@@ -60,13 +65,13 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26.5'
           cache-dependency-path: backend/go.sum
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.23.1'
           cache: npm
           cache-dependency-path: |
             frontend/package.json
@@ -208,7 +213,15 @@ jobs:
           grep -q arm64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
           grep -q x86_64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
 
-      - name: Windows installed-layout runtime smoke test
+      - name: Verify embedded Microsoft WebView2 offline installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-webview-runtime-evidence.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Windows actual installation and usability tests
         if: runner.os == 'Windows'
         shell: pwsh
         run: |

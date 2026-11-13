@@ -1,0 +1,245 @@
+name: Build and publish unified workspace RC
+on:
+  push:
+    branches: ['fix/cross-platform-install-20261111']
+    paths: ['.github/workflows/workspace-rc.yml', '.review-workspace/**', 'scripts/stage-workspace-rc.py', 'scripts/publish-workspace-rc.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: workspace-rc-publish
+  cancel-in-progress: true
+jobs:
+  source:
+    name: Validate exact reviewed source
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate reviewed source hashes and release version
+        id: source
+        shell: python
+        run: |
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          assert os.environ['GITHUB_REPOSITORY']=='Azurefly/omnishare'
+          assert os.environ['GITHUB_REF']=='refs/heads/fix/cross-platform-install-20261111'
+          manifest=json.loads(Path('release/workspace-source-manifest.json').read_text())
+          for name,want in manifest.items():
+              assert hashlib.sha256(Path(name).read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, 'Changed reviewed bytes: '+name
+          assert Path('VERSION').read_text().strip()=='0.2.0-rc.1'
+          sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+sha+'\n')
+
+  verify:
+    name: Core and actual two-device browser tests
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+      - run: |
+          bash scripts/build-release.sh
+          npm --prefix desktop run test:contracts
+          python3 scripts/macos_release_test.py
+          (cd backend && go vet ./... && go test ./... -race -count=1 -timeout=6m)
+          python3 scripts/test-http-integration.py dist/binaries/omnishare-linux-amd64
+      - name: Real Chromium workflow, not API mocks
+        timeout-minutes: 5
+        run: |
+          npm --prefix frontend ci
+          cd frontend && npx playwright install --with-deps chromium && cd ..
+          node scripts/test-workspace-browser.mjs dist/binaries/omnishare-linux-amd64
+      - name: Stage new portable builds and passed browser report
+        run: |
+          python3 scripts/stage-workspace-rc.py server
+          cp frontend/test-results/workspace/results.json rc-assets/workspace-browser-results.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workspace-rc-server
+          path: rc-assets/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: workspace-browser-evidence
+          path: frontend/test-results/workspace/
+          if-no-files-found: warn
+
+  desktop:
+    name: Build ${{ matrix.name }} candidate and record native result
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-22.04
+          - name: macOS
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            xvfb dbus-x11 xdotool at-spi2-core libatk-adaptor python3-pyatspi python3-gi scrot desktop-file-utils binutils fonts-noto-cjk
+      - name: Compile exact application and resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix frontend run build
+          npm --prefix desktop ci
+          npm --prefix desktop run test:contracts
+          mkdir -p desktop/src-tauri/resources
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare.exe ./cmd/omnishare)
+          elif [ "$RUNNER_OS" = macOS ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            (cd backend && GOOS=darwin GOARCH=arm64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-arm64 ./cmd/omnishare)
+            (cd backend && GOOS=darwin GOARCH=amd64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-amd64 ./cmd/omnishare)
+            lipo -create desktop/src-tauri/resources/omnishare-{arm64,amd64} -output desktop/src-tauri/resources/omnishare
+            rm desktop/src-tauri/resources/omnishare-{arm64,amd64}
+            chmod +x desktop/src-tauri/resources/omnishare
+          else
+            (cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare)
+          fi
+      - name: Prepare Linux verified bundle tools
+        id: tools
+        if: runner.os == 'Linux'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/prepare-linux-appimage-tools.py
+      - name: Prepare Windows verified bundle tools
+        if: runner.os == 'Windows'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare-windows-bundle-tools.py
+      - name: Build Windows installers
+        if: runner.os == 'Windows'
+        run: npm --prefix desktop run build
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        env:
+          LDAI_RUNTIME_FILE: ${{ steps.tools.outputs.runtime_path }}
+        run: |
+          npm --prefix desktop run prebuild
+          (cd desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
+          npm --prefix desktop run build -- --bundles deb,appimage
+      - name: Build and integrity-sign Universal Mac candidate
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          npm --prefix desktop run build -- --target universal-apple-darwin --bundles app
+          app=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniShare.app
+          backend=$(find "$app/Contents" -type f -name omnishare | head -n 1)
+          test -n "$backend"
+          lipo "$backend" -verify_arch arm64 x86_64
+          lipo "$app/Contents/MacOS/omnishare-desktop" -verify_arch arm64 x86_64
+          codesign --force --sign - --timestamp=none "$backend"
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict "$app"
+          mkdir -p macos-rc macos-stage
+          ditto "$app" macos-stage/OmniShare.app
+          ln -s /Applications macos-stage/Applications
+          hdiutil create -volname 'OmniShare 0.2.0 RC1' -srcfolder macos-stage -format UDZO macos-rc/OmniShare.dmg
+      - name: Verify full Microsoft WebView2 inputs
+        if: runner.os == 'Windows'
+        run: ./desktop/tests/windows-webview-runtime-evidence.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'candidate-evidence'
+      - name: Record native Windows installation acceptance (failure stays in report)
+        id: windows_native
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        timeout-minutes: 8
+        run: ./desktop/tests/windows-runtime-smoke-ci.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'candidate-evidence'
+      - name: Record Ubuntu 22.04 native installation acceptance (failure stays in report)
+        id: linux_native
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)
+          image=$(find desktop/src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -n 1)
+          timeout --signal=TERM --kill-after=10s 300s xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- /usr/bin/python3 desktop/tests/linux-installed-smoke.py \
+            --deb "$deb" --appimage "$image" --version "$(cat VERSION)" --evidence ubuntu-install-evidence
+      - name: Record packaged Mac backend HTTP check (not a GUI or Gatekeeper test)
+        id: mac_native
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          backend=$(find macos-stage/OmniShare.app/Contents -type f -name omnishare | head -n 1)
+          python3 scripts/test-http-integration.py "$backend"
+      - name: Stage candidates and precise validation boundaries
+        shell: bash
+        env:
+          NATIVE_OUTCOME: ${{ runner.os == 'Windows' && steps.windows_native.outcome || runner.os == 'Linux' && steps.linux_native.outcome || steps.mac_native.outcome }}
+        run: python scripts/stage-workspace-rc.py '${{ matrix.name }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workspace-rc-${{ matrix.name }}
+          path: rc-assets/*
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: workspace-native-evidence-${{ matrix.name }}
+          path: |
+            candidate-evidence/
+            ubuntu-install-evidence/
+          if-no-files-found: warn
+
+  publish:
+    name: Publish verified prerelease assets, never stable Latest
+    needs: [source, verify, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: workspace-rc-*
+          path: rc-assets
+          merge-multiple: true
+      - name: Verify each build source and asset, upload draft, verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.source.outputs.sha }}
+        run: python3 scripts/publish-workspace-rc.py

@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-const CurrentConfigSchema = 2
+const CurrentConfigSchema = 3
 
 // QuickNote is a short-lived or persistent text object.
 type QuickNote struct {
@@ -73,6 +73,8 @@ type AppConfig struct {
 	AuditMaxEvents      int          `json:"audit_max_events"`
 	AllowedOrigins      []string     `json:"allowed_origins,omitempty"`
 	Peers               []PeerConfig `json:"peers"`
+	AccessKeyEnabled    *bool        `json:"access_key_enabled,omitempty"`
+	KeepAccessKey       bool         `json:"keep_access_key,omitempty"`
 	AccessKey           string       `json:"access_key,omitempty"`
 	AccessKeyHash       string       `json:"access_key_hash,omitempty"`
 	AccessKeySalt       string       `json:"access_key_salt,omitempty"`
@@ -100,22 +102,27 @@ type PublicConfig struct {
 	AuditRetentionDays int          `json:"audit_retention_days"`
 	AuditMaxEvents     int          `json:"audit_max_events"`
 	HasAccessKey       bool         `json:"has_access_key"`
+	AccessKeyEnabled   bool         `json:"access_key_enabled"`
 	TLSEnabled         bool         `json:"tls_enabled"`
 	AllowedOrigins     []string     `json:"allowed_origins,omitempty"`
 	Peers              []PeerConfig `json:"peers"`
 }
 
 type DeviceNode struct {
-	ID          string    `json:"id"`
-	Hostname    string    `json:"hostname"`
-	IP          string    `json:"ip"`
-	Port        int       `json:"port"`
-	URL         string    `json:"url"`
-	NetworkType string    `json:"network_type"`
-	IsLocal     bool      `json:"is_local"`
-	Online      bool      `json:"online"`
-	LatencyMS   int64     `json:"latency_ms"`
-	LastSeen    time.Time `json:"last_seen"`
+	Addresses       []string  `json:"addresses,omitempty"`
+	Bound           bool      `json:"bound"`
+	Status          string    `json:"status,omitempty"`
+	ConnectionError string    `json:"connection_error,omitempty"`
+	ID              string    `json:"id"`
+	Hostname        string    `json:"hostname"`
+	IP              string    `json:"ip"`
+	Port            int       `json:"port"`
+	URL             string    `json:"url"`
+	NetworkType     string    `json:"network_type"`
+	IsLocal         bool      `json:"is_local"`
+	Online          bool      `json:"online"`
+	LatencyMS       int64     `json:"latency_ms"`
+	LastSeen        time.Time `json:"last_seen"`
 }
 
 type AuditEvent struct {

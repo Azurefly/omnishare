@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          branch_ref=refs/heads/fix/macos-notarized-distribution-20261108
+          branch_ref=refs/heads/fix/cross-platform-install-20261111
           if remote="$(git ls-remote --exit-code --heads origin "$branch_ref")"; then
             expected="$(git rev-parse --verify "${GITHUB_SHA}^2")"
             main="$(git ls-remote --exit-code --heads origin refs/heads/main)"

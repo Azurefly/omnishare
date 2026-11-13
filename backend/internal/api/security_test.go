@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,62 +26,41 @@ func configWrite(t *testing.T, h http.Handler, payload, key, token, remote strin
 	return w
 }
 
-// Any loopback process used to be able to claim an uninitialised instance by
-// writing the first config. Only the token from the 0600 file may do that, and
-// it must stop working once an access key exists.
-func TestConfigWritesRequireOneTimeInitToken(t *testing.T) {
+// LAN-first mode does not require a bootstrap secret; only the optional switch
+// enables authentication, and an enabled key is required to switch it off.
+func TestOptionalKeySwitchWithoutInitializationToken(t *testing.T) {
 	s, h, cfg := newTestServer(t)
-	if cfg.HasAccessKey() {
-		t.Fatal("test server unexpectedly started initialised")
+	if _, err := os.Stat(filepath.Join(cfg.Get().DataDir, "init-token")); !os.IsNotExist(err) {
+		t.Fatalf("legacy token created: %v", err)
 	}
-	if s.initToken == "" || len(s.initToken) < 32 {
-		t.Fatal("server did not generate an init token")
+	if s.InitToken() != "" {
+		t.Fatal("token exposed")
 	}
-	tokenPath := s.InitTokenPath()
-	if tokenPath != filepath.Join(cfg.Get().DataDir, initTokenFile) {
-		t.Fatalf("init token path=%q", tokenPath)
+	payload := `{"node_name":"LAN node","allow_lan":true,"access_key_enabled":true,"access_key":"1"}`
+	if w := configWrite(t, h, payload, "", "", "192.168.1.5:12345"); w.Code != 200 {
+		t.Fatalf("enable=%d %s", w.Code, w.Body.String())
 	}
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(tokenPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("init token mode=%o", info.Mode().Perm())
-		}
+	if !cfg.AccessKeyEnabled() || !cfg.VerifyAccessKey("1") {
+		t.Fatal("short key not enabled")
 	}
-
-	const secure = "0123456789abcdef-secure"
-	securePayload := `{"node_name":"init-node","access_key":"` + secure + `"}`
-
-	if w := configWrite(t, h, securePayload, "", "", "127.0.0.1:12345"); w.Code != http.StatusForbidden {
-		t.Fatalf("config write without token=%d %s", w.Code, w.Body.String())
+	disable := `{"allow_lan":true,"access_key_enabled":false,"keep_access_key":true}`
+	if w := configWrite(t, h, disable, "", "obsolete", "127.0.0.1:12345"); w.Code != 401 {
+		t.Fatalf("unauthorized disable=%d", w.Code)
 	}
-	if w := configWrite(t, h, securePayload, "", "wrong-token", "127.0.0.1:12345"); w.Code != http.StatusForbidden {
-		t.Fatalf("config write with wrong token=%d %s", w.Code, w.Body.String())
+	if w := configWrite(t, h, disable, "1", "", "192.168.1.5:12345"); w.Code != 200 {
+		t.Fatalf("disable=%d %s", w.Code, w.Body.String())
 	}
-	// The token must not be usable from a non-loopback peer even when the
-	// listener is somehow reachable there.
-	if w := configWrite(t, h, securePayload, "", s.initToken, "192.168.1.5:12345"); w.Code != http.StatusForbidden {
-		t.Fatalf("config write from LAN=%d %s", w.Code, w.Body.String())
+	if cfg.AccessKeyEnabled() {
+		t.Fatal("switch did not disable protection")
 	}
-	if w := configWrite(t, h, securePayload, "", s.initToken, "127.0.0.1:12345"); w.Code != http.StatusOK {
-		t.Fatalf("config write with token=%d %s", w.Code, w.Body.String())
+	if w := rawGet(t, h, "/api/v1/notes", ""); w.Code != 200 {
+		t.Fatalf("disabled read=%d", w.Code)
 	}
-	if !cfg.HasAccessKey() || !cfg.VerifyAccessKey(secure) {
-		t.Fatal("token-authorized write did not activate the access key")
+	enable := `{"allow_lan":true,"access_key_enabled":true,"keep_access_key":true}`
+	if w := configWrite(t, h, enable, "", "", "192.168.1.5:12345"); w.Code != 200 {
+		t.Fatalf("reenable=%d", w.Code)
 	}
-	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
-		t.Fatalf("init token survived initialisation: %v", err)
-	}
-	if s.InitTokenPath() != "" {
-		t.Fatal("server still advertises an init token after the key was set")
-	}
-	// Once initialised, the token header is inert and the access key is required.
-	if w := configWrite(t, h, `{"node_name":"token-replay"}`, "", s.initToken, "127.0.0.1:12345"); w.Code != http.StatusUnauthorized {
-		t.Fatalf("token replay after initialisation=%d %s", w.Code, w.Body.String())
-	}
-	if w := configWrite(t, h, `{"node_name":"keyed-node","access_key":"__KEEP__"}`, secure, "", "127.0.0.1:12345"); w.Code != http.StatusOK {
-		t.Fatalf("keyed config write=%d %s", w.Code, w.Body.String())
+	if !cfg.VerifyAccessKey("1") || cfg.VerifyAccessKey("wrong") {
+		t.Fatal("saved secret not preserved")
 	}
 }

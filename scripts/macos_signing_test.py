@@ -103,6 +103,9 @@ class FakeNativeTools:
             ticket = b"stapled" if (source / "OmniShare.app/ticket").exists() else b"unstapled"
             Path(argv[-1]).write_bytes(b"dmg:" + ticket)
         if tool == "xcrun":
+            if argv[1] == "swiftc":
+                output = Path(argv[argv.index("-o") + 1])
+                output.write_bytes(b"modeled-native-AppKit-launcher")
             if argv[1:3] == ["notarytool", "submit"]:
                 submission_id = SUBMISSION_IDS[len(self.submissions)]
                 self.submissions.append((submission_id, Path(argv[3]).read_bytes()))
@@ -227,6 +230,10 @@ class SigningTests(unittest.TestCase):
         self.assertEqual(app_sign[app_sign.index("--sign") + 1], FINGERPRINT)
         self.assertEqual(app_sign[app_sign.index("--options") + 1], "runtime")
         self.assertNotIn("--deep", app_sign)
+        stages = [stage for _, stage in tools.calls]
+        self.assertLess(stages.index("Sign embedded macOS backend"), stages.index("Sign macOS application"))
+        compiler = next(argv for argv, stage in tools.calls if stage == "Compile native application launcher")
+        self.assertIn("x86_64-apple-macosx12.0", compiler)
         for argv, _ in tools.calls:
             self.assertNotIn("default-keychain", argv)
             self.assertNotIn("list-keychains", argv)
@@ -240,12 +247,14 @@ class SigningTests(unittest.TestCase):
         self.assertEqual(report["signing_mode"], "ad-hoc")
         self.assertIsNone(report["team_id"])
         self.assertEqual(set(tools.signatures.values()), {"rehearsal"})
-        self.assertEqual(len(tools.signatures), 2)
+        self.assertEqual(len(tools.signatures), 3)
         self.assertIn("CI 演练包", tools.readme)
         self.assertNotIn("__SIGNING_NOTICE__", tools.readme)
         for record in report["notarization"].values():
             self.assertEqual(record, {"submission_id": None, "status": "NotSubmitted", "stapled": False})
-        self.assertFalse(any(Path(argv[0]).name in ("security", "xcrun") for argv, _ in tools.calls))
+        self.assertFalse(any(Path(argv[0]).name == "security" or
+                             (Path(argv[0]).name == "xcrun" and argv[1] != "swiftc")
+                             for argv, _ in tools.calls))
 
     def test_app_and_dmg_cannot_reuse_one_notary_submission(self):
         tools = FakeNativeTools()

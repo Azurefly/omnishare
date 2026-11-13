@@ -1,9 +1,8 @@
-//! One-time initialization credentials are only included in WebView navigation.
+//! Backend data paths and token-free WebView navigation.
 
 use std::{
     env,
     ffi::OsStr,
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -35,45 +34,14 @@ fn resolve_data_dir(
     working_dir.join(data_dir)
 }
 
-pub fn navigation_url(base_url: &str, managed_data_dir: Option<&Path>) -> String {
-    let Some(data_dir) = managed_data_dir else {
-        return base_url.to_string();
-    };
-    let token_path = data_dir.join("init-token");
-
-    // The backend creates this credential with mode 0600. Do not forward a
-    // credential that other local accounts can read on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        match fs::metadata(&token_path) {
-            Ok(metadata) if metadata.permissions().mode() & 0o077 == 0 => {}
-            _ => return base_url.to_string(),
-        }
-    }
-
-    let Ok(contents) = fs::read_to_string(token_path) else {
-        return base_url.to_string();
-    };
-    let token = contents.trim();
-    if token.len() < 32 {
-        return base_url.to_string();
-    }
-
-    let mut encoded = String::new();
-    for byte in token.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    format!("{}/?init_token={encoded}", base_url.trim_end_matches('/'))
+pub fn navigation_url(base_url: &str, _managed_data_dir: Option<&Path>) -> String {
+    base_url.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestDir(PathBuf);
@@ -132,12 +100,12 @@ mod tests {
     }
 
     #[test]
-    fn first_navigation_encodes_the_managed_backends_token() {
+    fn first_navigation_ignores_obsolete_tokens() {
         let data = TestDir::new();
         data.write_token("  abcdefghijklmnopqrstuvwxyz012345+&=?/#\n");
         assert_eq!(
             navigation_url("http://127.0.0.1:8081", Some(&data.0)),
-            "http://127.0.0.1:8081/?init_token=abcdefghijklmnopqrstuvwxyz012345%2B%26%3D%3F%2F%23"
+            "http://127.0.0.1:8081"
         );
     }
 

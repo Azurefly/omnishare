@@ -257,14 +257,22 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def assemble_app(tools, work, binary, version, mode, root):
+def assemble_app(tools, work, binary, version, mode, root, arch):
     app = work / "OmniShare.app"
     executable = app / "Contents/MacOS/OmniShare"
     resources = app / "Contents/Resources"
     executable.parent.mkdir(parents=True)
     resources.mkdir()
-    shutil.copyfile(binary, executable)
+    backend = executable.parent / "omnishare-server"
+    shutil.copyfile(binary, backend)
+    backend.chmod(0o755)
+    machine = "x86_64" if arch == "amd64" else "arm64"
+    tools.run([XCRUN, "swiftc", "-O", "-target", machine + "-apple-macosx12.0",
+               "-framework", "AppKit", root / "packaging/macos/Launcher.swift", "-o", executable],
+              "Compile native application launcher", timeout=300)
     executable.chmod(0o755)
+    if tools.run(["/usr/bin/lipo", "-archs", executable], "Inspect launcher architecture").strip() != machine:
+        raise PackagingError("The native launcher architecture does not match the requested architecture.")
     short_version = version.split("-", 1)[0]
     info = (root / "packaging/macos/Info.plist").read_text(encoding="utf-8")
     info = info.replace("__SHORT_VERSION__", short_version).replace("__BUNDLE_VERSION__", short_version)
@@ -316,7 +324,7 @@ def package(binary, output, arch, mode="release", env=None, tools=None, root=ROO
         raise PackagingError("Expected a nonempty regular Mach-O binary.")
     binary = binary.resolve()
     tools = tools or NativeTools(env)
-    needed = ["/usr/bin/lipo", "/usr/bin/plutil", CODESIGN, DITTO, HDIUTIL]
+    needed = ["/usr/bin/lipo", "/usr/bin/plutil", CODESIGN, DITTO, HDIUTIL, XCRUN]
     if mode == "release":
         needed += [SECURITY, XCRUN]
     if any(not os.access(path, os.X_OK) for path in needed):
@@ -336,11 +344,15 @@ def package(binary, output, arch, mode="release", env=None, tools=None, root=ROO
     with tempfile.TemporaryDirectory(prefix=".omnishare-macos-", dir=output) as directory:
         work = Path(directory)
         work.chmod(0o700)
-        app = assemble_app(tools, work, binary, version, mode, root)
+        app = assemble_app(tools, work, binary, version, mode, root, arch)
+        backend = app / "Contents/MacOS/omnishare-server"
         zip_path, dmg_path = work / names["zip"], work / names["dmg"]
         notary = {kind: {"submission_id": None, "status": "NotSubmitted", "stapled": False} for kind in ("app", "dmg")}
         if mode == "release":
             with signing_keychain(tools, work, credentials) as (keychain, identity, profile):
+                tools.run([CODESIGN, "--force", "--sign", identity, "--keychain", keychain,
+                           "--options", "runtime", "--timestamp", backend], "Sign embedded macOS backend")
+                verify_signature(tools, backend, mode, credentials.team_id, app=True)
                 tools.run([CODESIGN, "--force", "--sign", identity, "--keychain", keychain,
                            "--options", "runtime", "--timestamp", app], "Sign macOS application")
                 verify_signature(tools, app, mode, credentials.team_id, app=True)
@@ -360,6 +372,8 @@ def package(binary, output, arch, mode="release", env=None, tools=None, root=ROO
                 staple(tools, dmg_path, notary["dmg"])
                 verify_signature(tools, dmg_path, mode, credentials.team_id)
         else:
+            tools.run([CODESIGN, "--force", "--sign", "-", "--timestamp=none", backend], "Ad-hoc sign rehearsal backend")
+            verify_signature(tools, backend, mode, None, app=True)
             tools.run([CODESIGN, "--force", "--sign", "-", "--timestamp=none", app], "Ad-hoc sign rehearsal application")
             verify_signature(tools, app, mode, None, app=True)
             create_zip(tools, app, zip_path)

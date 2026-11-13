@@ -63,7 +63,8 @@ func New(dataDir string, port int, nodeName string) (*Manager, error) {
 			DataDir:             abs,
 			NodeName:            strings.TrimSpace(nodeName),
 			Port:                defaultPort,
-			ListenAddress:       "127.0.0.1",
+			ListenAddress:       "0.0.0.0",
+			AllowLAN:            true,
 			AutoOpenBrowser:     true,
 			MaxUploadMB:         defaultUploadMB,
 			BackupMaxMB:         defaultBackupMB,
@@ -99,6 +100,7 @@ func New(dataDir string, port int, nodeName string) (*Manager, error) {
 	if err := m.migrateLegacySecret(); err != nil {
 		return nil, err
 	}
+	m.cfg.AccessKeyEnabled = boolValue(protectionEnabled(m.cfg))
 	if err := m.ensureDiscoveryIdentity(); err != nil {
 		return nil, err
 	}
@@ -121,7 +123,7 @@ func (m *Manager) applyDefaults(abs string) {
 		m.cfg.Port = defaultPort
 	}
 	if strings.TrimSpace(m.cfg.ListenAddress) == "" {
-		m.cfg.ListenAddress = "127.0.0.1"
+		m.cfg.ListenAddress = "0.0.0.0"
 	}
 	if m.cfg.MaxUploadMB <= 0 {
 		m.cfg.MaxUploadMB = defaultUploadMB
@@ -154,9 +156,11 @@ func (m *Manager) applyDefaults(abs string) {
 
 func (m *Manager) load() error {
 	decode := func(data []byte) error {
-		if err := json.Unmarshal(data, &m.cfg); err != nil {
+		var decoded model.AppConfig
+		if err := json.Unmarshal(data, &decoded); err != nil {
 			return err
 		}
+		m.cfg = decoded
 		// v1.2 persisted a plaintext access_key. Keep migration support without
 		// exposing a second field with the same JSON tag to normal API decoding.
 		if m.cfg.AccessKeyHash == "" {
@@ -225,6 +229,7 @@ func nodeID(pub ed25519.PublicKey) string {
 
 func (m *Manager) saveCandidate(cfg model.AppConfig) error {
 	cfg.AccessKey = ""
+	cfg.KeepAccessKey = false
 	cfg.LegacyAccessKey = ""
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -247,7 +252,11 @@ func (m *Manager) Get() model.AppConfig {
 }
 
 func cloneConfig(cfg model.AppConfig) model.AppConfig {
+	if cfg.AccessKeyEnabled != nil {
+		cfg.AccessKeyEnabled = boolValue(*cfg.AccessKeyEnabled)
+	}
 	cfg.AccessKey = ""
+	cfg.KeepAccessKey = false
 	cfg.LegacyAccessKey = ""
 	cfg.Peers = append([]model.PeerConfig(nil), cfg.Peers...)
 	cfg.AllowedOrigins = append([]string(nil), cfg.AllowedOrigins...)
@@ -271,10 +280,27 @@ func (m *Manager) Public() model.PublicConfig {
 		AuditRetentionDays: cfg.AuditRetentionDays,
 		AuditMaxEvents:     cfg.AuditMaxEvents,
 		HasAccessKey:       cfg.AccessKeyHash != "",
+		AccessKeyEnabled:   protectionEnabled(cfg),
 		TLSEnabled:         cfg.TLSCertFile != "" && cfg.TLSKeyFile != "",
 		AllowedOrigins:     append([]string(nil), cfg.AllowedOrigins...),
 		Peers:              append([]model.PeerConfig(nil), cfg.Peers...),
 	}
+}
+
+// Nil preserves legacy clients: a configured secret previously implied protection.
+func boolValue(value bool) *bool { return &value }
+
+func protectionEnabled(cfg model.AppConfig) bool {
+	if cfg.AccessKeyEnabled != nil {
+		return *cfg.AccessKeyEnabled
+	}
+	return cfg.AccessKeyHash != "" || cfg.LegacyAccessKey != ""
+}
+
+func (m *Manager) AccessKeyEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return protectionEnabled(m.cfg)
 }
 
 func (m *Manager) HasAccessKey() bool {
@@ -294,10 +320,15 @@ func (m *Manager) VerifyAccessKey(got string) bool {
 	m.mu.RLock()
 	cfg := m.cfg
 	m.mu.RUnlock()
-	if cfg.AccessKeyHash == "" {
-		return got == ""
+	if !protectionEnabled(cfg) {
+		return true
 	}
-	cacheKey := m.accessCacheKey(got)
+	if cfg.AccessKeyHash == "" {
+		return false
+	}
+	// Bind cache hits to this secret generation. A verification that races a
+	// key rotation must not reinsert an old accepted key into the new cache.
+	cacheKey := m.accessCacheKey(cfg.AccessKeyHash + "\x00" + got)
 	now := time.Now()
 	m.cacheMu.Lock()
 	if expires, ok := m.authCache[cacheKey]; ok && now.Before(expires) {
@@ -394,7 +425,10 @@ func (m *Manager) Update(req model.AppConfig) error {
 		candidate.AuditMaxEvents = req.AuditMaxEvents
 	}
 	candidate.AutoOpenBrowser = req.AutoOpenBrowser
-	if req.AccessKey != "__KEEP__" {
+	// New clients use keep_access_key, not magic password strings. Thus CLEAR
+	// and __KEEP__ remain valid literal keys when the explicit switch is sent.
+	keep := req.KeepAccessKey || (req.AccessKeyEnabled == nil && req.AccessKey == "__KEEP__")
+	if !keep {
 		if req.AccessKey == "" {
 			candidate.AccessKeyHash = ""
 			candidate.AccessKeySalt = ""
@@ -402,6 +436,11 @@ func (m *Manager) Update(req model.AppConfig) error {
 		} else if err := setSecret(&candidate, req.AccessKey); err != nil {
 			return err
 		}
+	}
+	if req.AccessKeyEnabled != nil {
+		candidate.AccessKeyEnabled = boolValue(*req.AccessKeyEnabled)
+	} else if !keep {
+		candidate.AccessKeyEnabled = boolValue(req.AccessKey != "")
 	}
 	if req.Peers != nil {
 		peers, err := sanitizePeers(req.Peers)
@@ -423,6 +462,8 @@ func (m *Manager) Update(req model.AppConfig) error {
 	}
 	if !candidate.AllowLAN {
 		candidate.ListenAddress = "127.0.0.1"
+	} else if !m.cfg.AllowLAN && isLoopbackListen(candidate.ListenAddress) {
+		candidate.ListenAddress = "0.0.0.0"
 	}
 	if err := validateConfig(candidate); err != nil {
 		return err
@@ -487,6 +528,7 @@ func (m *Manager) RestoreJSON(data []byte) error {
 		}
 	}
 	candidate.LegacyAccessKey = ""
+	candidate.AccessKeyEnabled = boolValue(protectionEnabled(candidate))
 	if strings.TrimSpace(candidate.NodeName) == "" {
 		candidate.NodeName = "OmniShare"
 	}
@@ -551,9 +593,8 @@ func (m *Manager) BackupJSON() ([]byte, error) {
 }
 
 func setSecret(cfg *model.AppConfig, secret string) error {
-	secret = strings.TrimSpace(secret)
-	if len([]byte(secret)) < 16 {
-		return errors.New("access key must contain at least 16 bytes")
+	if secret == "" {
+		return errors.New("enter an access key before enabling protection")
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -607,8 +648,8 @@ func validateConfig(cfg model.AppConfig) error {
 	if cfg.AuditRetentionDays < 1 || cfg.AuditRetentionDays > 36500 || cfg.AuditMaxEvents < 1 || cfg.AuditMaxEvents > 10_000_000 {
 		return errors.New("audit retention setting is out of range")
 	}
-	if cfg.AllowLAN && cfg.AccessKeyHash == "" {
-		return errors.New("LAN access requires an access key")
+	if protectionEnabled(cfg) && cfg.AccessKeyHash == "" {
+		return errors.New("enter an access key before enabling protection")
 	}
 	if !cfg.AllowLAN && !isLoopbackListen(cfg.ListenAddress) {
 		return errors.New("non-LAN mode must listen on loopback")

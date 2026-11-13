@@ -64,10 +64,6 @@ type Server struct {
 	shareIP   map[string]int
 	counted   map[string]time.Time
 
-	// initToken guards the first configuration write before any access key
-	// exists; see init_token.go.
-	initToken     string
-	initTokenPath string
 	// dataMu keeps each data request on one generation of state/config/blobs.
 	// Ordinary requests share the read lock; only the final restore swap takes
 	// the write lock. Uploading and validating an archive do not block requests.
@@ -100,6 +96,7 @@ type Server struct {
 	// request, and a mutex there serialised the whole server.
 	localMu    sync.Mutex
 	localCache atomic.Pointer[localNetworkSnapshot]
+	peers      *peerState
 }
 
 // localNetworkSnapshot is an immutable view of this host's addresses. Both
@@ -171,7 +168,7 @@ func New(store storage.Backend, cfg *config.Manager, registries ...*discovery.Re
 		panic(fmt.Sprintf("secure random source unavailable: %v", err))
 	}
 	client := &http.Client{
-		Timeout: 1500 * time.Millisecond,
+		Timeout: 5 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -181,14 +178,19 @@ func New(store storage.Backend, cfg *config.Manager, registries ...*discovery.Re
 		ticketKey: key, auth: map[string]*authState{}, requestIP: map[string]int{}, shareIP: map[string]int{}, counted: map[string]time.Time{},
 		denied: map[string]*deniedBucket{}, deniedWindow: time.Minute,
 	}
-	if err := server.ensureInitToken(); err != nil {
-		panic(fmt.Sprintf("initialize first-run token: %v", err))
-	}
+	server.initPeers()
+	server.finishInitialization() // Remove an obsolete token file; never generate or read it.
 	return server
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/peers/identity", s.peerIdentityHandler)
+	mux.HandleFunc("POST /api/v1/peers/bind", s.protected(s.bindPeer))
+	mux.HandleFunc("POST /api/v1/peers/accept", s.protected(s.acceptPeer))
+	mux.HandleFunc("DELETE /api/v1/peers/{id}", s.protected(s.unbindPeer))
+	mux.HandleFunc("DELETE /api/v1/peers/self", s.revokeSelf)
+	mux.HandleFunc("GET /peer-media/{ticket}", s.servePeerMedia)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/auth/verify", s.verifyAuth)
 	mux.HandleFunc("GET /api/v1/dashboard", s.protected(s.dashboard))
@@ -229,7 +231,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/restore", s.protected(s.restore))
 	mux.HandleFunc("GET /s/{token}", s.serveShare)
 	mux.Handle("/", frontend.Handler())
-	return s.common(mux)
+	return s.common(s.federated(mux))
 }
 
 func (s *Server) common(next http.Handler) http.Handler {
@@ -243,7 +245,7 @@ func (s *Server) common(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self'")
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/media/") || strings.HasPrefix(r.URL.Path, "/n/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/media/") || strings.HasPrefix(r.URL.Path, "/peer-media/") || strings.HasPrefix(r.URL.Path, "/n/") {
 			w.Header().Set("Cache-Control", "no-store, private")
 			w.Header().Set("Pragma", "no-cache")
 		}
@@ -260,8 +262,8 @@ func (s *Server) common(next http.Handler) http.Handler {
 			return
 		}
 		defer s.leaveRequest(ip)
-		if r.URL.Path != "/api/v1/restore" && r.URL.Path != "/api/v1/health" &&
-			(strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/media/") || strings.HasPrefix(r.URL.Path, "/n/")) {
+		if r.URL.Path != "/api/v1/restore" && r.URL.Path != "/api/v1/health" && r.URL.Path != "/api/v1/peers/identity" &&
+			(strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/s/") || strings.HasPrefix(r.URL.Path, "/media/") || strings.HasPrefix(r.URL.Path, "/peer-media/") || strings.HasPrefix(r.URL.Path, "/n/")) {
 			s.dataMu.RLock()
 			defer s.dataMu.RUnlock()
 		}
@@ -289,7 +291,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 	}
 	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-OmniShare-Key, X-OmniShare-Confirm")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-OmniShare-Key, X-OmniShare-Key-Base64, X-OmniShare-Confirm")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, DELETE, OPTIONS")
 	return true
 }
@@ -310,12 +312,30 @@ func (s *Server) validHost(raw string) bool {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
+		if s.peers != nil {
+			s.peers.tailMu.RLock()
+			allowed := s.peers.tailNames[host]
+			s.peers.tailMu.RUnlock()
+			return allowed
+		}
 		return false
 	}
 	if ip.IsLoopback() {
 		return true
 	}
-	return s.isLocalAddress(ip)
+	if s.isLocalAddress(ip) {
+		return true
+	}
+	if s.peers != nil {
+		s.peers.tailMu.RLock()
+		defer s.peers.tailMu.RUnlock()
+		for _, value := range s.peers.tailSelf {
+			if net.ParseIP(value).Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isLocalAddress reports whether ip belongs to one of this host's interfaces.
@@ -410,18 +430,8 @@ func (s *Server) leaveRequest(ip string) {
 
 func (s *Server) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.authorized(r) {
+		if !s.requestAuthorized(r) {
 			s.recordDenied(r)
-			if !s.cfg.HasAccessKey() {
-				// First-run writes keep the explicit 403 "init token required"
-				// contract; reads default-deny with a 401 that explains the flow.
-				if r.Method == http.MethodGet || r.Method == http.MethodHead {
-					respond(w, http.StatusUnauthorized, 401, "instance is not initialised: use the token-bearing local URL printed at startup or the X-OmniShare-Init-Token header", nil)
-				} else {
-					respond(w, http.StatusForbidden, 403, "init token required", nil)
-				}
-				return
-			}
 			respond(w, http.StatusUnauthorized, 401, "access key required", nil)
 			return
 		}
@@ -486,31 +496,38 @@ func (s *Server) FlushDeniedAudits() {
 	}
 }
 
-func (s *Server) authorized(r *http.Request) bool {
-	if !s.cfg.HasAccessKey() {
-		// Uninitialised instances deny every protected endpoint by default, both
-		// reads and writes. The loopback-only one-time token is the only way in,
-		// so a local process cannot claim the node by racing the first config
-		// write and the user still gets a first-run path.
-		return s.initTokenValid(r)
+func (s *Server) requestAuthorized(r *http.Request) bool {
+	if r.Header.Get("X-OmniShare-Peer") != "" && r.URL.Path != "/api/v1/peers/accept" {
+		return s.authorizedPeer(r)
 	}
-	return s.cfg.VerifyAccessKey(r.Header.Get("X-OmniShare-Key"))
+	return s.authorized(r)
 }
 
-// InitToken exposes the current one-time token so startup can hand a
-// token-bearing local URL to the browser. It is empty after initialisation.
-func (s *Server) InitToken() string {
-	if s.cfg.HasAccessKey() {
-		return ""
+func (s *Server) authorized(r *http.Request) bool {
+	if !s.cfg.AccessKeyEnabled() {
+		return true
 	}
-	return s.initToken
+	key := r.Header.Get("X-OmniShare-Key")
+	// UTF-8 base64 supports Chinese, whitespace and symbols without relying
+	// on browsers allowing non-Latin1 characters in HTTP header values.
+	if encoded, ok := r.Header[http.CanonicalHeaderKey("X-OmniShare-Key-Base64")]; ok {
+		if len(encoded) != 1 {
+			return false
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded[0])
+		if err != nil {
+			return false
+		}
+		key = string(decoded)
+	}
+	return s.cfg.VerifyAccessKey(key)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	s.storageMu.RLock()
 	state := s.storageState
 	s.storageMu.RUnlock()
-	data := map[string]interface{}{"status": "ok", "version": Version}
+	data := map[string]interface{}{"status": "ok", "version": Version, "access_key_enabled": s.cfg.AccessKeyEnabled(), "node_id": s.cfg.Get().NodeID, "name": s.cfg.Get().NodeName, "workspace_protocol": peerProtocol}
 	if state.Engine != "" {
 		data["storage"] = state.Engine
 		data["storage_migrated"] = !state.MigrationPending && !state.MigrationFailed
@@ -525,6 +542,10 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) verifyAuth(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.AccessKeyEnabled() {
+		respond(w, http.StatusOK, 0, "access key protection is disabled", nil)
+		return
+	}
 	ip := clientIP(r)
 	if retry := s.authRetryAfter(ip); retry > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
@@ -632,27 +653,12 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
-	// Before a key exists every loopback process could otherwise claim this
-	// instance by writing the first config. The token is readable only by the
-	// account that owns the data directory.
-	if !s.cfg.HasAccessKey() && !s.initTokenValid(r) {
-		respond(w, http.StatusForbidden, 403, "first-run setup requires X-OmniShare-Init-Token (see the init-token file in the data directory)", nil)
-		return
-	}
 	var req model.AppConfig
 	if err := decodeJSON(r, &req); err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
 	}
 	current := s.cfg.Get()
-	if req.AccessKey == "" && current.AccessKeyHash != "" && r.Header.Get("X-OmniShare-Confirm") != "CLEAR-ACCESS-KEY" {
-		respond(w, http.StatusBadRequest, 400, "clearing the access key requires X-OmniShare-Confirm: CLEAR-ACCESS-KEY", nil)
-		return
-	}
-	if req.AllowLAN && req.AccessKey == "__KEEP__" && current.AccessKeyHash == "" {
-		respond(w, http.StatusBadRequest, 400, "set a strong access key before enabling LAN access", nil)
-		return
-	}
 	if err := s.cfg.Update(req); err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
@@ -1643,64 +1649,7 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
-	cfg := s.cfg.Get()
-	// Reuse the interface snapshot from host validation instead of performing a
-	// getifaddrs syscall plus a UDP dial on every poll.
-	var localIPs []string
-	var outbound string
-	if snapshot := s.localNetwork(); snapshot != nil {
-		localIPs, outbound = snapshot.ips, snapshot.outbound
-	}
-	devices := summarizedLocalDevices(cfg.NodeName, cfg.Port, cfg.TLSCertFile != "", cfg.ListenAddress, localIPs, outbound)
-	if s.registry != nil {
-		devices = append(devices, s.registry.List()...)
-	}
-	type result struct {
-		index int
-		node  model.DeviceNode
-	}
-	results := make(chan result, len(cfg.Peers))
-	sem := make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	for i, peer := range cfg.Peers {
-		wg.Add(1)
-		// Acquire the slot before spawning so a long peer list cannot create an
-		// unbounded pile of goroutines waiting on the semaphore.
-		sem <- struct{}{}
-		go func(index int, p model.PeerConfig) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			node := model.DeviceNode{ID: p.ID, Hostname: p.Name, URL: p.URL, NetworkType: "manual", LastSeen: time.Now()}
-			start := time.Now()
-			req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, p.URL+"/api/v1/health", nil)
-			resp, err := s.client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				var payload model.APIResponse
-				decoder := json.NewDecoder(io.LimitReader(resp.Body, 64*1024))
-				if resp.StatusCode == 200 && decoder.Decode(&payload) == nil && payload.Code == 0 {
-					node.Online = true
-				}
-			}
-			node.LatencyMS = time.Since(start).Milliseconds()
-			results <- result{index, node}
-		}(i, peer)
-	}
-	wg.Wait()
-	close(results)
-	manual := make([]model.DeviceNode, len(cfg.Peers))
-	for item := range results {
-		manual[item.index] = item.node
-	}
-	devices = append(devices, manual...)
-	devices = dedupeDeviceNodes(devices)
-	sort.SliceStable(devices, func(i, j int) bool {
-		if devices[i].IsLocal != devices[j].IsLocal {
-			return devices[i].IsLocal
-		}
-		return devices[i].URL < devices[j].URL
-	})
-	respond(w, http.StatusOK, 0, "success", devices)
+	s.workspaceDevices(w, r)
 }
 
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {

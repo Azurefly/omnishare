@@ -181,7 +181,7 @@ func sqliteWriteDSN(dbPath string) string {
 	params := url.Values{}
 	params.Set("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
 	params.Set("_txlock", "immediate")
-	return fmt.Sprintf("file:%s?%s", dbPath, params.Encode())
+	return sqliteFileURI(dbPath, params)
 }
 
 // sqliteReadDSN opens a read-only pool. The read pool never writes, so it keeps
@@ -191,7 +191,20 @@ func sqliteReadDSN(dbPath string) string {
 	params := url.Values{}
 	params.Set("mode", "ro")
 	params.Set("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
-	return fmt.Sprintf("file:%s?%s", dbPath, params.Encode())
+	return sqliteFileURI(dbPath, params)
+}
+
+func sqliteFileURI(dbPath string, params url.Values) string {
+	path := filepath.ToSlash(dbPath)
+	abs := filepath.IsAbs(dbPath)
+	if abs && !strings.HasPrefix(path, "/") {
+		// SQLite recognizes a Windows drive in the URI path as /C:/..., not
+		// as an authority. Preserve UNC paths, which already start with '/'.
+		path = "/" + path
+	}
+	// Escape the filename separately from the connection options. In particular,
+	// '#', '?' and '%' in an account/data directory must remain filename bytes.
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: params.Encode(), OmitHost: !abs}).String()
 }
 
 // NewSQLite creates and initializes a SQLiteStore with WAL mode, dual connection pools, and migration.

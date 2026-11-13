@@ -120,6 +120,7 @@ func TestCleanupAuthKeepsBlockedAndBoundsTable(t *testing.T) {
 	s, handler, cfg := newTestServer(t)
 	current := cfg.Get()
 	current.AccessKey = "0123456789abcdef"
+	current.AccessKeyEnabled = nil // Exercise legacy implicit key configuration.
 	current.AllowLAN = true
 	current.ListenAddress = "0.0.0.0"
 	if err := cfg.Update(current); err != nil {

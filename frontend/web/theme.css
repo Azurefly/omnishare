@@ -43,3 +43,14 @@
   --shadow: 0 12px 36px rgba(24, 34, 52, 0.1);
   --shadow-lg: 0 24px 80px rgba(24, 34, 52, 0.18);
 }
+
+/* Unified workspace status stays visible without interrupting editing. */
+.workspace-status{padding:12px 16px;border:1px solid var(--border,#d8e2ee);border-radius:12px;font-size:13px;line-height:1.6;background:var(--panel,#f2f7fb);color:var(--text,#243047)}
+.workspace-status.warning{border-color:#b78127;background:#fff6e7;color:#6a410c}
+.source-label{display:inline-block;font-size:11px;line-height:1.5;opacity:.75;margin:4px 0 8px;overflow-wrap:anywhere}
+.source-label.source-offline{color:#a36a10}
+.device code.device-url{display:block;font-size:12px;white-space:normal;overflow-wrap:anywhere;margin:5px 0}
+#newPadDialog form,#bindPeerDialog form{padding:20px;display:grid;gap:16px}
+#newPadDialog input,#bindPeerDialog input{width:100%;margin-top:8px}
+#padConflictActions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#padConflictActions.hidden{display:none}

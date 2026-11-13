@@ -8,7 +8,7 @@ mod tray;
 
 use std::{thread, time::Duration};
 
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 
 use process::backend::DEFAULT_BACKEND_HOST;
 use runtime::{health, manager::BackendState, startup};
@@ -23,6 +23,9 @@ fn start_backend_watchdog(app: AppHandle) {
                 thread::sleep(Duration::from_secs(5));
 
                 let backend_state = app.state::<BackendState>();
+                if backend_state.is_exiting() {
+                    break;
+                }
                 if !backend_state.should_run() {
                     consecutive_failures = 0;
                     continue;
@@ -36,6 +39,10 @@ fn start_backend_watchdog(app: AppHandle) {
 
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 if consecutive_failures < 2 {
+                    continue;
+                }
+
+                if !backend_state.should_run() {
                     continue;
                 }
 
@@ -101,8 +108,17 @@ fn main() {
             commands::backend::backend_start,
             commands::backend::backend_stop
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running OmniShare desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building OmniShare desktop")
+        .run(|app, event| {
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                // Tauri exits the process after this callback; managed state
+                // destructors alone are not a reliable child cleanup hook.
+                if let Some(state) = app.try_state::<BackendState>() {
+                    state.shutdown();
+                }
+            }
+        });
 }
 
 #[tauri::command]

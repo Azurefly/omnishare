@@ -17,10 +17,11 @@ import plistlib
 import shutil
 import stat
 import subprocess
+import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 
@@ -54,10 +55,13 @@ def make_app(parent):
     binary = app / "Contents/MacOS/OmniShare"
     binary.write_bytes(b"A modeled native Mach-O executable\n")
     binary.chmod(0o755)
+    backend = binary.with_name("omnishare-server")
+    backend.write_bytes(b"A modeled nested Go backend\n")
+    backend.chmod(0o755)
     (app / "Contents/Resources/README.txt").write_bytes(b"Verified fixture resources\n")
     (app / "Contents/_CodeSignature/CodeResources").write_bytes(b"Fixture resource seal\n")
     for item in [app, *app.rglob("*")]:
-        item.chmod(0o755 if item.is_dir() or item == binary else 0o644)
+        item.chmod(0o755 if item.is_dir() or item in (binary, backend) else 0o644)
     return app
 
 
@@ -179,6 +183,7 @@ class NativeModel:
         class Process:
             stopped = False
             pid = 98765
+            app_pid = 98764
 
             def start(self):
                 if model.mounts:
@@ -195,7 +200,13 @@ class NativeModel:
                 self.stopped = True
                 return True
 
-        return Process()
+            def reopen(self):
+                pass
+
+        process = Process()
+        process.port = port if port is not None else 12345
+        process.data = data
+        return process
 
 
 @contextmanager
@@ -245,9 +256,17 @@ def run_verifier(data, *, omit_mode=False, team_id=TEAM):
     model = data.model
     is_file = Path.is_file
     statvfs = os.statvfs
+
+    def features(launch, version, state, phase):
+        if phase == "exercise":
+            (launch.data / "config.json").write_text(json.dumps({"port": launch.port}))
+        return {"schema_version": 1, "version": version, "phase": phase, "success": True,
+                "checks": {"modeled_http_features": True}}
+
     with ExitStack() as stack:
         for target, value in (
             ("tool", model.tool), ("ScopedLaunch", model.launch),
+            ("run_features", features),
         ):
             stack.enter_context(patch.object(MAC, target, value))
         stack.enter_context(patch.object(MAC.platform, "system", return_value="Darwin"))
@@ -270,12 +289,12 @@ class MacReleaseTests(unittest.TestCase):
             self.assertEqual(code, 0, report.get("error"))
             self.assertTrue(report["production_ready"])
             self.assertTrue(all(report["checks"].values()))
-            self.assertEqual(len(report["checks"]), 23)
+            self.assertEqual(len(report["checks"]), 33)
             self.assertFalse(report["gatekeeper"]["first_download_verified"])
             self.assertTrue(report["gatekeeper"]["quarantine_policy_verified"])
             self.assertFalse(report["runtime"]["quarantined"])
             self.assertEqual(set(report["runtime"]) - {"quarantined", "policy_test_separate"}, {"zip", "dmg"})
-            self.assertEqual(len(data.model.launches), 2)
+            self.assertEqual(len(data.model.launches), 4)
             self.assertFalse(data.model.mounts)
             self.assertEqual(report["artifacts"]["dmg"]["sha256"], MAC.file_digest(data.args.dmg))
             requirements = [call[call.index("-R") + 1] for call in data.model.calls if "-R" in call]
@@ -445,6 +464,207 @@ class MacReleaseTests(unittest.TestCase):
             changed[field] = value
             with self.subTest(field=field, value=value):
                 self.assertFalse(MAC.policy_accepted(changed, app=True))
+
+
+class ScopedLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="mac scoped launch ")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.app = make_app(self.root)
+        self.data = self.root / "Data 中文 #100%"
+        self.data.mkdir()
+
+    def launch(self, port=19081):
+        library = SimpleNamespace(proc_pidpath=Mock(return_value=0), sysctl=Mock(return_value=0))
+        with patch.object(MAC.ctypes, "CDLL", return_value=library):
+            launch = MAC.ScopedLaunch(self.app, self.data, port)
+        launch.app_pid, launch.pid = 61001, 61002
+        launch.app_started = launch.started = "Tue Nov 10 10:00:00 2026"
+        launch.launch_requested = True
+        launch.launcher = SimpleNamespace(communicate=Mock(), returncode=0)
+        (self.data / ".omnishare.lock").write_text("pid=61002\n")
+        return launch
+
+    def test_procargs_preserves_boundaries_and_never_returns_environment(self):
+        arguments = ["/App With Spaces/OmniShare", "--data-dir", "/Data With Spaces", "--name", ""]
+        raw = struct.pack("=i", len(arguments)) + b"/executable\0\0\0" + b"\0".join(os.fsencode(a) for a in arguments) + b"\0PRIVATE=not-an-argument\0"
+        self.assertEqual(MAC.parse_process_arguments(raw), arguments)
+        for malformed in (b"", struct.pack("=i", -1), struct.pack("=i", 257),
+                          struct.pack("=i", 2) + b"/exe\0\0/exe\0truncated"):
+            with self.subTest(raw=malformed), self.assertRaises(MAC.VerificationError):
+                MAC.parse_process_arguments(malformed)
+
+    def test_identity_rejects_path_uid_parent_birth_and_argv_substitution(self):
+        launch = self.launch()
+        expected = [str(launch.binary), *launch.backend_arguments()]
+        cases = ("valid", "path", "uid", "parent", "birth", "arguments")
+        for case in cases:
+            with self.subTest(case=case):
+                actual_path = str(launch.binary) if case != "path" else "/another/application"
+                def path(_pid, buffer, _size):
+                    raw = os.fsencode(actual_path) + b"\0"
+                    MAC.ctypes.memmove(buffer, raw, len(raw))
+                    return len(raw) - 1
+                launch.libproc.proc_pidpath.side_effect = path
+                arguments = list(expected)
+                if case == "arguments":
+                    index = arguments.index(str(self.data))
+                    arguments[index:index + 1] = str(self.data).split(" ")
+                    self.assertEqual(" ".join(arguments), " ".join(expected))
+                uid = os.getuid() + (case == "uid")
+                parent = launch.app_pid + (case == "parent")
+                birth = "Wed Nov 11 10:00:00 2026" if case == "birth" else launch.started
+                result = subprocess.CompletedProcess([], 0, f"{uid} {birth} {parent}\n", "")
+                with patch.object(MAC, "tool", return_value=result), patch.object(launch, "process_arguments", return_value=arguments):
+                    if case == "valid":
+                        self.assertEqual(launch.identity(launch.pid, require_parent=True), launch.started)
+                    else:
+                        with self.assertRaises(MAC.VerificationError):
+                            launch.identity(launch.pid, require_parent=True)
+
+    def test_launchservices_serial_is_permitted_only_on_the_native_app(self):
+        launch = self.launch()
+        app = str(launch.app_binary)
+        expected = [app, *launch.args]
+        def path(_pid, buffer, _size):
+            raw = os.fsencode(app) + b"\0"
+            MAC.ctypes.memmove(buffer, raw, len(raw))
+            return len(raw) - 1
+        launch.libproc.proc_pidpath.side_effect = path
+        ps = subprocess.CompletedProcess(
+            [], 0, f"{os.getuid()} {launch.app_started} 1\n", "")
+        valid = [app, "-psn_0_123456", *launch.args]
+        with patch.object(MAC, "tool", return_value=ps), patch.object(
+                launch, "process_arguments", return_value=valid):
+            self.assertEqual(launch.app_identity(launch.app_pid), launch.app_started)
+        for bad in (
+                [app, "-psn_0_11", "-psn_0_12", *launch.args],
+                [app, "-psn_0_bad", *launch.args],
+                [app, "-psn_0_123", "--unknown", *launch.args],
+                [app, "-psn_0_123", *launch.args[:-1]]):
+            with self.subTest(argv=bad), patch.object(
+                    MAC, "tool", return_value=ps), patch.object(
+                    launch, "process_arguments", return_value=bad):
+                with self.assertRaises(MAC.VerificationError):
+                    launch.app_identity(launch.app_pid)
+        # Swift Foundation may supply just the filename in argv[0]. This is
+        # safe only after proc_pidpath independently binds the trusted binary.
+        backend = str(launch.binary)
+        def backend_path(_pid, buffer, _size):
+            raw = os.fsencode(backend) + b"\0"
+            MAC.ctypes.memmove(buffer, raw, len(raw))
+            return len(raw) - 1
+        launch.libproc.proc_pidpath.side_effect = backend_path
+        with patch.object(MAC, "tool", return_value=ps), patch.object(
+                launch, "process_arguments",
+                return_value=[launch.binary.name, *launch.backend_arguments()]):
+            self.assertEqual(launch.identity(launch.pid), launch.started)
+        # The same flag must never be accepted as part of the child backend's
+        # identity, even if its other arguments match.
+        backend = str(launch.binary)
+        def backend_path(_pid, buffer, _size):
+            raw = os.fsencode(backend) + b"\0"
+            MAC.ctypes.memmove(buffer, raw, len(raw))
+            return len(raw) - 1
+        launch.libproc.proc_pidpath.side_effect = backend_path
+        child = [backend, "-psn_0_123", *launch.backend_arguments()]
+        with patch.object(MAC, "tool", return_value=ps), patch.object(
+                launch, "process_arguments", return_value=child):
+            with self.assertRaises(MAC.VerificationError):
+                launch.identity(launch.pid)
+
+    def test_dynamic_port_is_taken_from_exact_child_arguments_and_parent_is_required(self):
+        launch = self.launch(None)
+        launch.pid, launch.started = None, None
+        arguments = [str(launch.binary), *launch.args, "--data-dir", str(self.data), "--port", "49172",
+                     "--no-browser", "--shutdown-on-stdin-close"]
+        with patch.object(launch, "process_arguments", return_value=arguments), \
+                patch.object(launch, "identity", return_value="birth") as identity:
+            self.assertTrue(launch.capture_backend())
+        self.assertEqual(launch.port, 49172)
+        self.assertEqual(launch.pid, 61002)
+        identity.assert_called_once_with(61002, require_parent=True)
+        launch.port, launch.pid = None, None
+        arguments[-3] = "65536"
+        with patch.object(launch, "process_arguments", return_value=arguments), self.assertRaises(MAC.VerificationError):
+            launch.capture_backend()
+        self.assertIsNone(launch.pid)
+
+    def test_quit_request_failure_still_cleans_both_owned_processes(self):
+        launch = self.launch()
+        alive = {launch.app_pid, launch.pid}
+        signaled = []
+        def identify(pid, **_):
+            return "birth" if pid in alive else None
+        def signal(pid, kind):
+            signaled.append((pid, kind))
+            alive.discard(pid)
+        with patch.object(launch, "app_identity", side_effect=identify), patch.object(launch, "identity", side_effect=identify), \
+                patch.object(MAC, "tool", side_effect=MAC.VerificationError("native quit refused")), \
+                patch.object(MAC.os, "kill", side_effect=signal), self.assertRaisesRegex(MAC.VerificationError, "native quit refused"):
+            launch.stop()
+        self.assertEqual(signaled, [(61001, MAC.signal.SIGKILL), (61002, MAC.signal.SIGKILL)])
+        self.assertFalse(alive)
+        self.assertTrue(launch.stopped)
+        launch.launcher.communicate.assert_called_once()
+
+    def test_reused_app_pid_is_never_signaled_but_its_verified_child_is_cleaned(self):
+        launch = self.launch()
+        alive = {launch.pid}
+        signaled = []
+        def child(pid, **_):
+            return "birth" if pid in alive else None
+        def signal(pid, kind):
+            signaled.append(pid)
+            alive.discard(pid)
+        with patch.object(launch, "app_identity", side_effect=MAC.VerificationError("PID reused")), \
+                patch.object(launch, "identity", side_effect=child), patch.object(MAC.os, "kill", side_effect=signal), \
+                self.assertRaisesRegex(MAC.VerificationError, "PID reused"):
+            launch.stop()
+        self.assertEqual(signaled, [61002])
+        launch.launcher.communicate.assert_called_once()
+
+    def test_only_a_matching_stdin_eof_exit_record_can_pass_normal_quit(self):
+        normal = {"backend_pid": 61002, "exit_code": 0, "normal": True,
+                  "method": "stdin-eof", "fallback_used": False}
+        changes = ({}, {"method": "signal-fallback", "fallback_used": True},
+                   {"backend_pid": 61003}, {"exit_code": False}, {"normal": False})
+        for change in changes:
+            with self.subTest(change=change):
+                launch = self.launch()
+                alive = {launch.app_pid, launch.pid}
+                def identify(pid, **_):
+                    return "birth" if pid in alive else None
+                def quit_requested(*_, **__):
+                    alive.clear()
+                    (self.data / "desktop-shutdown.json").write_text(json.dumps({**normal, **change}))
+                    return subprocess.CompletedProcess([], 0, "requested", "")
+                with patch.object(launch, "app_identity", side_effect=identify), patch.object(launch, "identity", side_effect=identify), \
+                        patch.object(MAC, "tool", side_effect=quit_requested), patch.object(MAC.os, "kill") as signal:
+                    self.assertEqual(launch.stop(), not change)
+                signal.assert_not_called()
+
+    def test_reopen_rejects_an_additional_native_app_even_when_old_backend_survives(self):
+        launch = self.launch()
+        with patch.object(launch, "app_identity", return_value="birth"), patch.object(launch, "identity", return_value="birth"), \
+                patch.object(launch, "application_pids", return_value=[61001, 61003]), \
+                patch.object(MAC, "tool"), patch.object(MAC.time, "sleep"), self.assertRaisesRegex(MAC.VerificationError, "another backend"):
+            launch.reopen()
+
+    def test_start_rejects_preexisting_apps_and_removes_stale_shutdown_evidence(self):
+        launch = self.launch()
+        with patch.object(launch, "application_pids", return_value=[61001]), patch.object(MAC.subprocess, "Popen") as spawn, \
+                self.assertRaisesRegex(MAC.VerificationError, "already running"):
+            launch.start()
+        spawn.assert_not_called()
+        record = self.data / "desktop-shutdown.json"
+        record.write_text('{"normal":true}')
+        with patch.object(launch, "application_pids", return_value=[]), \
+                patch.object(MAC.subprocess, "Popen", return_value=launch.launcher), \
+                patch.object(launch, "capture_backend", return_value=True):
+            launch.start()
+        self.assertFalse(record.exists())
 
 
 if __name__ == "__main__":
