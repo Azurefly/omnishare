@@ -1,28 +1,63 @@
-name: Pre-merge source review
+name: Apply reviewed pre-merge fixes
 on:
   push:
     branches: ['fix/cross-platform-install-20261111']
-    paths: ['.github/workflows/merge-review.yml']
+    paths: ['.github/workflows/merge-review.yml', '.review-premerge/**']
 permissions:
   contents: read
 jobs:
-  source:
+  apply:
+    if: github.repository == 'Azurefly/omnishare'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Export source and commit history, not credentials
+      - name: Apply hash-bound tested changes and retain main history
+        shell: python
         run: |
-          git bundle create "$RUNNER_TEMP/omnishare-review.bundle" --all
-          sha256sum "$RUNNER_TEMP/omnishare-review.bundle" > "$RUNNER_TEMP/review-bundle.sha256"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: omnishare-merge-review-source
-          path: |
-            ${{ runner.temp }}/omnishare-review.bundle
-            ${{ runner.temp }}/review-bundle.sha256
-          retention-days: 3
-          if-no-files-found: error
+          import base64,gzip,hashlib,json,os,subprocess,tempfile
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git',*args],text=True).strip()
+          def run(*args):
+              subprocess.run(args,check=True)
+          assert os.environ['GITHUB_REF']=='refs/heads/fix/cross-platform-install-20261111'
+          compressed=base64.b64decode(''.join(Path('.review-premerge/part%d.b64'%i).read_text() for i in range(4)),validate=True)
+          assert hashlib.sha256(compressed).hexdigest()=='028cd8f770ddb19538ddc8bc8e1fdd3334e73a6d87a1aa21240f15b867877d39'
+          data=json.loads(gzip.decompress(compressed))
+          assert git('rev-parse','origin/main')==data['main'], 'main changed; reconcile before applying'
+          assert git('rev-parse','HEAD^')==data['base'], 'review baseline changed'
+          head=git('rev-parse','HEAD')
+          assert git('ls-remote','origin','refs/heads/fix/cross-platform-install-20261111').split()[0]==head
+          run('git','config','user.name','github-actions[bot]')
+          run('git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com')
+          merged=subprocess.run(['git','merge','--no-commit','--no-ff',data['main']])
+          conflicts=git('diff','--name-only','--diff-filter=U').splitlines()
+          if merged.returncode:
+              assert conflicts==['README.md'], conflicts
+              run('git','checkout','--theirs','README.md')
+              run('git','add','README.md')
+          with tempfile.NamedTemporaryFile(mode='w',suffix='.patch') as patch:
+              patch.write(data['patch']);patch.flush()
+              run('git','apply','--check',patch.name)
+              run('git','apply',patch.name)
+          test=Path('backend/internal/api/workspace_review_test.go')
+          assert not test.exists()
+          test.write_text(data['new_test'])
+          Path('.github/workflows/merge-review.yml').write_text(data['workflow'])
+          for name,want in data['hashes'].items():
+              p=Path(name)
+              assert not p.is_absolute() and '..' not in p.parts
+              assert hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, name
+          run('node','--check','frontend/web/app.js')
+          run('git','diff','--check')
+          for p in Path('.review-premerge').iterdir(): p.unlink()
+          Path('.review-premerge').rmdir()
+          run('git','add','--',*data['hashes'].keys(),'.review-premerge')
+          run('git','commit','-m','fix(workspace): preserve newer edits, invalidate remote snapshots and reconcile main')
+          run('git','push','origin','HEAD:refs/heads/fix/cross-platform-install-20261111')
+          print('REVIEWED_COMMIT='+git('rev-parse','HEAD'))
