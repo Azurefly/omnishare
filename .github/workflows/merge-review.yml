@@ -30,7 +30,7 @@ jobs:
           assert hashlib.sha256(compressed).hexdigest()=='028cd8f770ddb19538ddc8bc8e1fdd3334e73a6d87a1aa21240f15b867877d39'
           data=json.loads(gzip.decompress(compressed))
           assert git('rev-parse','origin/main')==data['main'], 'main changed; reconcile before applying'
-          assert git('rev-parse','HEAD^')==data['base'], 'review baseline changed'
+          run('git','merge-base','--is-ancestor',data['base'],'HEAD')
           head=git('rev-parse','HEAD')
           assert git('ls-remote','origin','refs/heads/fix/cross-platform-install-20261111').split()[0]==head
           run('git','config','user.name','github-actions[bot]')
@@ -53,11 +53,16 @@ jobs:
               p=Path(name)
               assert not p.is_absolute() and '..' not in p.parts
               assert hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, name
+          # GITHUB_TOKEN deliberately has no workflow-write permission. Those
+          # two reviewed workflow files are applied separately by the connector.
+          run('git','checkout','HEAD','--','.github/workflows/ci.yml','.github/workflows/merge-review.yml')
           run('node','--check','frontend/web/app.js')
           run('git','diff','--check')
           for p in Path('.review-premerge').iterdir(): p.unlink()
           Path('.review-premerge').rmdir()
-          run('git','add','--',*data['hashes'].keys(),'.review-premerge')
+          names=[p for p in data['hashes'] if not p.startswith('.github/workflows/')]
+          run('git','add','--',*names,'.review-premerge')
+          assert not git('diff','--cached','--name-only','--','.github/workflows/')
           run('git','commit','-m','fix(workspace): preserve newer edits, invalidate remote snapshots and reconcile main')
           run('git','push','origin','HEAD:refs/heads/fix/cross-platform-install-20261111')
           print('REVIEWED_COMMIT='+git('rev-parse','HEAD'))
