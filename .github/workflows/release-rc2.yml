@@ -1,0 +1,28 @@
+name: Prepare RC2 release source
+on:
+  push:
+    branches: ['release/v0.2.0-rc.2']
+    paths: ['.github/workflows/release-rc2.yml']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Export exact tracked source and provenance
+        run: |
+          mkdir -p review-source
+          git archive HEAD -o review-source/omnishare-rc2-source.tar
+          git rev-parse HEAD > review-source/source-commit.txt
+          git rev-parse HEAD^{tree} > review-source/source-tree.txt
+          sha256sum review-source/omnishare-rc2-source.tar > review-source/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: omnishare-rc2-source
+          path: review-source/*
+          retention-days: 3
+          if-no-files-found: error
