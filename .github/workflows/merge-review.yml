@@ -1,0 +1,28 @@
+name: Pre-merge source review
+on:
+  push:
+    branches: ['fix/cross-platform-install-20261111']
+    paths: ['.github/workflows/merge-review.yml']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export source and commit history, not credentials
+        run: |
+          git bundle create "$RUNNER_TEMP/omnishare-review.bundle" --all
+          sha256sum "$RUNNER_TEMP/omnishare-review.bundle" > "$RUNNER_TEMP/review-bundle.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: omnishare-merge-review-source
+          path: |
+            ${{ runner.temp }}/omnishare-review.bundle
+            ${{ runner.temp }}/review-bundle.sha256
+          retention-days: 3
+          if-no-files-found: error
