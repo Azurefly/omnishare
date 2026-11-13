@@ -5,9 +5,8 @@ import { resolve, extname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 
-// Exercise the real HTML/CSS/application in Chromium with synthetic API data.
-// Backend authentication and persistence are tested separately by the Go and
-// real-process HTTP suites. This server binds loopback and never uses user data.
+// Real HTML/CSS/application with synthetic API fixtures. Real two-node backend
+// operations are covered by scripts/test-workspace-browser.mjs separately.
 const root = fileURLToPath(new URL('../web/', import.meta.url))
 const output = fileURLToPath(new URL('../test-results/browser/', import.meta.url))
 const {version} = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
@@ -19,9 +18,9 @@ const files = [{id:'f-demo', file_name:'产品设计讨论记录.md', file_size:
 const writes = []
 let failDevices = false
 let expectedDeviceConsoleErrors = 0
-const config = {node_name:'我的工作空间', has_access_key:true, max_upload_mb:32, backup_max_mb:16384,
-  retention_days:0, trash_retention_days:30, auto_open_browser:false, allow_lan:false,
-  listen_address:'127.0.0.1', public_base_url:'', allowed_origins:[], peers:[]}
+const config = {node_name:'我的工作空间', has_access_key:true, access_key_enabled:true, max_upload_mb:32, backup_max_mb:16384,
+  retention_days:0, trash_retention_days:30, auto_open_browser:false, allow_lan:true,
+  listen_address:'0.0.0.0', public_base_url:'', allowed_origins:[], peers:[]}
 let origin
 const respond = (res, data, status = 200) => {
   res.writeHead(status, {'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'no-store',
@@ -55,8 +54,9 @@ const server = createServer(async (req, res) => {
       if (url.pathname === '/api/v1/devices' && failDevices) return respond(res, [], 400)
       if (url.pathname === '/api/v1/devices') return respond(res, [
         {id:'local', hostname:'我的工作空间', url:origin, is_local:true, online:true, network_type:'本机'},
-        {id:'remote', hostname:'书房的笔记本', url:'https://desk.example', is_local:false, online:true, network_type:'manual', latency_ms:8},
-        {id:'offline', hostname:'备用设备', url:'http://100.64.0.8:8081', is_local:false, online:false, network_type:'tailscale'}
+        {id:'remote', hostname:'书房的笔记本', url:'https://desk.example', addresses:['https://desk.example','http://100.64.0.7:8081'], bound:true, online:true, network_type:'manual', latency_ms:8},
+        {id:'offline', hostname:'备用设备', url:'http://100.64.0.8:8081', bound:true, online:false, status:'连接超时', connection_error:'设备暂时不可达，保留上次快照', network_type:'tailscale'},
+        {id:'discovered', hostname:'待绑定设备', url:'http://100.64.0.9:8081', bound:false, online:true, network_type:'tailscale'}
       ])
       if (url.pathname === '/api/v1/notes') return respond(res, notes)
       if (url.pathname === '/api/v1/files') return respond(res, files)
@@ -94,8 +94,8 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message => {
     if (message.type() !== 'error') return
-    // This one deliberate 400 tests the application's failure handling. Keep
-    // every other resource/CSP error, plus all unhandled page errors, fatal.
+    // Only this deliberately injected 400 is exempt; all other page/resource
+    // and CSP errors remain fatal.
     if (expectedDeviceConsoleErrors > 0 && failDevices &&
         message.location().url === `${origin}/api/v1/devices` &&
         /^Failed to load resource:.*\b400\b/.test(message.text())) {
@@ -116,12 +116,31 @@ try {
   await page.goto(origin, {waitUntil:'networkidle'})
   await page.waitForFunction(() => document.querySelector('#healthBadge')?.textContent.includes('v'))
 
-  await check('desktop dashboard renders with device groups and no overflow', async () => {
+  await check('desktop dashboard groups bound and discovered devices without navigation or duplicate addresses', async () => {
     assert.equal(await page.locator('.tab[aria-current="page"]').getAttribute('data-tab'), 'dashboard')
-    assert.match(await page.locator('#deviceList').innerText(), /当前节点[\s\S]*在线节点[\s\S]*离线节点/)
+    assert.match(await page.locator('#deviceList').innerText(), /当前设备[\s\S]*已绑定 · 统一工作区[\s\S]*发现的设备/)
+    const remote = page.locator('[data-device-id="remote"]')
+    assert.equal(await remote.count(), 1)
+    assert.equal(await remote.locator('.device-url').count(), 2)
+    assert.match(await remote.innerText(), /内容已合并/)
+    assert.equal(await remote.locator('.unbind-device').count(), 1)
+    assert.match(await page.locator('[data-device-id="offline"]').innerText(), /连接超时[\s\S]*上次快照/)
+    assert.equal(await page.locator('#deviceList a[href]').count(), 0)
     assert.match(await page.locator('#nodeSecuritySummary').innerText(), /访问密钥已启用/)
     await assertNoOverflow('desktop dashboard')
     await screenshot('dashboard-light-desktop')
+  })
+  await check('discovery opens an in-app binding form without granting access before confirmation', async () => {
+    const before = writes.length
+    await page.locator('[data-device-id="discovered"] .bind-device').click()
+    await page.locator('#bindPeerDialog[open]').waitFor()
+    assert.equal(await page.locator('#bindPeerURL').inputValue(), 'http://100.64.0.9:8081')
+    assert.equal(await page.locator('#bindPeerKey').inputValue(), '')
+    assert.equal(writes.length, before)
+    await page.locator('#cancelBindPeerBtn').click()
+    assert.equal(await page.locator('#bindPeerDialog').evaluate(dialog => dialog.open), false)
+    assert.equal(writes.length, before)
+    assert.equal(page.url(), origin + '/')
   })
   await check('all navigation entries open exactly one panel', async () => {
     for (const name of ['notes','files','pads','shares','trash','activity','dashboard']) {
@@ -152,7 +171,7 @@ try {
   await check('settings retain labels, controls and keyboard dismissal', async () => {
     await page.locator('#settingsBtn').click()
     await page.locator('#settingsDialog[open]').waitFor()
-    for (const id of ['cfgNodeName','cfgTheme','cfgAllowLAN','cfgAccessKey','cfgMaxUpload','cfgBackupMax']) {
+    for (const id of ['cfgNodeName','cfgTheme','cfgAllowLAN','cfgAccessKey','cfgAccessKeyEnabled','cfgMaxUpload','cfgBackupMax']) {
       const count = await page.locator(`#${id}`).evaluate(element => element.labels?.length || 0)
       assert.ok(count > 0, `${id} needs a visible label`)
     }
