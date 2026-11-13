@@ -5,7 +5,7 @@ from pathlib import Path
 
 root=Path(__file__).resolve().parents[1]
 version=(root/'VERSION').read_text().strip()
-if version!='0.2.0-rc.1': raise SystemExit('Unexpected candidate version')
+if version!='0.2.0-rc.2': raise SystemExit('Unexpected candidate version')
 kind=sys.argv[1]
 out=root/'rc-assets';out.mkdir(exist_ok=True)
 records=[]
@@ -47,6 +47,8 @@ evidence={
 for path in ['candidate-evidence/windows-install-smoke.json','ubuntu-install-evidence/linux-installed-smoke.json']:
  p=root/path
  if p.is_file():evidence['native_report']=json.loads(p.read_text(encoding='utf-8-sig'))
+if kind in ('Windows','Linux'):
+ evidence['native_gui_acceptance_passed'] = evidence['native_gui_acceptance_passed'] and evidence.get('native_report',{}).get('success') is True
 (out/f'build-evidence-{kind}.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 print(json.dumps({'platform':kind,'files':records,'native_outcome':evidence['native_installation_outcome']}))
 # Candidate evidence is UTF-8 and compatible with Ubuntu 22.04's Python 3.10.
