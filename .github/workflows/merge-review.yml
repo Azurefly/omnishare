@@ -1,68 +1,159 @@
-name: Apply reviewed pre-merge fixes
+name: Workspace and native installation validation
 on:
+  workflow_dispatch:
   push:
-    branches: ['fix/cross-platform-install-20261111']
-    paths: ['.github/workflows/merge-review.yml', '.review-premerge/**']
+    branches: [main, 'fix/cross-platform-install-20261111']
+    paths: ['backend/**', 'frontend/**', 'desktop/**', '.github/workflows/merge-review.yml']
+  pull_request:
+    paths: ['backend/**', 'frontend/**', 'desktop/**', '.github/workflows/merge-review.yml']
 permissions:
   contents: read
+concurrency:
+  group: workspace-native-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  apply:
-    if: github.repository == 'Azurefly/omnishare'
+  workspace:
+    name: Real two-node workspace regression
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          fetch-depth: 0
-      - name: Apply hash-bound tested changes and retain main history
-        shell: python
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version: '1.26.5', cache-dependency-path: backend/go.sum}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - name: Helpers, frontend and actual browser
         run: |
-          import base64,gzip,hashlib,json,os,subprocess,tempfile
-          from pathlib import Path
-          def git(*args):
-              return subprocess.check_output(['git',*args],text=True).strip()
-          def run(*args):
-              subprocess.run(args,check=True)
-          assert os.environ['GITHUB_REF']=='refs/heads/fix/cross-platform-install-20261111'
-          compressed=base64.b64decode(''.join(Path('.review-premerge/part%d.b64'%i).read_text() for i in range(4)),validate=True)
-          assert hashlib.sha256(compressed).hexdigest()=='028cd8f770ddb19538ddc8bc8e1fdd3334e73a6d87a1aa21240f15b867877d39'
-          data=json.loads(gzip.decompress(compressed))
-          assert git('rev-parse','origin/main')==data['main'], 'main changed; reconcile before applying'
-          run('git','merge-base','--is-ancestor',data['base'],'HEAD')
-          head=git('rev-parse','HEAD')
-          assert git('ls-remote','origin','refs/heads/fix/cross-platform-install-20261111').split()[0]==head
-          run('git','config','user.name','github-actions[bot]')
-          run('git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com')
-          merged=subprocess.run(['git','merge','--no-commit','--no-ff',data['main']])
-          conflicts=git('diff','--name-only','--diff-filter=U').splitlines()
-          if merged.returncode:
-              assert conflicts==['README.md'], conflicts
-              run('git','checkout','--theirs','README.md')
-              run('git','add','README.md')
-          with tempfile.NamedTemporaryFile(mode='w',suffix='.patch') as patch:
-              patch.write(data['patch']);patch.flush()
-              run('git','apply','--check',patch.name)
-              run('git','apply',patch.name)
-          test=Path('backend/internal/api/workspace_review_test.go')
-          assert not test.exists()
-          test.write_text(data['new_test'])
-          Path('.github/workflows/merge-review.yml').write_text(data['workflow'])
-          for name,want in data['hashes'].items():
-              p=Path(name)
-              assert not p.is_absolute() and '..' not in p.parts
-              assert hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n')).hexdigest()==want, name
-          # GITHUB_TOKEN deliberately has no workflow-write permission. Those
-          # two reviewed workflow files are applied separately by the connector.
-          run('git','checkout','HEAD','--','.github/workflows/ci.yml','.github/workflows/merge-review.yml')
-          run('node','--check','frontend/web/app.js')
-          run('git','diff','--check')
-          for p in Path('.review-premerge').iterdir(): p.unlink()
-          Path('.review-premerge').rmdir()
-          names=[p for p in data['hashes'] if not p.startswith('.github/workflows/')]
-          run('git','add','--',*names,'.review-premerge')
-          assert not git('diff','--cached','--name-only','--','.github/workflows/')
-          run('git','commit','-m','fix(workspace): preserve newer edits, invalidate remote snapshots and reconcile main')
-          run('git','push','origin','HEAD:refs/heads/fix/cross-platform-install-20261111')
-          print('REVIEWED_COMMIT='+git('rev-parse','HEAD'))
+          npm --prefix frontend ci --ignore-scripts
+          npm --prefix frontend test
+          npm --prefix frontend run build
+          git diff --exit-code -- backend/internal/frontend/dist
+          python3 scripts/macos_release_test.py
+          python3 desktop/tests/linux_installed_smoke_test.py
+          (cd backend && go build -trimpath -o "$RUNNER_TEMP/omnishare-workspace" ./cmd/omnishare)
+          python3 scripts/test-http-integration.py "$RUNNER_TEMP/omnishare-workspace"
+          (cd frontend && npx --no-install playwright install --with-deps chromium)
+          node scripts/test-workspace-browser.mjs "$RUNNER_TEMP/omnishare-workspace"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: premerge-workspace-browser
+          path: frontend/test-results/workspace/
+          if-no-files-found: error
+          retention-days: 14
+  native:
+    name: Native ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: Windows, os: windows-latest}
+          - {name: Ubuntu, os: ubuntu-22.04}
+          - {name: macOS, os: macos-15}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version: '1.26.5', cache-dependency-path: backend/go.sum}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with: {toolchain: '1.99.1', components: 'rustfmt, clippy'}
+      - name: Native test helper checks
+        if: runner.os == 'Windows'
+        run: ./desktop/tests/windows-test-support.test.ps1
+      - name: Ubuntu GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb dbus-x11 xdotool at-spi2-core libatk-adaptor python3-pyatspi python3-gi scrot desktop-file-utils binutils fonts-noto-cjk
+      - name: Build embedded application
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix frontend run build
+          npm --prefix desktop ci
+          npm --prefix desktop run test:contracts
+          mkdir -p desktop/src-tauri/resources
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare.exe ./cmd/omnishare)
+          elif [ "$RUNNER_OS" = macOS ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            (cd backend && GOOS=darwin GOARCH=arm64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-arm64 ./cmd/omnishare)
+            (cd backend && GOOS=darwin GOARCH=amd64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-amd64 ./cmd/omnishare)
+            lipo -create desktop/src-tauri/resources/omnishare-{arm64,amd64} -output desktop/src-tauri/resources/omnishare
+            rm desktop/src-tauri/resources/omnishare-{arm64,amd64}
+            chmod +x desktop/src-tauri/resources/omnishare
+          else
+            (cd backend && go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare)
+          fi
+      - name: Verified Linux packaging tools
+        id: tools
+        if: runner.os == 'Linux'
+        env: {OMNISHARE_TOOL_GITHUB_TOKEN: '${{ github.token }}'}
+        run: python3 scripts/prepare-linux-appimage-tools.py
+      - name: Verified Windows packaging tools
+        if: runner.os == 'Windows'
+        env: {OMNISHARE_TOOL_GITHUB_TOKEN: '${{ github.token }}'}
+        run: python scripts/prepare-windows-bundle-tools.py
+      - name: Windows installers
+        if: runner.os == 'Windows'
+        run: npm --prefix desktop run build
+      - name: Ubuntu desktop build and Rust checks
+        if: runner.os == 'Linux'
+        env: {LDAI_RUNTIME_FILE: '${{ steps.tools.outputs.runtime_path }}'}
+        run: |
+          npm --prefix desktop run prebuild
+          (cd desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features)
+          npm --prefix desktop run build -- --bundles deb,appimage
+      - name: macOS Universal integrity build (not notarization)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          npm --prefix desktop run build -- --target universal-apple-darwin --bundles app
+          app=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniShare.app
+          backend=$(find "$app/Contents" -type f -name omnishare | head -n 1)
+          test -n "$backend"
+          lipo "$backend" -verify_arch arm64 x86_64
+          lipo "$app/Contents/MacOS/omnishare-desktop" -verify_arch arm64 x86_64
+          codesign --force --sign - --timestamp=none "$backend"
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict "$app"
+          python3 scripts/test-http-integration.py "$backend"
+      - name: Microsoft runtime provenance
+        if: runner.os == 'Windows'
+        run: ./desktop/tests/windows-webview-runtime-evidence.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'native-evidence'
+      - name: Windows installed GUI and persistence
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        run: ./desktop/tests/windows-runtime-smoke-ci.ps1 -BundleRoot 'desktop/src-tauri/target/release/bundle' -EvidenceRoot 'native-evidence'
+      - name: Ubuntu installed GUI and AppImage
+        if: runner.os == 'Linux'
+        timeout-minutes: 9
+        run: |
+          set -euo pipefail
+          deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)
+          image=$(find desktop/src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -n 1)
+          timeout --signal=TERM --kill-after=10s 480s xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- /usr/bin/python3 desktop/tests/linux-installed-smoke.py --deb "$deb" --appimage "$image" --version "$(cat VERSION)" --evidence native-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-evidence-${{ matrix.name }}
+          path: native-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: review-packages-${{ matrix.name }}
+          path: |
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
