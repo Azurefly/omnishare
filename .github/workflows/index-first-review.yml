@@ -1,0 +1,26 @@
+name: Index-first desktop review
+on:
+  push:
+    branches: ['fix/index-first-desktop-20261114']
+    paths: ['.github/workflows/index-first-review.yml']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: 1347aebce7a44794414ac0316f70ff7e2b64709f
+      - name: Export exact source
+        run: |
+          mkdir snapshot
+          git archive --format=tar HEAD > snapshot/source.tar
+          git rev-parse HEAD > snapshot/source-commit.txt
+          sha256sum snapshot/source.tar > snapshot/source.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: index-first-source
+          path: snapshot/
+          retention-days: 3
