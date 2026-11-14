@@ -183,6 +183,20 @@
     throw error
   }
 
+  function installUpdateEntry() {
+    const invoke = window.__TAURI__?.core?.invoke
+    const panel = document.querySelector('#desktopUpdates')
+    const button = document.querySelector('#checkUpdatesBtn')
+    if (!invoke || !panel || !button) return
+    panel.classList.remove('hidden')
+    button.addEventListener('click', async () => {
+      button.disabled = true
+      try { await invoke('open_updates') }
+      catch (error) { button.textContent = '无法打开更新窗口，请从桌面菜单重试'; console.error(error) }
+      finally { button.disabled = false }
+    })
+  }
+
   function installToastThrottle() {
     const toast = document.querySelector('#toast')
     if (!toast) return
@@ -211,6 +225,8 @@
   } else {
     installToastThrottle()
   }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installUpdateEntry, {once:true})
+  else installUpdateEntry()
 
   window.__omnishareRuntimeBridge = {
     collapseDevices,

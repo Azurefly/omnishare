@@ -6,7 +6,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Mutex, MutexGuard,
     },
 };
 
@@ -33,8 +33,10 @@ pub struct BackendNavigation {
 
 pub struct BackendState {
     process: Mutex<BackendProcess>,
+    startup: Mutex<()>,
     desired_running: AtomicBool,
     exiting: AtomicBool,
+    updating: AtomicBool,
 }
 
 impl Default for BackendState {
@@ -47,19 +49,31 @@ impl BackendState {
     pub fn new(port: u16) -> Self {
         Self {
             process: Mutex::new(BackendProcess::new(port)),
+            startup: Mutex::new(()),
             desired_running: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
+            updating: AtomicBool::new(false),
         }
     }
 
+    // Native startup, IPC boot and watchdog all enter through initialize().
+    // This guard spans readiness checks as well as spawning the process.
+    pub fn startup_guard(&self) -> Result<MutexGuard<'_, ()>, String> {
+        let guard = self.startup.lock().map_err(|error| error.to_string())?;
+        self.require_active()?;
+        Ok(guard)
+    }
+
     pub fn request_start(&self) {
-        if !self.is_exiting() {
+        if !self.is_exiting() && !self.updating.load(Ordering::SeqCst) {
             self.desired_running.store(true, Ordering::SeqCst);
         }
     }
 
     pub fn should_run(&self) -> bool {
-        !self.is_exiting() && self.desired_running.load(Ordering::SeqCst)
+        !self.is_exiting()
+            && !self.updating.load(Ordering::SeqCst)
+            && self.desired_running.load(Ordering::SeqCst)
     }
 
     pub fn is_exiting(&self) -> bool {
@@ -69,6 +83,8 @@ impl BackendState {
     fn require_active(&self) -> Result<(), String> {
         if self.is_exiting() {
             Err("OmniShare desktop is exiting.".to_string())
+        } else if self.updating.load(Ordering::SeqCst) {
+            Err("OmniShare is installing an update.".to_string())
         } else {
             Ok(())
         }
@@ -159,6 +175,28 @@ impl BackendState {
         }
     }
 
+    pub fn pause_for_update(&self) -> Result<(u16, bool), String> {
+        let _startup = self.startup.lock().map_err(|e| e.to_string())?;
+        self.require_active()?;
+        let resume = self.desired_running.load(Ordering::SeqCst);
+        self.updating.store(true, Ordering::SeqCst);
+        let result = (|| {
+            let mut process = self.process.lock().map_err(|e| e.to_string())?;
+            let port = process.port();
+            process.prepare_update().map_err(|e| e.to_string())?;
+            Ok((port, resume))
+        })();
+        if result.is_err() {
+            self.updating.store(false, Ordering::SeqCst);
+        }
+        result
+    }
+
+    pub fn resume_after_update(&self, desired: bool) {
+        self.desired_running.store(desired, Ordering::SeqCst);
+        self.updating.store(false, Ordering::SeqCst);
+    }
+
     pub fn shutdown(&self) {
         // Set this before waiting for a concurrent startup to release the lock.
         // Unlike an intentional service stop, application exit is irreversible.
@@ -235,6 +273,71 @@ mod tests {
         assert!(!state.is_exiting());
         state.request_start();
         state.attach(19081).unwrap();
+        assert!(state.should_run());
+        state.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn startup_guard_serializes_native_and_webview_callers() {
+        let state = Arc::new(BackendState::default());
+        let guard = state.startup_guard().unwrap();
+        assert!(state.startup.try_lock().is_err());
+        let worker_state = Arc::clone(&state);
+        let worker = thread::spawn(move || {
+            let _guard = worker_state.startup_guard().unwrap();
+            worker_state.attach(19081).unwrap();
+        });
+        assert!(!state.status().running);
+        drop(guard);
+        worker.join().unwrap();
+        assert!(state.status().running);
+        state.shutdown();
+    }
+
+    #[test]
+    fn an_exit_rejects_a_startup_already_waiting_for_its_turn() {
+        let state = Arc::new(BackendState::default());
+        let guard = state.startup_guard().unwrap();
+        let worker_state = Arc::clone(&state);
+        let worker = thread::spawn(move || worker_state.startup_guard().is_err());
+        state.shutdown();
+        drop(guard);
+        assert!(worker.join().unwrap());
+        assert!(!state.status().running);
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    #[test]
+    fn updating_suspends_watchdog_and_explicit_starts_until_recovery() {
+        let state = BackendState::new(19081);
+        state.request_start();
+        let (port, resume) = state.pause_for_update().unwrap();
+        assert_eq!(port, 19081);
+        assert!(resume);
+        state.request_start();
+        assert!(!state.should_run());
+        assert!(state.startup_guard().is_err());
+        assert!(state.configure_port(19082).is_err());
+        state.resume_after_update(resume);
+        assert!(state.should_run());
+        assert!(state.startup_guard().is_ok());
+    }
+    #[test]
+    fn an_attached_service_is_never_stopped_by_updates() {
+        let state = BackendState::new(19081);
+        state.attach(19081).unwrap();
+        assert!(state.pause_for_update().is_err());
+        assert!(state.status().running);
         assert!(state.should_run());
         state.shutdown();
     }

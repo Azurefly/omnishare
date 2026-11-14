@@ -18,6 +18,7 @@ pub fn initialize(
     backend_state: &BackendState,
     preferred_port: u16,
 ) -> Result<BackendStatus, String> {
+    let _startup = backend_state.startup_guard()?;
     backend_state.request_start();
 
     let current = backend_state.status();

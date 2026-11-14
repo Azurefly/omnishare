@@ -53,7 +53,7 @@ const server = createServer(async (req, res) => {
         files_count:files.length, pads_count:2, videos_count:0, active_shares:1, trash_count:0, storage_used:38948864})
       if (url.pathname === '/api/v1/devices' && failDevices) return respond(res, [], 400)
       if (url.pathname === '/api/v1/devices') return respond(res, [
-        {id:'local', hostname:'我的工作空间', url:origin, is_local:true, online:true, network_type:'本机'},
+        {id:'local', hostname:'我的工作空间', url:origin, addresses:[origin,'http://100.92.203.77:8084','http://[fd7a:115c:a1e0::2637:cb4e]:8084','http://192.168.64.1:8084','http://192.168.31.200:8084','http://172.30.96.1:8084'], is_local:true, online:true, network_type:'本机'},
         {id:'remote', hostname:'书房的笔记本', url:'https://desk.example', addresses:['https://desk.example','http://100.64.0.7:8081'], bound:true, online:true, network_type:'manual', latency_ms:8},
         {id:'offline', hostname:'备用设备', url:'http://100.64.0.8:8081', bound:true, online:false, status:'连接超时', connection_error:'设备暂时不可达，保留上次快照', network_type:'tailscale'},
         {id:'discovered', hostname:'待绑定设备', url:'http://100.64.0.9:8081', bound:false, online:true, network_type:'tailscale'}
@@ -141,6 +141,31 @@ try {
     assert.equal(await page.locator('#bindPeerDialog').evaluate(dialog => dialog.open), false)
     assert.equal(writes.length, before)
     assert.equal(page.url(), origin + '/')
+  })
+  await check('device cards collapse all alternate routes and retain expanded details after refresh', async () => {
+    assert.equal(await page.locator('[data-device-id="local"].device').count(), 1)
+    assert.equal(await page.locator('[data-device-id="remote"].device').count(), 1)
+    assert.equal(await page.locator('.device-connections[open]').count(), 0)
+    const local = page.locator('[data-device-id="local"].device')
+    assert.equal(await local.locator('.device-url').count(), 6)
+    assert.equal(await local.locator('.device-url:visible').count(), 0)
+    assert.ok(await local.evaluate(card => card.getBoundingClientRect().height < 230))
+    await local.locator('summary').click()
+    assert.equal(await local.locator('.device-url:visible').count(), 6)
+    await page.locator('#refreshDevicesBtn').click()
+    await page.waitForTimeout(500)
+    assert.equal(await local.locator('details').evaluate(details => details.open), true)
+    await local.locator('summary').click()
+    await screenshot('compact-devices-desktop')
+  })
+  await check('file indexes never show an automatic transfer queue or fetch media', async () => {
+    const before = writes.length
+    await page.locator('.tab[data-tab="files"]').click()
+    await page.locator('.file-card').first().waitFor()
+    assert.equal(await page.locator('#uploadActivityPanel').isVisible(), false)
+    assert.equal(await page.locator('#filesList img, #filesList video, #filesList source').count(), 0)
+    assert.equal(writes.length, before)
+    await screenshot('index-only-files-desktop')
   })
   await check('all navigation entries open exactly one panel', async () => {
     for (const name of ['notes','files','pads','shares','trash','activity','dashboard']) {

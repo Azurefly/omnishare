@@ -62,5 +62,15 @@
     "category": "Productivity",
     "shortDescription": "Private cross-platform content sharing hub",
     "longDescription": "OmniShare is a private multi-device content hub for personal, family, small-team and intranet environments."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
