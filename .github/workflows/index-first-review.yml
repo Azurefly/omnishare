@@ -1,26 +1,158 @@
-name: Index-first desktop review
+name: Index-first desktop and updater review
 on:
   push:
     branches: ['fix/index-first-desktop-20261114']
     paths: ['.github/workflows/index-first-review.yml']
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: index-first-review
+  cancel-in-progress: true
 jobs:
-  source:
+  prepare:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          persist-credentials: false
-          ref: 1347aebce7a44794414ac0316f70ff7e2b64709f
-      - name: Export exact source
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with: {toolchain: '1.99.1', components: 'rustfmt'}
+      - name: Apply exact reviewed source patches
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir snapshot
+          import base64, hashlib, json, lzma, os, subprocess, urllib.request
+          from pathlib import Path
+          assert os.environ['GITHUB_REPOSITORY']=='Azurefly/omnishare'
+          assert os.environ['GITHUB_REF']=='refs/heads/fix/index-first-desktop-20261114'
+          subprocess.run(['git','merge-base','--is-ancestor','1347aebce7a44794414ac0316f70ff7e2b64709f','HEAD'],check=True)
+          patches=[
+            ('fae98f1f262de06c543a29c9a5762a1ba808ae1e8eeabdfcb0f2ea85cc50f073',['8012306ad3a59ece3e5506a2a2069684ae83b983','7b6c1b971b05ce383e930ee5efdbe7ccb3b80ce6','66f6ef7382b870752895634d7c2afd0a4258b7cc']),
+            ('f057e0c84ece53d5c351c337d2159d235e7731907e74b58741aee5ba3eb8681b',['98614277025f875c2b9b8175dd4e52d55187273c','683fab43708888f11a6fbf981690699eafeb65ca','9a2cf7f3c0cae2819295b35f423eeccaada223aa','5e0a4bfa38bc163b78b550e392f8ac1dc17db351','5afb1464068a19535cdcf830275f2e065c4efd14'])]
+          for number,(digest,shas) in enumerate(patches):
+              parts=[]
+              for sha in shas:
+                  req=urllib.request.Request('https://api.github.com/repos/Azurefly/omnishare/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+                  with urllib.request.urlopen(req,timeout=30) as response: blob=json.load(response)
+                  assert blob['sha']==sha and blob['encoding']=='base64'
+                  parts.append(base64.b64decode(blob['content']))
+              patch=lzma.decompress(base64.b64decode(b''.join(parts),validate=True))
+              assert hashlib.sha256(patch).hexdigest()==digest, 'source checksum mismatch'
+              path=Path(os.environ['RUNNER_TEMP'])/f'reviewed-{number}.patch';path.write_bytes(patch)
+              already=subprocess.run(['git','apply','--unidiff-zero','--reverse','--check',str(path)],capture_output=True).returncode==0
+              if not already:
+                  subprocess.run(['git','apply','--unidiff-zero','--check',str(path)],check=True)
+                  subprocess.run(['git','apply','--unidiff-zero',str(path)],check=True)
+          cargo=Path('desktop/src-tauri/Cargo.toml')
+          cargo.write_text(cargo.read_text().replace('features = ["rustls", "json", "stream"]','features = ["rustls-no-provider", "json", "stream"]'))
+      - name: Format, lock and test reviewed sources
+        run: |
+          set -euo pipefail
+          (cd desktop/src-tauri && cargo fmt && cargo update --workspace)
+          npm --prefix frontend run check
+          npm --prefix frontend test
+          npm --prefix frontend run build
+          npm --prefix desktop run test:contracts
+          python3 scripts/desktop_updates_test.py
+          python3 scripts/macos_release_test.py
+      - name: Commit without replacing newer branch work
+        id: commit
+        env:
+          BRANCH: fix/index-first-desktop-20261114
+        run: |
+          set -euo pipefail
+          remote=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          test "$remote" = "$GITHUB_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add frontend backend/internal/frontend/dist backend/internal/api/index_first_test.go desktop scripts README.md CHANGELOG.md docs/DESKTOP_UPDATES.md .github/workflows/signed-desktop-updates.yml
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat: compact devices, index-only files and signed native in-app updates'
+            git push origin "HEAD:refs/heads/$BRANCH"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          mkdir -p snapshot
           git archive --format=tar HEAD > snapshot/source.tar
           git rev-parse HEAD > snapshot/source-commit.txt
-          sha256sum snapshot/source.tar > snapshot/source.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: index-first-source
-          path: snapshot/
-          retention-days: 3
+        with: {name: reviewed-updater-source, path: 'snapshot/', retention-days: 7}
+  native:
+    name: Native updater checks (${{ matrix.os }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: '${{ needs.prepare.outputs.sha }}', persist-credentials: false}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version: '1.26.5', cache-dependency-path: backend/go.sum}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with: {toolchain: '1.99.1', components: 'rustfmt, clippy'}
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb
+      - name: Prepare embedded resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix frontend run build
+          npm --prefix desktop ci
+          npm --prefix desktop run prebuild
+          npm --prefix desktop run test:contracts
+          mkdir -p desktop/src-tauri/resources
+          ext=''; if [ "$RUNNER_OS" = Windows ]; then ext='.exe'; fi
+          (cd backend && go build -trimpath -o "../desktop/src-tauri/resources/omnishare$ext" ./cmd/omnishare)
+      - name: Native Rust compile, lint and unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd desktop/src-tauri
+          cargo fmt --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+  core:
+    name: Index-only and real browser regression
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: '${{ needs.prepare.outputs.sha }}', persist-credentials: false}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with: {go-version: '1.26.5', cache-dependency-path: backend/go.sum}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - name: Test frontend, backend and browser workflows
+        run: |
+          set -euo pipefail
+          npm --prefix frontend ci --ignore-scripts
+          npm --prefix frontend test
+          npm --prefix frontend run build
+          git diff --exit-code -- backend/internal/frontend/dist
+          python3 scripts/desktop_updates_test.py
+          (cd backend && go vet ./... && go test ./... -race -count=1 -timeout=8m)
+          (cd backend && go build -o "$RUNNER_TEMP/omnishare" ./cmd/omnishare)
+          python3 scripts/test-http-integration.py "$RUNNER_TEMP/omnishare"
+          (cd frontend && npx --no-install playwright install --with-deps chromium)
+          npm --prefix frontend run test:browser
+          node scripts/test-workspace-browser.mjs "$RUNNER_TEMP/omnishare"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with: {name: index-first-browser-evidence, path: frontend/test-results/, retention-days: 7, if-no-files-found: warn}
