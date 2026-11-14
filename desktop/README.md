@@ -2,13 +2,16 @@
 
 This directory contains the Tauri 2.x desktop application for OmniShare.
 
+Windows EXE/MSI and macOS DMG are native desktop applications, not browser launchers.
+Packages named `portable` are separate server/browser distributions.
+
 ## Current status
 
 The desktop shell is wired as a real Tauri application:
 
 1. Tauri starts a local desktop WebView.
 2. The runtime resolves the bundled Go backend binary.
-3. The backend is launched with `--no-browser --listen 127.0.0.1 --port 8081`.
+3. The backend is launched without an external browser or console; its existing LAN setting is preserved. The desktop uses the selected loopback port to reach it.
 4. The runtime waits for `127.0.0.1:8081` to become reachable.
 5. The WebView navigates to the existing OmniShare UI.
 6. Closing the main window hides it to the tray.
@@ -95,3 +98,5 @@ stable releases from prereleases. macOS Tauri builds remain validation-only;
 the public Go application signing and notarization requirements are documented
 in [`docs/MACOS_SIGNING.md`](../docs/MACOS_SIGNING.md).
 Run `npm run test:contracts` to check version mapping and platform build plans.
+
+Configured native startup runs on a named background thread. Blocking boot/start/stop commands are dispatched off the UI thread; all startup callers share a readiness lock to avoid spawning or killing the same child concurrently.

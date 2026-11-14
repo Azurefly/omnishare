@@ -71,7 +71,7 @@
           <nav class="tabs" aria-label="主功能导航">
             <button type="button" class="tab active" aria-current="page" data-tab="dashboard"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-home"></use></svg><span>工作台</span></button>
             <button type="button" class="tab" data-tab="notes"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-note"></use></svg><span>随手记</span></button>
-            <button type="button" class="tab" data-tab="files"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-folder"></use></svg><span>文件与传输</span></button>
+            <button type="button" class="tab" data-tab="files"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-folder"></use></svg><span>文件</span></button>
             <button type="button" class="tab" data-tab="pads"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg><span>协同文档</span></button>
             <button type="button" class="tab" data-tab="shares"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>安全分享</span></button>
             <button type="button" class="tab" data-tab="trash"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>回收站</span></button>
@@ -138,8 +138,8 @@
               </article>
               <article class="card dashboard-card">
                 <span class="dashboard-card-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-folder"></use></svg></span>
-                <div><h3>文件与传输</h3><p>独立管理上传、下载、播放和文件分享。</p></div>
-                <button class="button ghost small dashboard-link" data-target-tab="files" aria-label="进入文件与传输"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-arrow"></use></svg><span class="visually-hidden">进入模块</span></button>
+                <div><h3>文件</h3><p>独立管理上传、下载、播放和文件分享。</p></div>
+                <button class="button ghost small dashboard-link" data-target-tab="files" aria-label="进入文件"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-arrow"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
               <article class="card dashboard-card">
                 <span class="dashboard-card-icon"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg></span>
@@ -195,11 +195,12 @@
 
           <!-- 文件与视频 Panel -->
           <section id="filesPanel" class="panel-view">
+            <div class="file-index-notice"><strong>文件索引 · 按需读取</strong><p>绑定只合并文件名称、大小和来源，不自动复制原文件。点击下载或播放时，才从来源设备读取。</p></div>
             <article id="dropZone" class="drop-zone" tabindex="0" role="region" aria-label="文件上传区域">
               <input id="fileInput" type="file" multiple hidden />
               <div class="drop-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg></div>
-              <h2>把文件放到这里</h2>
-              <p>拖入或选择文件，上传到当前节点。视频可在线播放；下载支持分段读取。</p>
+              <h2>添加本机文件</h2>
+              <p>拖入或选择文件，保存到当前节点；其他设备只看到索引，不会自动接收文件。</p>
               <div class="form-row compact">
                 <label for="fileTTL" class="visually-hidden">上传文件保留时长</label><select id="fileTTL" title="文件有效期">
                   <option value="0">永久保存</option>
@@ -210,9 +211,9 @@
                 <button id="chooseFilesBtn" class="button primary"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>选择文件</span></button>
               </div>
             </article>
-            <section class="transfer-panel" aria-labelledby="transferHeading">
+            <section id="uploadActivityPanel" class="transfer-panel" aria-labelledby="transferHeading" hidden>
               <div class="transfer-panel-head">
-                <div><h3 id="transferHeading">传输队列</h3><p id="transferSummary" class="muted-text" role="status" aria-live="polite">等待上传</p></div>
+                <div><h3 id="transferHeading">本次添加进度</h3><p id="transferSummary" class="muted-text" role="status" aria-live="polite">等待上传</p></div>
                 <div class="inline-actions">
                   <button id="cancelAllUploadsBtn" type="button" class="button ghost small" disabled>取消未完成</button>
                   <button id="clearFinishedUploadsBtn" type="button" class="button ghost small" disabled>清除已结束</button>
@@ -331,6 +332,7 @@
         </div>
         <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
+      <div id="desktopUpdates" class="backup-settings hidden"><div><strong>桌面软件更新</strong><p class="muted-text">检查并升级当前电脑上的 OmniShare；保留数据与设备绑定。</p></div><button id="checkUpdatesBtn" type="button" class="button ghost">检查更新</button></div>
       <div class="settings-sections">
         <section class="settings-section" aria-labelledby="settingsGeneral">
           <div class="settings-section-head"><span class="section-number">01</span><div><h3 id="settingsGeneral">常规与外观</h3><p>为这个节点命名，并选择适合你的显示方式。</p></div></div>
@@ -544,7 +546,7 @@
         <h2 id="videoTitle">视频播放</h2>
         <button id="closeVideoBtn" class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
-      <video id="videoPlayer" controls playsinline></video>
+      <video preload="none" id="videoPlayer" controls playsinline></video>
     </div>
   </dialog>
 

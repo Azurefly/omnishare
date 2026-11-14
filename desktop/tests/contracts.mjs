@@ -34,7 +34,7 @@ requireMatch('Cargo.toml', cargo, /tauri-plugin-single-instance\s*=\s*"2"/, 'sin
 requireMatch('main.rs', main, /tauri_plugin_single_instance::init/, 'single-instance plugin must be registered before setup');
 requireMatch('main.rs', main, /tray::show_main_window/, 'second launch must restore the existing window');
 requireMatch('main.rs', main, /if\s+settings\.configured/, 'configured desktop startup must run natively instead of waiting for WebView JavaScript');
-requireMatch('main.rs', main, /startup::initialize\(app\.handle\(\)/, 'native setup must initialize the backend');
+requireMatch('main.rs', main, /startup::initialize\(&handle/, 'native worker must initialize the backend');
 requireMatch('main.rs', main, /start_backend_watchdog/, 'desktop must supervise the backend after startup');
 requireMatch('main.rs', main, /consecutive_failures\s*<\s*2/, 'watchdog must debounce transient health failures');
 requireMatch('main.rs', main, /omnishare-backend-watchdog/, 'watchdog must use a named background thread');
@@ -60,3 +60,18 @@ requireMatch('tauri.conf.json', config, /"icons\/icon\.ico"/, 'Windows applicati
 requireMatch('package.json', packageJson, /run-tauri-build\.mjs/, 'cross-platform build wrapper must be used');
 
 console.log(`Desktop release contracts passed for ${repoRoot}`);
+
+requireMatch('main.rs', main, /omnishare-backend-startup[\s\S]*?\.spawn\(move/, 'configured startup must run on a native worker, not the UI thread');
+requireMatch('runtime/startup.rs', startup, /startup_guard\(\)\?/, 'all startup callers must serialize readiness and process spawning');
+for (const name of ['desktop_boot', 'backend_start', 'backend_stop']) {
+  requireMatch('commands/backend.rs', commands, new RegExp('#\\[tauri::command\\(async\\)\\]\\s*pub fn ' + name), name + ' must not block the native UI event loop');
+}
+requireMatch('process/backend.rs', process, /\.arg\("--no-browser"\)/, 'desktop startup must never open the external browser');
+requireMatch('process/backend.rs', process, /CREATE_NO_WINDOW/, 'the Windows backend must not create a console window');
+
+const updates = await text(join(desktopRoot, 'src-tauri', 'src', 'updates', 'mod.rs'));
+requireMatch('updates/mod.rs', updates, /require_update_window/, 'updater commands must validate a native bundled window');
+requireMatch('updates/mod.rs', updates, /update\.verify\(&bytes\)/, 'downloads and installation must verify signatures');
+requireMatch('tauri.conf.json', config, /"requireSignedVersion"\s*:\s*true/, 'update signatures must bind the advertised version');
+requireMatch('updates/mod.rs', updates, /pause_for_update\(\)/, 'install must stop the owned backend before replacement');
+requireMatch('updates/mod.rs', updates, /MAX_PACKAGE/, 'update downloads must be bounded');

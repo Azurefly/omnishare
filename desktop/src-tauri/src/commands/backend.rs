@@ -17,7 +17,7 @@ pub fn desktop_settings(app: AppHandle, state: State<'_, BackendState>) -> Deskt
     settings
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn desktop_boot(
     app: AppHandle,
     state: State<'_, BackendState>,
@@ -33,7 +33,7 @@ pub fn backend_status(state: State<'_, BackendState>) -> BackendStatus {
     state.inner().status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn backend_start(
     app: AppHandle,
     state: State<'_, BackendState>,
@@ -42,7 +42,7 @@ pub fn backend_start(
     startup::initialize(&app, state.inner(), preferred)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn backend_stop(state: State<'_, BackendState>) -> BackendStatus {
     state.inner().stop()
 }

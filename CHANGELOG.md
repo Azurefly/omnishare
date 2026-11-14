@@ -1,5 +1,14 @@
 # 更新记录
 
+## Unreleased — compact devices, index-first files and native updates
+
+- Add native desktop update checking, stable/preview channels, bounded signed downloads and explicit install consent. Protect local backend shutdown/recovery and keep LAN pages unable to install software. Publishing requires a persistent updater signing key; old clients need a one-time manual upgrade.
+- Collapse all addresses of one device into connection details; retain primary route and expanded state across refreshes.
+- Make remote files explicitly metadata indexes; only a user download/play action reads content. Empty upload activity stays hidden.
+- Add HTTP + filesystem regression proving binding and polling do not copy source files, and Range reads remain on demand.
+- Keep Windows/macOS native desktop packaging explicit; move configured startup and blocking commands off the UI event loop and serialize readiness.
+
+
 ## 0.2.0-rc.1 — 2026-11-12
 
 - 一端添加、双端绑定，按设备身份合并内网与 Tailscale 路由。

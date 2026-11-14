@@ -23,6 +23,14 @@ enum ChildShutdown {
 }
 
 fn stop_owned_child(child: &mut Child, timeout: Duration) -> io::Result<ChildShutdown> {
+    stop_owned_child_inner(child, timeout, true)
+}
+
+fn stop_owned_child_inner(
+    child: &mut Child,
+    timeout: Duration,
+    force: bool,
+) -> io::Result<ChildShutdown> {
     if child.try_wait()?.is_some() {
         return Ok(ChildShutdown::Graceful);
     }
@@ -53,6 +61,12 @@ fn stop_owned_child(child: &mut Child, timeout: Duration) -> io::Result<ChildShu
             break;
         }
         thread::sleep(Duration::from_millis(25));
+    }
+    if !force {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "backend is still flushing; update cancelled without force-killing it",
+        ));
     }
     child.kill()?;
     child.wait()?;
@@ -237,6 +251,23 @@ impl BackendProcess {
         }
 
         sections.join("\n")
+    }
+
+    /// Only stop a backend owned by this desktop; never select processes by
+    /// name/port or terminate another deployment. No forced kill on update.
+    pub fn prepare_update(&mut self) -> io::Result<()> {
+        if self.attached {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "当前桌面连接独立启动的后端，请先退出独立后端后重启桌面应用再升级",
+            ));
+        }
+        if let Some(child) = self.child.as_mut() {
+            stop_owned_child_inner(child, SHUTDOWN_TIMEOUT, false)?;
+        }
+        self.child = None;
+        self.managed_data_dir = None;
+        Ok(())
     }
 
     pub fn stop(&mut self) {

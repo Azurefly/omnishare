@@ -753,6 +753,12 @@ function fileIcon(f) {
   return `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`
 }
 
+function fileAvailability(file) {
+  const remote = typeof file.id === 'string' && /^node-[0-9a-f]{20}~/.test(file.id)
+  if (!remote) return '本机文件'
+  return file.source_online === false ? '远端索引 · 来源离线' : '远端索引 · 按需读取'
+}
+
 function renderFiles() {
   $('#fileCount').textContent = state.fileTotal > state.files.length
     ? `${state.files.length} / ${state.fileTotal} 个文件`
@@ -763,13 +769,13 @@ function renderFiles() {
       <div class="file-info">
         <div class="file-icon">${fileIcon(f)}</div>
         <div class="file-description">
-          ${sourceLabel(f)}<h3 title="${escapeHTML(f.file_name)}">${escapeHTML(f.file_name)}</h3>
+          ${sourceLabel(f)}<span class="file-availability">${fileAvailability(f)}</span><h3 title="${escapeHTML(f.file_name)}">${escapeHTML(f.file_name)}</h3>
           <p>${formatBytes(f.file_size)} · ${escapeHTML(f.mime_type)} · 下载 ${f.download_count || 0} 次</p>
         </div>
       </div>
       <div class="file-actions">
-        ${f.is_video ? '<button class="button ghost small play-file">▶ 播放</button>' : ''}
-        <button class="button ghost small download-file">下载</button>
+        ${f.is_video ? `<button class="button ghost small play-file" ${f.source_online === false ? 'disabled title="来源设备离线，暂时无法读取原文件"' : ''}>▶ 按需播放</button>` : ''}
+        <button class="button ghost small download-file" ${f.source_online === false ? 'disabled title="来源设备离线，暂时无法下载"' : ''}>下载到本机</button>
         <button class="button ghost small share-file">分享</button>
         <button class="button ghost small rename-file">重命名</button>
         <button class="button danger small delete-file">删除</button>
@@ -779,7 +785,7 @@ function renderFiles() {
     <div class="empty">
       <div class="empty-icon">📁</div>
       <h3>没有匹配的文件</h3>
-      <p>拖拽文件至上方虚线区域或点击选择文件即可上传</p>
+      <p>添加本机文件后可在绑定设备中看到索引；不会自动复制到其他设备</p>
     </div>
   `
 }
@@ -968,6 +974,8 @@ function renderUploadTask(task) {
 function updateUploadSummary() {
   const counts = { queued: 0, uploading: 0, succeeded: 0, failed: 0, cancelled: 0 }
   for (const task of state.uploadQueue) counts[task.status]++
+  const panel = $('#uploadActivityPanel')
+  if (panel) panel.hidden = state.uploadQueue.length === 0 && !state.uploadNotice
   const summary = $('#transferSummary')
   if (summary) {
     const text = state.uploadQueue.length
@@ -1677,30 +1685,74 @@ async function unbindDevice(id) {
   } catch (err) { toast(err.message,true) }
 }
 
+// A device is an identity, not an IP address. Never merge by display name.
+function deviceAddresses(device) {
+  return [...new Set([device.url, ...(Array.isArray(device.addresses) ? device.addresses : [])]
+    .map(safeDeviceURL).filter(Boolean))]
+}
+
+function deviceRouteLabel(address) {
+  try {
+    const host = new URL(address).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return '本机'
+    const octets = host.split('.').map(Number)
+    if ((octets.length === 4 && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) || host.startsWith('fd7a:115c:a1e0:')) return 'Tailscale'
+    return '局域网'
+  } catch { return '连接' }
+}
+
+function displayDevices(devices) {
+  const merged = new Map()
+  for (const device of devices) {
+    const key = device.id || safeDeviceURL(device.url)
+    if (!key) continue
+    const previous = merged.get(key)
+    if (!previous) { merged.set(key, {...device, addresses:deviceAddresses(device)}); continue }
+    const priority = d => (d.is_local ? 4 : 0) + (d.bound ? 2 : 0) + (d.online ? 1 : 0)
+    const preferred = priority(device) > priority(previous) ? device : previous
+    merged.set(key, {...preferred, addresses:[...new Set([...deviceAddresses(preferred), ...deviceAddresses(previous), ...deviceAddresses(device)])]})
+  }
+  return [...merged.values()]
+}
+
 function renderDevices() {
+  const devices = displayDevices(state.devices)
   const groups = [
-    {title:'当前设备',devices:state.devices.filter(d => d.is_local)},
-    {title:'已绑定 · 统一工作区',devices:state.devices.filter(d => !d.is_local && d.bound)},
-    {title:'发现的设备',devices:state.devices.filter(d => !d.is_local && !d.bound)}
+    {title:'当前设备',devices:devices.filter(d => d.is_local)},
+    {title:'已绑定 · 统一工作区',devices:devices.filter(d => !d.is_local && d.bound)},
+    {title:'发现的设备',devices:devices.filter(d => !d.is_local && !d.bound)}
   ]
   const markup = groups.filter(g => g.devices.length).map(g => `<section class="device-group"><h3 class="device-group-title">${g.title}<span>${g.devices.length}</span></h3>${g.devices.map(d => {
-    const addresses = [...new Set([d.url,...(d.addresses||[])].map(safeDeviceURL).filter(Boolean))]
-    return `<div class="device" data-device-id="${escapeHTML(d.id)}">
-      <div class="device-heading"><h3>${escapeHTML(d.hostname || 'OmniShare')}</h3><span class="device-state ${d.online?'':'offline'}">${d.is_local?'本机':d.online?'在线':escapeHTML(d.status||'不可达')}</span></div>
-      ${addresses.map(address => `<code class="device-url">${escapeHTML(address)}${address===safeDeviceURL(d.url)&&d.online?' · 当前连接':''}</code>`).join('')}
-      <p class="device-note">${d.connection_error ? escapeHTML(d.connection_error) : d.is_local?'新内容默认保存于此；列表包含所有已绑定设备':d.bound?'内容已合并，直接在当前界面查看和操作':'发现设备不会授予访问权限；绑定后双方合并工作区'}</p>
-      ${d.is_local?'':d.bound?'<button class="button ghost small unbind-device">解除绑定</button>':`<button class="button primary small bind-device" data-url="${escapeHTML(d.url||'')}">绑定并合并</button>`}
+    const addresses = deviceAddresses(d)
+    // For a local card the address actually opened by this client is the
+    // current connection; the first enumerated adapter need not be in use.
+    const browserAddress = safeDeviceURL(location.origin)
+    const primary = (d.is_local && addresses.includes(browserAddress) ? browserAddress : safeDeviceURL(d.url)) || addresses[0] || ''
+    const shortAddress = primary ? new URL(primary).host : '暂无可用地址'
+    const note = d.connection_error || (d.is_local ? '本机内容与绑定设备的索引统一展示' : d.bound ? '只展示索引；使用文件时按需读取' : '发现设备不会授予访问权限；绑定后只合并索引')
+    return `<div class="device device-compact" data-device-id="${escapeHTML(d.id)}">
+      <div class="device-heading"><h3 title="${escapeHTML(d.hostname || 'OmniShare')}">${escapeHTML(d.hostname || 'OmniShare')}</h3><span class="device-state ${d.online?'':'offline'}">${d.is_local?'本机':d.online?'在线':escapeHTML(d.status||'不可达')}</span></div>
+      <div class="device-primary"><span class="device-route">${primary ? deviceRouteLabel(primary) : '未连接'}</span><code class="device-primary-url" title="${escapeHTML(primary)}">${escapeHTML(shortAddress)}</code></div>
+      <p class="device-note">${escapeHTML(note)}</p>
+      <details class="device-connections" data-device-id="${escapeHTML(d.id)}"><summary>连接详情<span>${addresses.length} 个地址</span></summary>
+        <div class="device-addresses">${addresses.map(address => `<div class="device-address"><span>${deviceRouteLabel(address)}${address===primary ? (d.online?' · 当前连接':' · 上次连接'):' · 备用'}</span><code class="device-url">${escapeHTML(address)}</code></div>`).join('')}</div>
+      </details>
+      ${d.is_local?'':d.bound?'<button class="button ghost small unbind-device">解除绑定</button>':`<button class="button primary small bind-device" data-url="${escapeHTML(primary)}">绑定并合并</button>`}
     </div>`
   }).join('')}</section>`).join('')
   const list = $('#deviceList')
-  if (list._deviceMarkup !== markup) { list.innerHTML = markup; list._deviceMarkup = markup }
+  if (list._deviceMarkup !== markup) {
+    const expanded = new Set([...(list.querySelectorAll?.('.device-connections[open]') || [])].map(d => d.dataset.deviceId))
+    list.innerHTML = markup; list._deviceMarkup = markup
+    for (const details of list.querySelectorAll?.('.device-connections') || []) details.open = expanded.has(details.dataset.deviceId)
+  }
   const status = $('#tailscaleStatus'); if (status) status.textContent = state.tailscaleStatus || '局域网自动发现已启用；Tailscale 状态正在检测'
 }
 
 const TAB_CONFIG = {
   dashboard: { panel: '#dashboardPanel', title: '工作台' },
   notes: { panel: '#notesPanel', title: '随手记', load: loadNotes },
-  files: { panel: '#filesPanel', title: '文件与传输', load: loadFiles },
+  files: { panel: '#filesPanel', title: '文件', load: loadFiles },
   pads: { panel: '#padsPanel', title: '协同文档', load: loadPads },
   shares: { panel: '#sharesPanel', title: '安全分享', load: loadShares },
   trash: { panel: '#trashPanel', title: '回收站', load: loadTrash },

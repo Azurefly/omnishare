@@ -5,6 +5,7 @@ mod config;
 mod process;
 mod runtime;
 mod tray;
+mod updates;
 
 use std::{thread, time::Duration};
 
@@ -73,35 +74,49 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            app.manage(updates::UpdateState::default());
             let settings = config::settings::resolve(app.handle());
             app.manage(BackendState::new(settings.port));
             tray::setup(app.handle())?;
 
-            // Do not depend on WebView JavaScript to start the local service.
-            // Managed deployments and returning users already have a configured
-            // port, so the native runtime brings the backend up before the page
-            // asks for status. First launch remains interactive.
+            // Keep both platforms native: startup I/O must not freeze the
+            // Windows WebView2 / macOS WebKit event loop. The page and this
+            // worker share a serialized startup path, so they cannot race to
+            // restart the same backend. First-run port selection stays local.
             if settings.configured {
-                let backend_state = app.state::<BackendState>();
-                if let Err(error) =
-                    startup::initialize(app.handle(), backend_state.inner(), settings.port)
-                {
-                    eprintln!("OmniShare native backend startup failed: {error}");
-                }
+                let handle = app.handle().clone();
+                thread::Builder::new()
+                    .name("omnishare-backend-startup".to_string())
+                    .spawn(move || {
+                        let state = handle.state::<BackendState>();
+                        if let Err(error) =
+                            startup::initialize(&handle, state.inner(), settings.port)
+                        {
+                            eprintln!("OmniShare native backend startup failed: {error}");
+                        }
+                    })?;
             }
 
             start_backend_watchdog(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            if window.label() == "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            updates::open_updates,
+            updates::updater_info,
+            updates::check_update,
+            updates::download_update,
+            updates::install_update,
             commands::backend::desktop_settings,
             commands::backend::desktop_boot,
             commands::backend::backend_status,
