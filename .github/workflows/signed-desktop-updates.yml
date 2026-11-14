@@ -1,0 +1,77 @@
+name: Publish signed desktop update feed
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing published tag (vX.Y.Z or vX.Y.Z-rc.N)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: signed-updates-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  packages:
+    if: github.repository == 'Azurefly/omnishare'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: Windows, os: windows-latest}
+          - {name: Linux, os: ubuntu-22.04}
+          - {name: macOS, os: macos-15}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      UPDATE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.UPDATE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - name: Read exact published desktop packages and validate provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/fetch-desktop-update-inputs.py '${{ matrix.name }}'
+      - name: Install pinned signer
+        run: npm --prefix desktop ci --ignore-scripts
+      - name: Sign final packages with version binding
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: python scripts/prepare-desktop-updates.py '${{ matrix.name }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed-desktop-${{ matrix.name }}
+          path: signed-updates/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+  publish:
+    needs: packages
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      UPDATE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.UPDATE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: signed-desktop-*
+          path: signed-updates
+          merge-multiple: true
+      - name: Publish verified packages first, update index last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish-desktop-updates.py
