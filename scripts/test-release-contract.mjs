@@ -801,20 +801,15 @@ test('formal gate runs before tag mutation or release creation', () => {
   assert.doesNotMatch(publish, /continue-on-error:\s*true/);
 });
 
-test('credential readiness runs only trusted main and cannot publish', () => {
+test('credential readiness is manual, restricted to main and read-only', () => {
   const readiness = readFileSync(join(repo, '.github/workflows/macos-signing-readiness.yml'), 'utf8');
-  assert.match(readiness, /branches: \[main\]/);
-  assert.match(readiness, /github\.ref == 'refs\/heads\/main'/);
-  assert.doesNotMatch(readiness, /pull_request|action-gh-release|notarytool submit|--mode release/);
+  assert.match(readiness, /\non:\s*\n  workflow_dispatch:\s*\n\npermissions:\n  contents: read/);
+  assert.match(readiness, /github\.ref == 'refs\/heads\/main' && github\.event_name == 'workflow_dispatch'/);
+  assert.doesNotMatch(readiness, /(?:^|\n)\s+(?:push|pull_request):|contents:\s*write|git push|action-gh-release|notarytool submit|--mode release|continue-on-error:\s*true/);
   assert.match(readiness, /run: bash scripts\/package-macos\.sh --check-credentials/);
-  const credentialsJob = readiness.slice(readiness.indexOf('  credentials:'), readiness.indexOf('  cleanup-reviewed-branch:'));
-  assert.doesNotMatch(credentialsJob, /contents:\s*write|continue-on-error:\s*true/);
   for (const secret of ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_TEAM_ID', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD']) {
-    assert.ok(credentialsJob.includes(`secrets.${secret}`));
+    assert.ok(readiness.includes('secrets.' + secret));
   }
-  assert.match(readiness, /branch_ref=refs\/heads\/fix\/cross-platform-install-20261111/);
-  assert.match(readiness, /--force-with-lease="\$branch_ref:\$expected"/);
-  assert.match(readiness, /git merge-base --is-ancestor "\$actual" "\$GITHUB_SHA"/);
 });
 
 for (const [key, value] of [

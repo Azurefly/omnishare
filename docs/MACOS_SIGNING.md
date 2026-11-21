@@ -44,7 +44,7 @@ base64 -i "$HOME/Downloads/OmniShare-Developer-ID.p12" | pbcopy
 
 ## 3. 先执行凭据就绪检查
 
-在 Actions 中选择 **macOS Signing Readiness**，手动运行时选择 `main`。其中的凭据检查作业检查上述五个 secret 是否有值及基本格式，并列出缺失的**名称**。它不打印值、不签名、不提交公证，也不创建 Release；本次分支合并后的清理是另一个有独立权限和精确提交约束的作业。
+在 Actions 中选择 **macOS Signing Readiness**，手动运行时选择 `main`。其中的凭据检查作业检查上述五个 secret 是否有值及基本格式，并列出缺失的**名称**。它不打印值、不签名、不提交公证，也不创建 Release。
 
 就绪检查通过仅说明配置项存在，不能证明 P12 可解密、身份未过期、Team ID 一致或公证服务接受这些凭据。真正的 Developer ID 身份检查和 Apple 服务认证仍由正式发布门槛执行。缺少凭据或认证失败时，正式发布必须停止，不会退回 ad-hoc 模式发布给用户。
 
