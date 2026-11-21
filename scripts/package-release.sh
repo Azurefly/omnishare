@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="${1:?binary directory required}"
+OUT="${2:-$ROOT/dist}"
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+# Debian's internal version needs '~' so a prerelease sorts before the final
+# release. Keep that out of asset names: GitHub rewrites '~' during upload.
+DEB_VERSION="${VERSION/-/\~}"
+PKG="$OUT/packages"
+RELEASE_NOTES="$ROOT/docs/RELEASE_NOTES_v${VERSION}.md"
+
+require() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required tool: $1" >&2; exit 2; }; }
+for tool in zip tar sed sha256sum python3; do require "$tool"; done
+for target in windows-amd64.exe windows-arm64.exe linux-amd64 linux-arm64; do
+  test -s "$BIN/omnishare-$target" || { echo "Missing binary: $BIN/omnishare-$target" >&2; exit 2; }
+done
+test -f "$RELEASE_NOTES" || { echo "Missing release notes: $RELEASE_NOTES" >&2; exit 2; }
+
+rm -rf "$PKG" "$OUT/work"
+mkdir -p "$PKG" "$OUT/work"
+
+for arch in amd64 arm64; do
+  work="$OUT/work/windows-$arch/OmniShare"
+  mkdir -p "$work"
+  cp "$BIN/omnishare-windows-$arch.exe" "$work/omnishare.exe"
+  cp "$ROOT/packaging/windows/install.ps1" "$ROOT/packaging/windows/start-omnishare.cmd" "$ROOT/packaging/windows/start-omnishare.ps1" "$ROOT/packaging/windows/uninstall.ps1" "$work/"
+  sed "s/__VERSION__/$VERSION/g" "$ROOT/packaging/windows/README.txt" > "$work/README.txt"
+  (cd "$(dirname "$work")" && zip -qr "$PKG/OmniShare-v${VERSION}-windows-${arch}.zip" OmniShare)
+done
+
+for arch in amd64 arm64; do
+  work="$OUT/work/linux-$arch/OmniShare"
+  mkdir -p "$work"
+  cp "$BIN/omnishare-linux-$arch" "$work/omnishare"; chmod +x "$work/omnishare"
+  cp "$ROOT/packaging/linux/install.sh" "$ROOT/packaging/linux/uninstall.sh" "$work/"; chmod +x "$work/"*.sh
+  sed "s/__VERSION__/$VERSION/g" "$ROOT/packaging/linux/README.txt" > "$work/README.txt"
+  (cd "$(dirname "$work")" && tar -czf "$PKG/OmniShare-v${VERSION}-linux-${arch}.tar.gz" OmniShare)
+
+  deb="$(mktemp -d)"
+  # Keep server packages distinct from Tauri's OmniShare_<version>_<arch>.deb
+  # even when release asset names are compared without case sensitivity.
+  deb_package="$PKG/omnishare-server_${VERSION}_${arch}.deb"
+  mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/share/applications" "$deb/usr/share/doc/omnishare"
+  chmod g-s "$deb" "$deb/DEBIAN" 2>/dev/null || true
+  cp "$BIN/omnishare-linux-$arch" "$deb/usr/bin/omnishare"; chmod 0755 "$deb/usr/bin/omnishare"
+  cp "$ROOT/packaging/linux/omnishare.desktop" "$deb/usr/share/applications/omnishare.desktop"
+  cp "$ROOT/README.md" "$deb/usr/share/doc/omnishare/README.md"
+  cat > "$deb/DEBIAN/control" <<CONTROL
+Package: omnishare
+Version: $DEB_VERSION
+Section: utils
+Priority: optional
+Architecture: $arch
+Maintainer: OmniShare Project
+Description: Private multi-device notes, files and collaboration hub
+ A lightweight local-first desktop companion with a local web interface.
+CONTROL
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    dpkg-deb --build --root-owner-group "$deb" "$deb_package" >/dev/null
+  else
+    python3 - "$deb" "$deb_package" <<'PY'
+import sys, os, tarfile, io
+
+deb_root, out_deb = sys.argv[1], sys.argv[2]
+
+# control.tar.gz
+control_buf = io.BytesIO()
+with tarfile.open(fileobj=control_buf, mode="w:gz") as tar:
+    debian_dir = os.path.join(deb_root, "DEBIAN")
+    for item in sorted(os.listdir(debian_dir)):
+        tar.add(os.path.join(debian_dir, item), arcname="./" + item)
+control_data = control_buf.getvalue()
+
+# data.tar.gz
+data_buf = io.BytesIO()
+with tarfile.open(fileobj=data_buf, mode="w:gz") as tar:
+    for item in sorted(os.listdir(deb_root)):
+        if item == "DEBIAN": continue
+        tar.add(os.path.join(deb_root, item), arcname="./" + item)
+data_data = data_buf.getvalue()
+
+def ar_header(name, size):
+    return (name.ljust(16) + "0".ljust(12) + "0".ljust(6) + "0".ljust(6) + "100644".ljust(8) + str(size).ljust(10) + "`\n").encode("ascii")
+
+binary_data = b"2.0\n"
+with open(out_deb, "wb") as f:
+    f.write(b"!<arch>\n")
+    f.write(ar_header("debian-binary", len(binary_data)))
+    f.write(binary_data)
+    f.write(ar_header("control.tar.gz", len(control_data)))
+    f.write(control_data)
+    f.write(ar_header("data.tar.gz", len(data_data)))
+    f.write(data_data)
+PY
+  fi
+  rm -rf "$deb"
+done
+
+# macOS apps must be sealed and verified on a native macOS runner.
+# scripts/package-macos.sh packages the separately uploaded Darwin binaries.
+
+for doc in "$ROOT/README.md" "$RELEASE_NOTES" "$ROOT/docs/SECURE_SHARING.md"; do
+  [ -f "$doc" ] && cp "$doc" "$PKG/"
+done
+(
+  cd "$PKG"
+  find . -maxdepth 1 -type f ! -name SHA256SUMS.txt | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS.txt
+)
+printf 'Packages created in %s\n' "$PKG"

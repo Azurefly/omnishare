@@ -1,0 +1,988 @@
+name: Publish Release
+
+on:
+  pull_request:
+    paths:
+      - 'release/desktop-release.json'
+      - '.github/workflows/publish-desktop-prerelease.yml'
+      - 'scripts/build-release.sh'
+      - 'scripts/package-release.sh'
+      - 'scripts/package-macos.sh'
+      - 'scripts/test-macos-release.py'
+      - 'scripts/macos-signing.py'
+      - 'scripts/prepare-linux-appimage-tools.py'
+      - 'scripts/prepare_linux_appimage_tools_test.py'
+      - 'scripts/prepare-windows-bundle-tools.py'
+      - 'scripts/prepare_windows_bundle_tools_test.py'
+      - 'scripts/release_tool_downloads.py'
+      - 'desktop/**'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'scripts/test-installed-features.py'
+      - 'scripts/verify-installation-evidence.cjs'
+      - 'scripts/installation-evidence.test.cjs'
+      - 'packaging/linux/**'
+      - 'scripts/macos_signing_test.py'
+      - 'scripts/macos_release_test.py'
+      - 'scripts/verify-macos-evidence.cjs'
+      - '.github/workflows/macos-signing-readiness.yml'
+      - 'packaging/macos/**'
+      - 'scripts/check-version.sh'
+      - 'scripts/test-release-contract.mjs'
+      - 'scripts/cleanup-release-history.mjs'
+      - 'scripts/cleanup-release-history.test.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-metadata:
+    name: Read release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      name: ${{ steps.metadata.outputs.name }}
+      notes: ${{ steps.metadata.outputs.notes }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      make_latest: ${{ steps.metadata.outputs.make_latest }}
+      macos_mode: ${{ steps.mode.outputs.macos_mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node for release checks
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+
+      - name: Select macOS validation mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo 'macos_mode=rehearsal' >> "$GITHUB_OUTPUT"
+          elif [ "$REF_NAME" = refs/heads/main ] && { [ "$EVENT_NAME" = push ] || [ "$EVENT_NAME" = workflow_dispatch ]; }; then
+            if [ -f release/desktop-release.json ] && node -e "const m=require('./release/desktop-release.json');process.exit(m.publication_channel==='candidate' && m.prerelease===true && /^v[0-9]+[.][0-9]+[.][0-9]+-rc[.][0-9]+$/.test(m.tag)?0:1)"; then
+              # Explicit RC candidates are built by release-rc3.yml. This
+              # formal distribution workflow keeps its notarization gate.
+              echo 'macos_mode=candidate' >> "$GITHUB_OUTPUT"
+            else
+              echo 'macos_mode=release' >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo '::error::Formal releases require main; pull requests only run rehearsal validation.'
+            exit 1
+          fi
+
+      - name: Require formal macOS signing credentials
+        if: steps.mode.outputs.macos_mode == 'release'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package-macos.sh --check-credentials
+
+      - name: Read manifest
+        id: metadata
+        shell: bash
+        env:
+          MACOS_VERIFICATION_MODE: ${{ steps.mode.outputs.macos_mode }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const version = fs.readFileSync('VERSION', 'utf8').trim();
+          const manifest = JSON.parse(fs.readFileSync('release/desktop-release.json', 'utf8'));
+          for (const key of ['tag', 'name', 'notes']) {
+            if (typeof manifest[key] !== 'string' || !manifest[key].trim() || /[\r\n]/.test(manifest[key])) {
+              throw new Error(`release/desktop-release.json is missing string field: ${key}`);
+            }
+          }
+          if (!/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.?\d+)?$/.test(version)) {
+            throw new Error(`Unsupported release version: ${version}`);
+          }
+          if (manifest.tag !== `v${version}`) {
+            throw new Error(`Release tag ${manifest.tag} does not match VERSION ${version}`);
+          }
+          if (manifest.notes !== `docs/RELEASE_NOTES_v${version}.md` || !fs.statSync(manifest.notes).isFile()) {
+            throw new Error('Release notes must exist and match VERSION');
+          }
+          if (typeof manifest.prerelease !== 'boolean' || manifest.prerelease !== version.includes('-')) {
+            throw new Error('Manifest prerelease must be a boolean matching the version prerelease suffix');
+          }
+          if (process.env.MACOS_VERIFICATION_MODE === 'release' &&
+              (manifest.macos?.signing_mode !== 'developer-id' || manifest.macos?.notarized !== true ||
+               manifest.macos?.server_zip_signed !== true || manifest.macos?.dmg_published !== true ||
+               manifest.macos?.minimum_system_version !== '12.0' || manifest.macos?.tauri_published !== false)) {
+            throw new Error('The next formal release manifest must require Developer ID, notarization and verified DMG publication; published ad-hoc versions cannot be reused');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag=${manifest.tag}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `name=${manifest.name}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${manifest.notes}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `prerelease=${manifest.prerelease}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `make_latest=${!manifest.prerelease}\n`);
+          NODE
+
+      - name: Release workflow contracts
+        run: node scripts/test-release-contract.mjs
+
+      - name: Test verified desktop tool downloads
+        run: |
+          python3 scripts/prepare_linux_appimage_tools_test.py
+          python3 scripts/prepare_windows_bundle_tools_test.py
+
+      - name: Test installation evidence and native GUI helpers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils python3-gi libglib2.0-bin
+          node --test scripts/installation-evidence.test.cjs desktop/tests/windows-webview-probe.test.mjs
+          python3 desktop/tests/linux_installed_smoke_test.py
+          python3 desktop/tests/linux_installer_test.py
+
+      - name: Test macOS signing and acceptance guards
+        run: |
+          python3 scripts/macos_signing_test.py
+          python3 scripts/macos_release_test.py
+
+      - name: Test version reset cleanup guards
+        run: node --test scripts/cleanup-release-history.test.mjs
+
+      - name: Preview authorized version reset cleanup
+        if: steps.metadata.outputs.tag == 'v0.1.0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/cleanup-release-history.mjs --plan
+
+      - name: Save reviewed cleanup plan
+        if: steps.metadata.outputs.tag == 'v0.1.0'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: version-reset-cleanup-plan
+          path: release-cleanup-evidence/plan.json
+          if-no-files-found: error
+          retention-days: 30
+
+  build-server:
+    name: Build and test server release packages
+    needs: release-metadata
+    if: needs.release-metadata.outputs.macos_mode != 'candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+
+      - name: Build and test all six server targets
+        run: ./scripts/build-release.sh
+
+      - name: Verify server package checksums
+        working-directory: dist/packages
+        run: sha256sum -c SHA256SUMS.txt
+
+      - name: Upload verified server release packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-Server
+          path: dist/packages/*
+          if-no-files-found: error
+
+      - name: Upload Darwin binaries for native macOS packaging
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-macos-binaries
+          path: dist/binaries/omnishare-darwin-*
+          if-no-files-found: error
+
+  build-macos:
+    name: Package macOS ${{ matrix.arch }} (${{ needs.release-metadata.outputs.macos_mode }})
+    needs:
+      - release-metadata
+      - build-server
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: macos-15-intel
+          - arch: arm64
+            os: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download this run's Darwin binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: unsigned-macos-binaries
+          path: macos-binaries
+
+      - name: Typecheck the native macOS application entry
+        run: xcrun swiftc -typecheck packaging/macos/Launcher.swift
+
+      - name: Package rehearsal applications without signing credentials
+        if: needs.release-metadata.outputs.macos_mode == 'rehearsal'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/package-macos.sh "macos-binaries/omnishare-darwin-${ARCH}" macos-candidates "$ARCH" --mode rehearsal
+
+      - name: Sign and notarize formal macOS applications
+        if: needs.release-metadata.outputs.macos_mode == 'release' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package-macos.sh "macos-binaries/omnishare-darwin-${ARCH}" macos-candidates "$ARCH" --mode release
+
+      - name: Upload candidates for independent native verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-candidates-${{ matrix.arch }}
+          path: macos-candidates/*
+          if-no-files-found: error
+
+  verify-macos:
+    name: Verify macOS ${{ matrix.arch }} on a fresh runner
+    needs:
+      - release-metadata
+      - build-macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: macos-15-intel
+          - arch: arm64
+            os: macos-15
+    steps:
+      - name: Checkout verification code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download this run's macOS candidates
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-candidates-${{ matrix.arch }}
+          path: macos-candidates
+
+      - name: Verify and launch the actual macOS release ZIP and DMG
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          MACOS_VERIFICATION_MODE: ${{ needs.release-metadata.outputs.macos_mode }}
+          EXPECTED_TEAM_ID: ${{ github.event_name != 'pull_request' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          set -euo pipefail
+          args=(--archive "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.zip"
+                --dmg "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.dmg"
+                --packaging-evidence "macos-candidates/omnishare-macos-${ARCH}-packaging.json"
+                --mode "$MACOS_VERIFICATION_MODE" --arch "$ARCH" --version "$RELEASE_VERSION"
+                --evidence "macos-test-evidence/${ARCH}/verification.json")
+          if [ "$MACOS_VERIFICATION_MODE" = release ]; then
+            args+=(--team-id "$EXPECTED_TEAM_ID")
+          fi
+          python3 scripts/test-macos-release.py "${args[@]}"
+          mkdir -p release-assets
+          cp "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.zip" release-assets/
+          cp "macos-candidates/OmniShare-v${RELEASE_VERSION}-macos-${ARCH}.dmg" release-assets/
+          cp "macos-test-evidence/${ARCH}/verification.json" \
+            "release-assets/omnishare-macos-${ARCH}-verification.json"
+
+      - name: Upload verified macOS release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-macOS-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Upload macOS release test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-test-evidence-macOS-${{ matrix.arch }}
+          path: macos-test-evidence/${{ matrix.arch }}/
+          if-no-files-found: warn
+
+  build-and-test:
+    name: Build and test ${{ matrix.name }} release assets
+    needs: release-metadata
+    if: needs.release-metadata.outputs.macos_mode != 'candidate'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-22.04
+
+    env:
+      EVIDENCE_DIR: desktop-test-evidence/${{ matrix.name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate native Windows installation helpers before building
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/tests/windows-test-support.test.ps1
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+          cache: npm
+          cache-dependency-path: |
+            frontend/package.json
+            desktop/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Initialize evidence and asset directories
+        shell: bash
+        run: |
+          mkdir -p "$EVIDENCE_DIR"
+          mkdir -p release-assets
+
+      - name: Build frontend assets
+        run: npm --prefix frontend run build
+
+      - name: Build Linux backend resource
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/resources
+          cd backend
+          go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare
+
+      - name: Build Windows backend resource
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/resources | Out-Null
+          Push-Location backend
+          go build -trimpath -o ../desktop/src-tauri/resources/omnishare.exe ./cmd/omnishare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Install locked desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Prepare verified Linux AppImage tools
+        id: linux-tools
+        if: runner.os == 'Linux'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/prepare-linux-appimage-tools.py
+
+      - name: Prepare verified Windows installer tools
+        if: runner.os == 'Windows'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare-windows-bundle-tools.py
+
+      - name: Desktop release contract tests
+        run: npm --prefix desktop run test:contracts
+
+      - name: Generate application icons
+        run: npm --prefix desktop run prebuild
+
+      - name: Rust format check
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo fmt --check 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-fmt.log"
+
+      - name: Rust clippy
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-clippy.log"
+
+      - name: Rust unit tests
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --all-features 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-test.log"
+
+      - name: Build Tauri bundle
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        shell: bash
+        env:
+          LDAI_RUNTIME_FILE: ${{ steps.linux-tools.outputs.runtime_path }}
+        run: |
+          test -n "$LDAI_RUNTIME_FILE"
+          [[ "$LDAI_RUNTIME_FILE" = /* ]]
+          test -f "$LDAI_RUNTIME_FILE"
+          npm run build -- --verbose
+
+      - name: Build Tauri bundle (Windows)
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        run: npm run build
+
+      - name: Verify embedded Microsoft WebView2 offline installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-webview-runtime-evidence.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Windows actual installation and usability tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-runtime-smoke-ci.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Generate Windows SHA256 evidence
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem desktop/src-tauri/target/release/bundle -Recurse -File |
+            ForEach-Object {
+              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+              [PSCustomObject]@{ Path = $_.FullName; Size = $_.Length; SHA256 = $hash.Hash }
+            } |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -Path "$env:EVIDENCE_DIR/bundle-sha256.json" -Encoding UTF8
+
+      - name: Generate Linux SHA256 evidence
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          find desktop/src-tauri/target/release/bundle -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "$EVIDENCE_DIR/bundle-sha256.txt"
+
+      - name: Stage Windows release files
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem desktop/src-tauri/target/release/bundle -Recurse -File |
+            Where-Object { $_.Extension -eq '.msi' -or $_.Name -like '*setup.exe' } |
+            ForEach-Object { Copy-Item $_.FullName -Destination release-assets -Force }
+          Copy-Item "$env:EVIDENCE_DIR/bundle-sha256.json" release-assets/omnishare-windows-sha256.json -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-runtime-smoke.junit.xml" release-assets/omnishare-windows-runtime.junit.xml -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-watchdog-recovery.junit.xml" release-assets/omnishare-windows-watchdog.junit.xml -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-watchdog-recovery.json" release-assets/omnishare-windows-watchdog.json -Force
+          Copy-Item "$env:EVIDENCE_DIR/windows-install-smoke.json" release-assets/omnishare-windows-installation.json -Force
+
+      - name: Stage Linux release files
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          find desktop/src-tauri/target/release/bundle -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+            -exec cp '{}' release-assets/ \;
+          cp "$EVIDENCE_DIR/bundle-sha256.txt" release-assets/omnishare-linux-sha256.txt
+          test "$(find release-assets -type f | wc -l)" -ge 2
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.name }}
+          path: release-assets/**
+          if-no-files-found: error
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-test-evidence-${{ matrix.name }}
+          path: ${{ env.EVIDENCE_DIR }}/**
+          if-no-files-found: warn
+
+  verify-ubuntu:
+    name: Install and use Ubuntu ${{ matrix.version }} packages
+    needs:
+      - release-metadata
+      - build-and-test
+    runs-on: ubuntu-${{ matrix.version }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['22.04', '24.04']
+    steps:
+      - name: Checkout installation verification code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download this run's Ubuntu 22.04 baseline packages
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets-Linux
+          path: linux-candidates
+
+      - name: Install native GUI acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus-x11 xdotool at-spi2-core libatk-adaptor \
+            python3-pyatspi python3-gi scrot desktop-file-utils binutils fonts-noto-cjk
+
+      - name: Install DEB and run AppImage with real WebKit and persistent data
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t debs < <(find linux-candidates -type f -name 'OmniShare_*.deb')
+          mapfile -t images < <(find linux-candidates -type f -name 'OmniShare_*.AppImage')
+          test "${#debs[@]}" -eq 1
+          test "${#images[@]}" -eq 1
+          xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- \
+            /usr/bin/python3 desktop/tests/linux-installed-smoke.py \
+              --deb "${debs[0]}" --appimage "${images[0]}" \
+              --version "$RELEASE_VERSION" --evidence ubuntu-install-evidence
+
+      - name: Stage verified Ubuntu installation report
+        env:
+          UBUNTU_VERSION: ${{ matrix.version }}
+        run: |
+          mkdir -p release-assets
+          cp ubuntu-install-evidence/linux-installed-smoke.json \
+            "release-assets/omnishare-ubuntu-${UBUNTU_VERSION}-installation.json"
+
+      - name: Upload verified Ubuntu installation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-Ubuntu-${{ matrix.version }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Upload Ubuntu GUI screenshots and feature evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ubuntu-installation-${{ matrix.version }}
+          path: ubuntu-install-evidence/
+          if-no-files-found: warn
+
+  verify-assets:
+    name: Verify combined server and desktop assets
+    needs:
+      - release-metadata
+      - build-server
+      - verify-macos
+      - build-and-test
+      - verify-ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download verified release files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify staged assets
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          MACOS_VERIFICATION_MODE: ${{ needs.release-metadata.outputs.macos_mode }}
+          EXPECTED_TEAM_ID: ${{ github.event_name != 'pull_request' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum -c SHA256SUMS.txt)
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const version = process.env.RELEASE_VERSION;
+          const root = 'release-assets';
+          const names = fs.readdirSync(root);
+          // Server and desktop filenames must remain distinct on systems that
+          // compare release asset names without case sensitivity.
+          const foldedNames = new Map();
+          for (const name of names) {
+            const folded = name.toLowerCase();
+            if (foldedNames.has(folded)) {
+              throw new Error(`Release asset names must be unique ignoring case: ${foldedNames.get(folded)} and ${name}`);
+            }
+            foldedNames.set(folded, name);
+          }
+          const read = name => fs.readFileSync(path.join(root, name));
+          const text = name => read(name).toString('utf8').replace(/^\uFEFF/, '');
+          const requireFile = name => {
+            const stat = fs.statSync(path.join(root, name));
+            if (!stat.isFile() || stat.size === 0) throw new Error(`Missing or empty release asset: ${name}`);
+          };
+          const requireMatches = (label, pattern) => {
+            const matches = names.filter(name => pattern.test(name));
+            if (!matches.length) throw new Error(`Missing release asset: ${label}`);
+            matches.forEach(requireFile);
+            return matches;
+          };
+          const parseHashes = (name, strict = false) => {
+            const hashes = new Map();
+            for (const line of text(name).trim().split(/\r?\n/)) {
+              const match = /^([0-9a-fA-F]{64}) [ *](.+)$/.exec(line);
+              if (!match) throw new Error(`Malformed checksum record in ${name}`);
+              const basename = path.posix.basename(match[2]);
+              if (strict && (basename !== match[2] || hashes.has(basename))) {
+                throw new Error(`Ambiguous checksum record in ${name}`);
+              }
+              hashes.set(basename, match[1].toLowerCase());
+            }
+            return hashes;
+          };
+          const verifyHash = (name, hashes) => {
+            requireFile(name);
+            const actual = crypto.createHash('sha256').update(read(name)).digest('hex');
+            if (hashes.get(name) !== actual) throw new Error(`Missing or incorrect SHA256 for ${name}`);
+          };
+
+          const serverHashes = parseHashes('SHA256SUMS.txt', true);
+          const expectedHashes = new Map();
+          for (const arch of ['amd64', 'arm64']) {
+            for (const name of [
+              `OmniShare-v${version}-windows-${arch}.zip`,
+              `OmniShare-v${version}-linux-${arch}.tar.gz`,
+              `omnishare-server_${version}_${arch}.deb`
+            ]) {
+              verifyHash(name, serverHashes);
+              expectedHashes.set(name, serverHashes.get(name));
+            }
+          }
+          for (const name of ['README.md', `RELEASE_NOTES_v${version}.md`, 'SECURE_SHARING.md']) {
+            verifyHash(name, serverHashes);
+            expectedHashes.set(name, serverHashes.get(name));
+          }
+
+          // Formal publication requires Developer ID, accepted notarization,
+          // attached tickets and Gatekeeper acceptance for both final formats.
+          const { verifyMacEvidence } = require('./scripts/verify-macos-evidence.cjs');
+          for (const arch of ['amd64', 'arm64']) {
+            const records = verifyMacEvidence({
+              root, version, arch, mode: process.env.MACOS_VERIFICATION_MODE,
+              expectedTeam: process.env.EXPECTED_TEAM_ID
+            });
+            for (const [name, hash] of records) expectedHashes.set(name, hash);
+          }
+          const windows = [
+            ...requireMatches('Windows MSI', /^OmniShare_.+_x64_en-US\.msi$/),
+            ...requireMatches('Windows NSIS installer', /^OmniShare_.+_x64-setup\.exe$/)
+          ];
+          const windowsRecords = JSON.parse(text('omnishare-windows-sha256.json'));
+          const windowsHashes = new Map([].concat(windowsRecords).map(record => [
+            path.posix.basename(String(record.Path).replace(/\\/g, '/')),
+            String(record.SHA256).toLowerCase()
+          ]));
+          windows.forEach(name => verifyHash(name, windowsHashes));
+          const linux = ['AppImage', 'deb', 'rpm'].flatMap(ext =>
+            requireMatches(`Linux desktop ${ext}`, new RegExp(`^OmniShare[_.-].+\\.${ext}$`))
+          );
+          const linuxHashes = parseHashes('omnishare-linux-sha256.txt');
+          linux.forEach(name => verifyHash(name, linuxHashes));
+          const { verifyInstallationEvidence } = require('./scripts/verify-installation-evidence.cjs');
+          for (const [name, hash] of verifyInstallationEvidence({ root, version })) {
+            expectedHashes.set(name, hash);
+          }
+
+          for (const name of ['omnishare-windows-runtime.junit.xml', 'omnishare-windows-watchdog.junit.xml']) {
+            const report = text(name);
+            if (!/<testsuite\b[^>]*\btests=["'][1-9]\d*["']/.test(report) ||
+                /\b(?:failures|errors)=["'][1-9]\d*["']|<(?:failure|error)\b/.test(report)) {
+              throw new Error(`Missing or unsuccessful runtime evidence: ${name}`);
+            }
+          }
+          if (JSON.parse(text('omnishare-windows-watchdog.json')).success !== true) {
+            throw new Error('Windows watchdog recovery did not pass');
+          }
+          const expectedDmgs = new Set(['amd64', 'arm64'].map(arch => `OmniShare-v${version}-macos-${arch}.dmg`));
+          if (names.some(name => /\.dmg$/i.test(name) && !expectedDmgs.has(name))) {
+            throw new Error('Unexpected macOS installer outside the native verification gate');
+          }
+          if (names.length !== 29) throw new Error(`Expected exactly 29 publication files, found ${names.length}`);
+          // Include every public file, including desktop installers and their
+          // native installation reports, in the final portable checksum list.
+          for (const name of names) {
+            if (name === 'SHA256SUMS.txt') continue;
+            requireFile(name);
+            const actual = crypto.createHash('sha256').update(read(name)).digest('hex');
+            if (expectedHashes.has(name) && expectedHashes.get(name) !== actual) throw new Error(`Verified file changed: ${name}`);
+            expectedHashes.set(name, actual);
+          }
+          // A rerun must preserve every previously validated digest; never
+          // replace stale or unapproved records with newly computed hashes.
+          for (const [name, hash] of serverHashes) {
+            if (expectedHashes.get(name) !== hash) throw new Error(`Unexpected or incorrect checksum record: ${name}`);
+          }
+          // Write only after every platform has passed. A failed second Mac
+          // architecture must leave the original server checksum list intact.
+          const checksumFile = path.join(root, 'SHA256SUMS.txt');
+          const temporary = path.join(root, '.SHA256SUMS.txt.tmp');
+          fs.writeFileSync(temporary, [...expectedHashes].sort(([a], [b]) => a.localeCompare(b, 'en'))
+            .map(([name, hash]) => `${hash}  ${name}\n`).join(''), { flag: 'wx' });
+          fs.renameSync(temporary, checksumFile);
+          console.log(`Verified server, native macOS, and Windows/Linux desktop release assets for ${version}`);
+          NODE
+
+      - name: Upload combined verified assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-prerelease-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    permissions:
+      contents: write
+    name: Create GitHub release
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.release-metadata.outputs.macos_mode == 'release'
+    needs:
+      - release-metadata
+      - verify-assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download combined verified assets
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-prerelease-assets
+          path: release-assets
+
+      - name: Require notarized macOS evidence before publishing
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          node <<'NODE'
+          const { verifyMacEvidence } = require('./scripts/verify-macos-evidence.cjs');
+          for (const arch of ['amd64', 'arm64']) verifyMacEvidence({
+            root: 'release-assets', version: process.env.RELEASE_VERSION, arch,
+            mode: 'release', expectedTeam: process.env.EXPECTED_TEAM_ID
+          });
+          const { verifyInstallationEvidence } = require('./scripts/verify-installation-evidence.cjs');
+          verifyInstallationEvidence({ root: 'release-assets', version: process.env.RELEASE_VERSION });
+          NODE
+
+      - name: Verify existing tag target
+        shell: bash
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if refs="$(git ls-remote --exit-code --tags origin "refs/tags/${TAG}" "refs/tags/${TAG}^{}")"; then
+            target="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/${TAG}^{}" '$2 == ref { print $1 }')"
+            if [ -z "$target" ]; then
+              target="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/${TAG}" '$2 == ref { print $1 }')"
+            fi
+            if [ "$target" != "$GITHUB_SHA" ]; then
+              echo "::error::Existing tag ${TAG} points to ${target}, expected ${GITHUB_SHA}; refusing to replace its release assets."
+              exit 1
+            fi
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              echo "::error::Unable to verify the existing tag target."
+              exit "$status"
+            fi
+          fi
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-metadata.outputs.tag }}
+          name: ${{ needs.release-metadata.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ needs.release-metadata.outputs.prerelease }}
+          make_latest: ${{ needs.release-metadata.outputs.make_latest }}
+          draft: false
+          body_path: ${{ needs.release-metadata.outputs.notes }}
+          files: release-assets/**/*
+
+      - name: Verify published release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GH_REPO}/releases/tags/${TAG}" > published-release.json
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const release = JSON.parse(fs.readFileSync('published-release.json', 'utf8'));
+          const expectedPrerelease = process.env.RELEASE_PRERELEASE;
+          if (!['true', 'false'].includes(expectedPrerelease)) {
+            throw new Error('Expected release type must be explicitly true or false');
+          }
+          if (release.tag_name !== process.env.TAG || release.draft !== false || release.prerelease !== (expectedPrerelease === 'true')) {
+            throw new Error('Published release tag or release type does not match the request');
+          }
+          if (!Array.isArray(release.assets)) throw new Error('Published release has no asset list');
+          const root = 'release-assets';
+          const expected = fs.readdirSync(root, { withFileTypes: true }).map(entry => {
+            if (!entry.isFile()) throw new Error(`Unexpected non-file release asset: ${entry.name}`);
+            return entry.name;
+          });
+          const published = new Map(release.assets.map(asset => [asset.name, asset]));
+          if (published.size !== release.assets.length) throw new Error('Published release has duplicate asset names');
+          const missing = expected.filter(name => !published.has(name));
+          const unexpected = [...published.keys()].filter(name => !expected.includes(name));
+          if (missing.length || unexpected.length) {
+            throw new Error(`Published asset names changed: missing=${JSON.stringify(missing)}, unexpected=${JSON.stringify(unexpected)}`);
+          }
+          // Verify only the files staged for this release. The Linux build hash
+          // evidence also lists AppDir libraries that are not public assets.
+          for (const name of expected) {
+            const contents = fs.readFileSync(path.join(root, name));
+            const asset = published.get(name);
+            const digest = `sha256:${crypto.createHash('sha256').update(contents).digest('hex')}`;
+            if (asset.state !== 'uploaded' || asset.size !== contents.length || asset.digest !== digest) {
+              throw new Error(`Published asset is incomplete or has a different SHA256: ${name}`);
+            }
+          }
+          console.log(`Verified ${expected.length} public release asset names, sizes and SHA256 digests for ${release.tag_name}`);
+          NODE
+
+
+  cleanup-macos-repair-branch:
+    name: Remove the merged macOS repair branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Azurefly/omnishare' && needs.release-metadata.outputs.tag == 'v0.1.1'
+    needs:
+      - release-metadata
+      - publish
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout merged release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Remove only the reviewed merged branch with an exact lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch_ref=refs/heads/fix/macos-release-20261108
+          expected="$(git rev-parse --verify "${GITHUB_SHA}^2")"
+          main="$(git ls-remote --exit-code --heads origin refs/heads/main)"
+          test "${main%%[[:space:]]*}" = "$GITHUB_SHA"
+          if remote="$(git ls-remote --exit-code --heads origin "$branch_ref")"; then
+            read -r actual actual_ref <<< "$remote"
+            test "$actual_ref" = "$branch_ref"
+            test "$actual" = "$expected"
+            git merge-base --is-ancestor "$actual" "$GITHUB_SHA"
+            git push --atomic --force-with-lease="$branch_ref:$expected" origin ":$branch_ref"
+          else
+            status=$?
+            test "$status" -eq 2
+          fi
+
+  cleanup-version-reset:
+    name: Retire approved legacy releases and merged refs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Azurefly/omnishare' && needs.release-metadata.outputs.tag == 'v0.1.0'
+    needs:
+      - release-metadata
+      - publish
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout complete release history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.1'
+      - name: Download this run's verified publication files
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-prerelease-assets
+          path: release-assets
+      - name: Reverify the new release and retire reviewed legacy objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/cleanup-release-history.mjs --apply
+      - name: Save cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: version-reset-cleanup-result
+          path: release-cleanup-evidence/
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "repository": "Azurefly/omnishare",
+  "source_commit": "4e9e809bd5a70e4bbaa4c6bc71adfab05cc56dde",
+  "internal_version": "0.1.1",
+  "distribution": "test-build",
+  "all_platform_native_acceptance_passed": false,
+  "apple_notarized": false,
+  "build_workflow_configuration_commit": "1329894cd438f8ff407d9d535a4c9e4c15c91be8",
+  "tag": "v0.1.1-lan.1",
+  "artifacts": [
+    {"id":13923332494,"name":"release-assets-Server","run":43173998801,"sha":"4e9e809bd5a70e4bbaa4c6bc71adfab05cc56dde","digest":"2e11c82b1be3c36a7d991bb63206da734e005ef25f1e74a925052bcba8aa5255"},
+    {"id":13924181081,"name":"omnishare-desktop-Linux","run":43173998632,"sha":"4e9e809bd5a70e4bbaa4c6bc71adfab05cc56dde","digest":"b51fcb8b419da3bec9db4663d212721b50d1c406f45eceece24bb2650d0a00b3"},
+    {"id":13922974627,"name":"omnishare-desktop-macOS-universal","run":43173998632,"sha":"4e9e809bd5a70e4bbaa4c6bc71adfab05cc56dde","digest":"e262c884921cb374e887d5fde71629cff4d352cd5817ec7951c1fa2feb5d294b"},
+    {"id":13924541255,"name":"OmniShare-Windows-EXE-4e9e809-test","run":43175171262,"sha":"1329894cd438f8ff407d9d535a4c9e4c15c91be8","digest":"99a64c6fa16beb120cf6607cfb7bb963cd92f79439824d1be5c48143e2717df4"},
+    {"id":13923279742,"name":"OmniShare-Windows-MSI-4e9e809-test","run":43175171262,"sha":"1329894cd438f8ff407d9d535a4c9e4c15c91be8","digest":"cb80f2b92797adf8fb0af6f0a9fff5738b502ea913160be7296a67bccd43eb44"}
+  ],
+  "files": [
+    {"file":"OmniShare-4e9e809-linux-amd64-portable.tar.gz","size_bytes":5149909,"sha256":"01800eaa2919220f59acf45a00048efbb9d706efc372a00b387b042fa3d7f4e2","artifact_id":13923332494,"workflow_run_id":43173998801,"member":"OmniShare-v0.1.1-linux-amd64.tar.gz","validation_scope":"downloaded Linux amd64 package passed isolated HTTP and two-process multicast smoke tests; no cross-OS physical LAN test"},
+    {"file":"OmniShare-4e9e809-linux-amd64-test.AppImage","size_bytes":92191224,"sha256":"70d7b5850466ae43e4903156979cd4a2fd065f10356b97df607c0af9e1d85576","artifact_id":13924181081,"workflow_run_id":43173998632,"member":"release/bundle/appimage/OmniShare_0.1.1_amd64.AppImage","validation_scope":"built on Ubuntu 22.04; package metadata and glibc symbols inspected; full Ubuntu installation acceptance not completed"},
+    {"file":"OmniShare-4e9e809-linux-arm64-portable.tar.gz","size_bytes":4699627,"sha256":"b65b6e28782ec96d0225ec1681901027920edcb9ba43909c45709864ef8ba72b","artifact_id":13923332494,"workflow_run_id":43173998801,"member":"OmniShare-v0.1.1-linux-arm64.tar.gz","validation_scope":"cross-compiled; packaged; archive/checksum verification; not native runtime acceptance"},
+    {"file":"OmniShare-4e9e809-macos-universal-test.dmg","size_bytes":25776980,"sha256":"daa7014f51704c8a4ba79057986c68f3a8c8b64d07bc166349e10de3f954b400","artifact_id":13922974627,"workflow_run_id":43173998632,"member":"universal-apple-darwin/release/bundle/dmg/OmniShare_0.1.1_universal.dmg","validation_scope":"built; dual architecture verified; not Developer ID signed or notarized; no full native acceptance"},
+    {"file":"OmniShare-4e9e809-ubuntu-amd64-test.deb","size_bytes":14273656,"sha256":"ebe075e13d4b94694068312f4745c91d1b3ebbd2baeae467f4e6381701358e85","artifact_id":13924181081,"workflow_run_id":43173998632,"member":"release/bundle/deb/OmniShare_0.1.1_amd64.deb","validation_scope":"built on Ubuntu 22.04; package metadata and glibc symbols inspected; full Ubuntu installation acceptance not completed"},
+    {"file":"OmniShare-4e9e809-windows-amd64-portable.zip","size_bytes":5255607,"sha256":"1619498feab7748536d1e65caf2cad60152ed9338c2211b909ab47e7d2afab01","artifact_id":13923332494,"workflow_run_id":43173998801,"member":"OmniShare-v0.1.1-windows-amd64.zip","validation_scope":"cross-compiled; packaged; archive/checksum verification; not native runtime acceptance"},
+    {"file":"OmniShare-4e9e809-windows-arm64-portable.zip","size_bytes":4741174,"sha256":"96f07069c8e3ac76aa78e64264ab2636c822ab2be941cd8890aa60143b587a31","artifact_id":13923332494,"workflow_run_id":43173998801,"member":"OmniShare-v0.1.1-windows-arm64.zip","validation_scope":"cross-compiled; packaged; archive/checksum verification; not native runtime acceptance"},
+    {"file":"OmniShare-4e9e809-windows-x64-test-setup.exe","size_bytes":228827014,"sha256":"57b5ade0caf1550a4874ca36fbf85918345e6f1259f0de313d737d4d6447cb46","artifact_id":13924541255,"workflow_run_id":43175171262,"member":"OmniShare_0.1.1_x64-setup.exe","validation_scope":"built; Microsoft runtime inputs verified; native installation acceptance not passed"},
+    {"file":"OmniShare-4e9e809-windows-x64-test.msi","size_bytes":228392960,"sha256":"170506f41ebc92a4e356484f1aeee9500df7c741a4d198b2e6789e74d773ddb8","artifact_id":13923279742,"workflow_run_id":43175171262,"member":"OmniShare_0.1.1_x64_en-US.msi","validation_scope":"built; Microsoft runtime inputs verified; native installation acceptance not passed"}
+  ]
+}

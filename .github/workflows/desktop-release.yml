@@ -1,0 +1,271 @@
+name: Desktop Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'scripts/build-tauri-desktop.*'
+      - 'scripts/prepare-linux-appimage-tools.py'
+      - 'scripts/prepare_linux_appimage_tools_test.py'
+      - 'scripts/prepare-windows-bundle-tools.py'
+      - 'scripts/prepare_windows_bundle_tools_test.py'
+      - 'scripts/release_tool_downloads.py'
+      - '.github/workflows/desktop-release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-desktop:
+    name: Build and test desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    # Validate both stable and prerelease versions. The build wrapper maps MSI
+    # and RPM version constraints; only the main Publish Release workflow
+    # publishes assets after the complete release has passed verification.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            artifact: omnishare-desktop-Linux
+          - name: Windows
+            os: windows-latest
+            artifact: omnishare-desktop-Windows
+          - name: macOS-universal
+            os: macos-latest
+            artifact: omnishare-desktop-macOS-universal
+
+    env:
+      EVIDENCE_DIR: desktop-test-evidence/${{ matrix.name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate native Windows installation helpers before building
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/tests/windows-test-support.test.ps1
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.1'
+          cache: npm
+          cache-dependency-path: |
+            frontend/package.json
+            desktop/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Initialize test evidence directory
+        shell: bash
+        run: mkdir -p "$EVIDENCE_DIR"
+
+      - name: Install macOS universal Rust targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build frontend assets
+        run: npm --prefix frontend run build
+
+      - name: Build backend resource (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/resources
+          cd backend
+          go build -trimpath -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare
+
+      - name: Build universal backend resource (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/resources
+          cd backend
+          GOOS=darwin GOARCH=arm64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-arm64 ./cmd/omnishare
+          GOOS=darwin GOARCH=amd64 go build -trimpath -o ../desktop/src-tauri/resources/omnishare-x86_64 ./cmd/omnishare
+          lipo -create \
+            ../desktop/src-tauri/resources/omnishare-arm64 \
+            ../desktop/src-tauri/resources/omnishare-x86_64 \
+            -output ../desktop/src-tauri/resources/omnishare
+          chmod +x ../desktop/src-tauri/resources/omnishare
+          rm ../desktop/src-tauri/resources/omnishare-arm64 ../desktop/src-tauri/resources/omnishare-x86_64
+          lipo -archs ../desktop/src-tauri/resources/omnishare | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/backend-architectures.txt"
+
+      - name: Build backend resource (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/resources | Out-Null
+          Push-Location backend
+          go build -trimpath -o ../desktop/src-tauri/resources/omnishare.exe ./cmd/omnishare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Install locked desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Prepare verified Linux AppImage tools
+        id: linux-tools
+        if: runner.os == 'Linux'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/prepare-linux-appimage-tools.py
+
+      - name: Prepare verified Windows installer tools
+        if: runner.os == 'Windows'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare-windows-bundle-tools.py
+
+      - name: Run desktop release contract tests
+        run: npm --prefix desktop run test:contracts
+
+      - name: Generate build icons before Rust checks
+        run: npm --prefix desktop run prebuild
+
+      - name: Rust format check
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo fmt --check 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-fmt.log"
+
+      - name: Rust clippy
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-clippy.log"
+
+      - name: Rust unit tests
+        if: runner.os == 'Linux'
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --all-features 2>&1 | tee "$GITHUB_WORKSPACE/$EVIDENCE_DIR/cargo-test.log"
+
+      - name: Build Tauri bundle
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        shell: bash
+        env:
+          LDAI_RUNTIME_FILE: ${{ steps.linux-tools.outputs.runtime_path }}
+        run: |
+          test -n "$LDAI_RUNTIME_FILE"
+          [[ "$LDAI_RUNTIME_FILE" = /* ]]
+          test -f "$LDAI_RUNTIME_FILE"
+          npm run build -- --verbose
+
+      - name: Build Tauri bundle (Windows)
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        run: npm run build
+
+      - name: Build unsigned universal Tauri bundle (macOS validation)
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        run: npm run build -- --target universal-apple-darwin
+
+      - name: Verify macOS universal architectures
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH="$(find desktop/src-tauri/target/universal-apple-darwin/release/bundle -type d -name '*.app' | head -n 1)"
+          test -n "$APP_PATH"
+          APP_BINARY="$(find "$APP_PATH/Contents/MacOS" -type f -perm -111 | head -n 1)"
+          BACKEND_BINARY="$(find "$APP_PATH/Contents" -type f -name omnishare | head -n 1)"
+          test -n "$APP_BINARY"
+          test -n "$BACKEND_BINARY"
+          lipo -archs "$APP_BINARY" | tee "$EVIDENCE_DIR/app-architectures.txt"
+          lipo -archs "$BACKEND_BINARY" | tee "$EVIDENCE_DIR/bundled-backend-architectures.txt"
+          grep -q arm64 "$EVIDENCE_DIR/app-architectures.txt"
+          grep -q x86_64 "$EVIDENCE_DIR/app-architectures.txt"
+          grep -q arm64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
+          grep -q x86_64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
+
+      - name: Verify embedded Microsoft WebView2 offline installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-webview-runtime-evidence.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Windows actual installation and usability tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./desktop/tests/windows-runtime-smoke-ci.ps1 `
+            -BundleRoot "desktop/src-tauri/target/release/bundle" `
+            -EvidenceRoot "$env:EVIDENCE_DIR"
+
+      - name: Generate bundle SHA256 evidence (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem desktop/src-tauri/target/release/bundle -Recurse -File |
+            ForEach-Object {
+              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+              [PSCustomObject]@{ Path = $_.FullName; Size = $_.Length; SHA256 = $hash.Hash }
+            } |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -Path "$env:EVIDENCE_DIR/bundle-sha256.json" -Encoding UTF8
+
+      - name: Generate bundle SHA256 evidence (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BUNDLE_ROOT="desktop/src-tauri/target/release/bundle"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            BUNDLE_ROOT="desktop/src-tauri/target/universal-apple-darwin/release/bundle"
+            find "$BUNDLE_ROOT" -type f -print0 | sort -z | xargs -0 shasum -a 256 > "$EVIDENCE_DIR/bundle-sha256.txt"
+          else
+            find "$BUNDLE_ROOT" -type f -print0 | sort -z | xargs -0 sha256sum > "$EVIDENCE_DIR/bundle-sha256.txt"
+          fi
+
+      - name: Upload desktop bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            desktop/src-tauri/target/release/bundle/**
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/**
+          if-no-files-found: error
+
+      - name: Upload desktop test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnishare-test-evidence-${{ matrix.name }}
+          path: ${{ env.EVIDENCE_DIR }}/**
+          if-no-files-found: warn

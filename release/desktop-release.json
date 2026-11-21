@@ -1,0 +1,18 @@
+{
+  "tag": "v1.0.0",
+  "name": "OmniShare v1.0.0",
+  "notes": "docs/RELEASE_NOTES_v1.0.0.md",
+  "prerelease": false,
+  "platforms": [],
+  "macos": {
+    "tauri_published": false,
+    "server_zip_signed": false,
+    "signing_mode": "none",
+    "notarized": false,
+    "minimum_system_version": "12.0",
+    "reason": "v1.0.0 is a source release.",
+    "dmg_published": false
+  },
+  "release_date": "2026-11-21",
+  "publication_channel": "source"
+}

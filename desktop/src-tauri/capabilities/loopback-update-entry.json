@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "loopback-update-entry",
+  "description": "The current native loopback workbench may only open the update window. Rust additionally checks its exact active origin.",
+  "windows": [
+    "main"
+  ],
+  "local": false,
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*"
+    ]
+  },
+  "permissions": [
+    "open-update-window",
+    "quit-desktop-app"
+  ]
+}

@@ -1,0 +1,95 @@
+name: Direct desktop upgrade regression
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['desktop/src-tauri/src/updates/**', 'desktop/tests/native-upgrade*', 'desktop/tests/native_upgrade_tls_test.py', '.github/workflows/direct-upgrade.yml']
+permissions:
+  contents: read
+concurrency:
+  group: direct-upgrade-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    name: Real upgrade (${{ matrix.os }}, ${{ matrix.kind }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, kind: appimage}
+          - {os: ubuntu-22.04, kind: deb}
+          - {os: ubuntu-24.04, kind: deb}
+          - {os: windows-latest, kind: nsis}
+          - {os: windows-latest, kind: msi}
+          - {os: macos-15, kind: app}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: {node-version: '22.23.1'}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - name: Validate real fixture TLS before compiling applications
+        run: python desktop/tests/native_upgrade_tls_test.py
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb dbus-x11 fonts-noto-cjk
+      - name: AppImage runtime dependencies
+        if: matrix.kind == 'appimage'
+        run: sudo apt-get install -y libfuse2
+      - name: Locked signer and test resources
+        shell: bash
+        run: |
+          npm --prefix desktop ci --ignore-scripts
+          npm --prefix frontend run build
+          npm --prefix desktop run prebuild
+          npm --prefix desktop run test:contracts
+      - name: Verify Linux bundle tools
+        id: tools
+        if: matrix.kind == 'appimage'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/prepare-linux-appimage-tools.py
+      - name: Verify Windows bundle tools
+        if: runner.os == 'Windows'
+        env:
+          OMNISHARE_TOOL_GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/prepare-windows-bundle-tools.py
+      - name: Actual production Rust tests
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p desktop/src-tauri/resources
+          (cd backend && go build -o ../desktop/src-tauri/resources/omnishare ./cmd/omnishare)
+          (cd desktop/src-tauri && cargo fmt --check && cargo clippy --all-targets --all-features --locked -- -D warnings && cargo test --all-features --locked)
+      - name: Install old application, reject invalid updates, install and restart new application
+        if: runner.os != 'Linux'
+        run: python desktop/tests/native-upgrade-test.py --kind '${{ matrix.kind }}' --evidence upgrade-evidence
+      - name: Install and upgrade actual Linux package under native X11
+        if: runner.os == 'Linux'
+        env:
+          LDAI_RUNTIME_FILE: ${{ steps.tools.outputs.runtime_path }}
+        run: xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session -- python3 desktop/tests/native-upgrade-test.py --kind '${{ matrix.kind }}' --evidence upgrade-evidence
+      - name: Ensure fixture identity never changed checked-out production sources
+        if: always()
+        shell: bash
+        run: |
+          git diff --exit-code
+          test ! -e desktop/src-tauri/src/updates/fixture.rs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: direct-upgrade-${{ matrix.os }}-${{ matrix.kind }}
+          path: upgrade-evidence/
+          if-no-files-found: warn
+          retention-days: 14

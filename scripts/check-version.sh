@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+python3 - "$ROOT" "$VERSION" <<'PY'
+import json,re,sys
+from pathlib import Path
+root=Path(sys.argv[1]); expected=sys.argv[2]
+package=json.loads((root/'frontend/package.json').read_text())['version']
+if package!=expected: raise SystemExit(f'frontend version {package} != {expected}')
+text=(root/'backend/internal/buildinfo/version.go').read_text()
+m=re.search(r'const Version = "([^"]+)"',text)
+if not m or m.group(1)!=expected: raise SystemExit('backend build version mismatch')
+sw=(root/'frontend/web/service-worker.js').read_text()
+if f'omnishare-v{expected}' not in sw: raise SystemExit('service worker cache version mismatch')
+desktop_package=json.loads((root/'desktop/package.json').read_text())['version']
+desktop_lock=json.loads((root/'desktop/package-lock.json').read_text())
+if desktop_lock.get('version')!=expected or desktop_lock.get('packages',{}).get('',{}).get('version')!=expected:
+    raise SystemExit('desktop npm lockfile version mismatch')
+desktop_cargo=(root/'desktop/src-tauri/Cargo.toml').read_text()
+m=re.search(r'^version\s*=\s*"([^"]+)"',desktop_cargo,re.M)
+if not m or m.group(1)!=expected: raise SystemExit('desktop Cargo version mismatch')
+desktop_tauri=json.loads((root/'desktop/src-tauri/tauri.conf.json').read_text())['version']
+if desktop_package!=expected: raise SystemExit(f'desktop package version {desktop_package} != {expected}')
+if desktop_tauri!=expected: raise SystemExit(f'desktop tauri version {desktop_tauri} != {expected}')
+manifest=json.loads((root/'release/desktop-release.json').read_text())
+if manifest.get('tag') != f'v{expected}': raise SystemExit('release manifest tag version mismatch')
+notes=f'docs/RELEASE_NOTES_v{expected}.md'
+if manifest.get('notes') != notes or not (root/notes).is_file():
+    raise SystemExit('release notes version mismatch or missing file')
+if type(manifest.get('prerelease')) is not bool or manifest['prerelease'] != ('-' in expected):
+    raise SystemExit('release prerelease flag does not match VERSION')
+print(f'Version consistency passed: {expected}')
+PY

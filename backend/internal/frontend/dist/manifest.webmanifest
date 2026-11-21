@@ -1,0 +1,10 @@
+{
+  "name": "OmniShare",
+  "short_name": "OmniShare",
+  "description": "私有化跨设备速记、文件与协同工作台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080c16",
+  "theme_color": "#0b1020",
+  "icons": [{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}

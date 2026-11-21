@@ -1,0 +1,19 @@
+[[permission]]
+identifier = "desktop-bootstrap"
+description = "Configure and start this desktop backend from the bundled first-run page."
+commands.allow = ["health", "desktop_settings", "desktop_boot", "backend_status", "backend_start", "backend_stop"]
+
+[[permission]]
+identifier = "open-update-window"
+description = "Open the bundled software update window. No download or install permission."
+commands.allow = ["open_updates"]
+
+[[permission]]
+identifier = "quit-desktop-app"
+description = "Allow quitting the desktop application from Settings."
+commands.allow = ["quit_desktop"]
+
+[[permission]]
+identifier = "native-update-operations"
+description = "Explicit-consent update operations, restricted to the bundled updates window."
+commands.allow = ["updater_info", "check_update", "download_update", "install_update"]

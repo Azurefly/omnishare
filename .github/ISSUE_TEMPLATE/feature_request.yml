@@ -1,0 +1,24 @@
+name: Feature request
+description: 提交有明确用户价值的需求
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的真实问题
+      description: 请描述用户、场景、频率和当前替代方案。
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 可验证的验收标准
+    validations:
+      required: true
