@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
   <meta name="theme-color" content="#0b1020" />
   <meta name="description" content="OmniShare 私有化跨设备速记、文件与协同工作台" />
   <link rel="manifest" href="/manifest.webmanifest" />
@@ -37,6 +37,8 @@
     <symbol id="icon-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/></symbol>
     <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
     <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="icon-expand" viewBox="0 0 24 24"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/></symbol>
+    <symbol id="icon-contract" viewBox="0 0 24 24"><path d="M4 9h5V4m11 5h-5V4M9 20v-5H4m11 5v-5h5"/></symbol>
     <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
     <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
     <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
@@ -266,34 +268,40 @@
                 </div>
                 <div id="padWorkspace" class="pad-workspace">
                   <div id="padsList" class="pad-list"></div>
-                  <article id="padEditorCard" class="card pad-editor hidden">
+                  <article id="padEditorCard" class="card pad-editor hidden" data-writing-window>
                     <div id="padEmpty" class="empty">
                       <p>选择一篇文档，或新建一篇开始记录。</p>
                     </div>
                     <div id="padForm" class="hidden">
                       <div class="pad-editor-topbar">
                         <button type="button" id="backToPadsListBtn" class="text-button">← 返回文档列表</button>
+                        <div class="pad-editor-actions">
+                          <details id="padFolderOptionsMenu" class="pad-folder-menu">
+                            <summary class="button ghost small">目录</summary>
+                            <div class="pad-folder-field">
+                              <label for="padFolder">所属目录</label>
+                              <input id="padFolder" list="padsFolderOptions" placeholder="留空表示根目录" autocomplete="off" />
+                            </div>
+                          </details>
+                          <button id="sharePadBtn" class="button ghost small" title="创建外链分享" aria-label="分享"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>分享</span></button>
+                          <button id="deletePadBtn" class="button danger small" title="移入回收站" aria-label="删除"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>删除</span></button>
+                        </div>
                       </div>
                       <div id="padConflictActions" class="workspace-status warning hidden"><span>远端版本已更新；本地输入未覆盖。</span><button type="button" id="loadRemotePadBtn" class="button ghost small">保留草稿并载入远端</button><button type="button" id="saveDraftCopyBtn" class="button primary small">草稿另存副本</button></div>
                       <div class="pad-editor-head">
                         <label for="padTitle" class="visually-hidden">文档标题</label><input id="padTitle" class="title-input" placeholder="输入文档标题..." />
-                        <div class="pad-editor-actions">
-                          <span id="saveState" class="badge muted">未修改</span>
-                          <button type="button" id="togglePadPreviewBtn" class="button ghost small" title="切换富文本预览"><span>预览</span></button>
-                          <button id="sharePadBtn" class="button ghost small" title="创建外链分享"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>分享</span></button>
-                          <button id="deletePadBtn" class="button danger small" title="移入回收站"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>删除</span></button>
+                        <span id="saveState" class="badge muted" role="status">未修改</span>
+                      </div>
+                      <div id="padMarkdownEditor" class="markdown-editor" data-markdown-editor>
+                        <div class="markdown-sheet">
+                          <label for="padContent" class="visually-hidden">文档正文</label>
+                          <textarea id="padContent" class="markdown-source" rows="16" placeholder="开始写文档…" spellcheck="false"></textarea>
+                          <div id="padPreview" class="rich-markdown markdown-preview" tabindex="0" role="region" aria-label="文档预览" hidden></div>
                         </div>
                       </div>
-                      <div class="pad-folder-field">
-                        <label for="padFolder">所属目录</label>
-                        <input id="padFolder" list="padsFolderOptions" placeholder="留空表示根目录（如：团队/周报）" autocomplete="off" />
-                      </div>
-                      <label for="padContent" class="visually-hidden">文档正文</label>
-                      <textarea id="padContent" rows="22" placeholder="支持 Markdown 格式，开始编辑协同文档...（Ctrl+S 立即保存）"></textarea>
-                      <div id="padPreview" class="rich-markdown pad-preview hidden"></div>
                       <div class="editor-footer">
                         <span id="padMeta" class="muted-text"></span>
-                        <button id="savePadBtn" class="button primary"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg><span>保存</span></button>
+                        <button id="savePadBtn" class="button primary" title="Ctrl+S / ⌘S" aria-keyshortcuts="Control+S Meta+S"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg><span>保存</span></button>
                       </div>
                     </div>
                   </article>
@@ -479,44 +487,40 @@
   </dialog>
 
   <!-- 编辑随手记对话框 -->
-  <dialog id="editNoteDialog" class="modal" aria-labelledby="editNoteTitle">
-    <form method="dialog" class="modal-card">
+  <dialog id="editNoteDialog" class="modal note-editor-dialog" aria-labelledby="editNoteTitle" data-writing-window>
+    <form class="modal-card">
       <div class="modal-head">
         <div>
           <h2 id="editNoteTitle">编辑随手记</h2>
-          <p id="editNoteId"></p>
+          <p id="editNoteSource" class="muted-text"></p>
         </div>
-        <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
+        <button type="button" data-note-dismiss class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
-      <label for="editNoteContent" class="visually-hidden">随手记正文</label>
-      <textarea id="editNoteContent" rows="6" placeholder="随手记正文..."></textarea>
-      <div class="settings-grid edit-note-fields">
-        <label>
-          所属目录
-          <input id="editNoteFolder" list="notesFolderOptions" placeholder="留空表示根目录" autocomplete="off" />
-        </label>
-        <label>
-          标签
-          <input id="editNoteTags" placeholder="逗号分隔标签" />
-        </label>
+      <div id="editNoteMarkdownEditor" class="markdown-editor" data-markdown-editor>
+        <div class="markdown-sheet">
+          <label for="editNoteContent" class="visually-hidden">随手记正文</label>
+          <textarea id="editNoteContent" class="markdown-source" rows="10" placeholder="开始写随手记…" spellcheck="false"></textarea>
+          <div class="rich-markdown markdown-preview" tabindex="0" role="region" aria-label="随手记预览" hidden></div>
+        </div>
       </div>
-      <div class="switch-group">
-        <label class="switch-row">
-          <span>置顶</span>
-          <input id="editNotePinned" type="checkbox" role="switch" />
-        </label>
-        <label class="switch-row">
-          <span>阅后即焚</span>
-          <input id="editNoteBurn" type="checkbox" role="switch" />
-        </label>
-      </div>
-      <label>
-        最大读取次数
-        <input id="editNoteMaxReads" type="number" min="0" max="1000000" value="0" />
-      </label>
-      <div class="modal-actions">
-        <button value="cancel" formnovalidate class="button ghost">取消</button>
-        <button id="saveEditNoteBtn" type="button" class="button primary">保存更新</button>
+      <p id="editNoteError" class="error-text note-editor-error" role="alert"></p>
+      <div class="note-editor-footer">
+        <details class="note-editor-options">
+          <summary>随手记设置</summary>
+          <div class="settings-grid edit-note-fields">
+            <label>所属目录<input id="editNoteFolder" list="notesFolderOptions" placeholder="留空表示根目录" autocomplete="off" /></label>
+            <label>标签<input id="editNoteTags" placeholder="逗号分隔标签" /></label>
+            <label>最大读取次数（0 为不限）<input id="editNoteMaxReads" type="number" min="0" max="1000000" value="0" /></label>
+          </div>
+          <div class="switch-group">
+            <label class="switch-row"><span>置顶</span><input id="editNotePinned" type="checkbox" role="switch" /></label>
+            <label class="switch-row"><span>阅后即焚</span><input id="editNoteBurn" type="checkbox" role="switch" /></label>
+          </div>
+        </details>
+        <div class="modal-actions">
+          <button type="button" data-note-dismiss class="button ghost">取消</button>
+          <button id="saveEditNoteBtn" type="button" class="button primary" title="Ctrl+S / ⌘S" aria-keyshortcuts="Control+S Meta+S">保存更新</button>
+        </div>
       </div>
     </form>
   </dialog>
@@ -604,48 +608,49 @@
       <div class="modal-actions"><button type="button" id="confirmCancelBtn" class="button ghost">取消</button><button type="submit" id="confirmSubmitBtn" class="button primary">确认</button></div>
     </form>
   </dialog>
-  <dialog id="createNoteDialog" class="modal" aria-labelledby="createNoteTitle">
+  <dialog id="createNoteDialog" class="modal note-editor-dialog" aria-labelledby="createNoteTitle" data-writing-window>
     <form id="createNoteForm" class="modal-card">
       <div class="modal-head">
         <div>
           <h2 id="createNoteTitle">新建随手记</h2>
-          <p class="muted-text">记录文本、代码或灵感，按 Ctrl+Enter 发布。</p>
         </div>
-        <button type="button" id="closeCreateNoteBtn" class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
+        <button type="button" id="closeCreateNoteBtn" data-note-dismiss class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
-      <label for="noteContent" class="visually-hidden">随手记正文</label>
-      <textarea id="noteContent" rows="6" placeholder="输入随手记内容，正文中的 #标签 会自动识别提取..."></textarea>
-      <div class="settings-grid edit-note-fields">
-        <label>
-          所属目录
-          <input id="noteFolder" list="notesFolderOptions" placeholder="如：工作/灵感，留空为根目录" autocomplete="off" />
-        </label>
-        <label>
-          自定义标签
-          <input id="noteTags" placeholder="逗号分隔，如：工作, 待办" />
-        </label>
-        <label>
-          保留时长
-          <select id="noteTTL" title="选择内容有效期">
-            <option value="0">永久保存</option>
-            <option value="3600">1 小时</option>
-            <option value="86400">24 小时</option>
-            <option value="604800">7 天</option>
-            <option value="2592000">30 天</option>
-          </select>
-        </label>
-        <label>
-          最大读取次数（0 为不限）
-          <input id="noteMaxReads" type="number" min="0" max="1000000" value="0" />
-        </label>
+      <div id="createNoteMarkdownEditor" class="markdown-editor" data-markdown-editor>
+        <div class="markdown-sheet">
+          <label for="noteContent" class="visually-hidden">随手记正文</label>
+          <textarea id="noteContent" class="markdown-source" rows="10" placeholder="开始写随手记…" spellcheck="false"></textarea>
+          <div class="rich-markdown markdown-preview" tabindex="0" role="region" aria-label="随手记预览" hidden></div>
+        </div>
       </div>
-      <div class="switch-group create-note-switches">
-        <label class="switch-row"><span>置顶</span><input id="notePinned" type="checkbox" role="switch" /></label>
-        <label class="switch-row"><span>阅后即焚</span><input id="noteBurn" type="checkbox" role="switch" /></label>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="cancelCreateNoteBtn" class="button ghost">取消</button>
-        <button type="button" id="createNoteBtn" class="button primary"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg><span>发布随手记</span></button>
+      <p id="createNoteError" class="error-text note-editor-error" role="alert"></p>
+      <div class="note-editor-footer">
+        <details class="note-editor-options">
+          <summary>随手记设置</summary>
+          <div class="settings-grid edit-note-fields">
+            <label>所属目录<input id="noteFolder" list="notesFolderOptions" placeholder="如：工作/灵感，留空为根目录" autocomplete="off" /></label>
+            <label>自定义标签<input id="noteTags" placeholder="逗号分隔，如：工作, 待办" /></label>
+            <label>
+              保留时长
+              <select id="noteTTL" title="选择内容有效期">
+                <option value="0">永久保存</option>
+                <option value="3600">1 小时</option>
+                <option value="86400">24 小时</option>
+                <option value="604800">7 天</option>
+                <option value="2592000">30 天</option>
+              </select>
+            </label>
+            <label>最大读取次数（0 为不限）<input id="noteMaxReads" type="number" min="0" max="1000000" value="0" /></label>
+          </div>
+          <div class="switch-group create-note-switches">
+            <label class="switch-row"><span>置顶</span><input id="notePinned" type="checkbox" role="switch" /></label>
+            <label class="switch-row"><span>阅后即焚</span><input id="noteBurn" type="checkbox" role="switch" /></label>
+          </div>
+        </details>
+        <div class="modal-actions">
+          <button type="button" id="cancelCreateNoteBtn" data-note-dismiss class="button ghost">取消</button>
+          <button type="button" id="createNoteBtn" class="button primary" title="Ctrl+Enter / ⌘Enter" aria-keyshortcuts="Control+Enter Meta+Enter"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg><span>发布随手记</span></button>
+        </div>
       </div>
     </form>
   </dialog>
@@ -750,6 +755,42 @@
       </div>
     </form>
   </dialog>
+  <template id="markdownEditorTools">
+    <div class="markdown-toolbar">
+      <button type="button" class="markdown-format-toggle" data-md-format aria-expanded="false">格式</button>
+      <div class="markdown-format" role="group" aria-label="Markdown 格式">
+        <div class="markdown-tool-group">
+          <select data-md-heading aria-label="标题级别">
+            <option value="">标题</option><option value="h1">一级标题</option><option value="h2">二级标题</option><option value="h3">三级标题</option>
+          </select>
+          <button type="button" data-md-command="bold" title="加粗" aria-label="加粗" aria-keyshortcuts="Control+B Meta+B"><b>B</b></button>
+          <button type="button" data-md-command="italic" title="斜体" aria-label="斜体" aria-keyshortcuts="Control+I Meta+I"><i>I</i></button>
+        </div>
+        <div class="markdown-tool-group">
+          <button type="button" data-md-command="bullet" title="无序列表" aria-label="无序列表">• 列表</button>
+          <button type="button" data-md-command="ordered" title="有序列表" aria-label="有序列表">1. 列表</button>
+          <button type="button" data-md-command="task" title="待办清单" aria-label="待办清单">☐ 待办</button>
+          <button type="button" data-md-command="quote" title="引用" aria-label="引用">❝</button>
+        </div>
+        <div class="markdown-tool-group">
+          <button type="button" data-md-command="code" title="行内代码" aria-label="行内代码">&lt;/&gt;</button>
+          <button type="button" data-md-command="codeBlock" title="代码块" aria-label="代码块">代码块</button>
+          <button type="button" data-md-command="link" title="插入链接" aria-label="插入链接" aria-keyshortcuts="Control+K Meta+K"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#icon-link"></use></svg></button>
+        </div>
+      </div>
+      <div class="markdown-view-actions">
+        <div class="markdown-modes" role="group" aria-label="编辑器视图">
+          <button type="button" data-md-mode="write" aria-pressed="true">写作</button>
+          <button type="button" data-md-mode="split" aria-pressed="false">分栏</button>
+          <button type="button" data-md-mode="preview" aria-pressed="false">预览</button>
+        </div>
+        <button type="button" class="markdown-expand" data-md-expand title="铺满窗口" aria-label="铺满窗口"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#icon-expand"></use></svg><span>铺满窗口</span></button>
+      </div>
+    </div>
+  </template>
+  <template id="markdownEditorStatus">
+    <div class="markdown-status"><span data-md-count></span><span data-md-status role="status"></span></div>
+  </template>
   <script src="/runtime-bridge.js"></script>
   <script type="module" src="/app.js"></script>
 </body>

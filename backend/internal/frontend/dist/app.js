@@ -45,7 +45,7 @@ const state = {
     pads:  { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false }
   },
   workspaceTick: 0, folderModal: null, deleteFolderTarget: null, renamingFile: null, movingItem: null,
-  noteFormats: new Map(), padPreviewMode: false, editingDeviceAlias: null, shareDialogSession: 0
+  noteFormats: new Map(), editingDeviceAlias: null, shareDialogSession: 0
 }
 
 // Server default is 100; ask explicitly so the response can be paged instead of
@@ -89,7 +89,7 @@ async function withButtonBusy(btn, busyText, fn) {
 }
 
 let confirmResolver = null
-function askConfirm(message, { title='确认操作', confirmText='确认', danger=false } = {}) {
+function askConfirm(message, { title='确认操作', confirmText='确认', cancelText='取消', danger=false } = {}) {
   const dialog = $('#confirmDialog')
   if (!dialog || typeof dialog.showModal !== 'function' || typeof dialog.addEventListener !== 'function') {
     return Promise.resolve(typeof confirm === 'function' ? confirm(message) : true)
@@ -105,6 +105,7 @@ function askConfirm(message, { title='确认操作', confirmText='确认', dange
   const submit = $('#confirmSubmitBtn')
   const cancel = $('#confirmCancelBtn')
   submit.textContent = confirmText
+  if (cancel) cancel.textContent = cancelText
   submit.className = `button ${danger ? 'danger' : 'primary'}`
   return new Promise(resolve => {
     let settled = false
@@ -238,6 +239,7 @@ function renderInlineMarkdown(escapedText) {
     }
     return `<button type="button" class="md-path" data-copy-path="${escapeHTML(rawTarget)}" title="点击复制路径">${uiIcon('folder')}<span>${label}</span></button>`
   })
+  out = out.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>')
   out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   out = out.replace(/(^|[^\w*])\*([^*\n]+)\*(?=[^\w*]|$)/g, '$1<em>$2</em>')
   out = out.replace(/\u0000IC(\d+)\u0000/g, (_, idx) => codes[Number(idx)] || '')
@@ -293,7 +295,14 @@ function renderMarkdownSafe(src='') {
     if (/^[-*+]\s+/.test(trimmed)) {
       const items = []
       while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
-        items.push(`<li>${renderInlineMarkdown(lines[i].trim().replace(/^[-*+]\s+/, ''))}</li>`)
+        const item = lines[i].trim().replace(/^[-*+]\s+/, '')
+        const task = item.match(/^\[([ xX])\](?:\s+|$)(.*)$/)
+        if (task) {
+          const done = task[1] !== ' '
+          items.push(`<li class="markdown-task"><span class="markdown-task-box${done ? ' is-checked' : ''}" role="img" aria-label="${done ? '已完成' : '未完成'}">${done ? '✓' : ''}</span><span>${renderInlineMarkdown(task[2])}</span></li>`)
+        } else {
+          items.push(`<li>${renderInlineMarkdown(item)}</li>`)
+        }
         i++
       }
       html.push(`<ul>${items.join('')}</ul>`)
@@ -318,6 +327,195 @@ function renderMarkdownSafe(src='') {
     if (para.length) html.push(`<p>${para.join('<br>')}</p>`)
   }
   return html.join('')
+}
+
+function refreshMarkdownEditor(editor) {
+  const source = editor?.querySelector?.('.markdown-source')
+  if (!source) return
+  const preview = editor.querySelector('.markdown-preview')
+  editor.querySelector('[data-md-count]').textContent = `${source.value.length} 字符`
+  if (!preview.hidden) {
+    preview.innerHTML = renderMarkdownSafe(source.value) || '<p class="markdown-preview-empty">写下的内容会显示在这里。</p>'
+  }
+}
+
+function setMarkdownMode(editor, mode) {
+  const source = editor?.querySelector?.('.markdown-source')
+  if (!source) return
+  editor.dataset.mode = mode
+  source.hidden = mode === 'preview'
+  editor.querySelector('.markdown-preview').hidden = mode === 'write'
+  editor.querySelector('.markdown-format').hidden = mode === 'preview'
+  editor.querySelector('[data-md-format]').hidden = mode === 'preview'
+  setMarkdownFormatOpen(editor, false)
+  editor.querySelector('[data-md-status]').textContent = ''
+  for (const button of editor.querySelectorAll('[data-md-mode]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.mdMode === mode))
+  }
+  refreshMarkdownEditor(editor)
+}
+
+const compactWritingViewport = '(max-width: 820px), (max-height: 760px)'
+
+function updateWritingLayout(editor) {
+  const panel = editor?.closest?.('[data-writing-window]')
+  if (!panel) return
+  const expanded = editor.dataset.mdExpanded === undefined
+    ? window.matchMedia(compactWritingViewport).matches
+    : editor.dataset.mdExpanded === 'true'
+  panel.classList.toggle('is-writing-expanded', expanded)
+  const button = editor.querySelector('[data-md-expand]')
+  const label = expanded ? '还原窗口' : '铺满窗口'
+  button.title = label
+  button.setAttribute('aria-label', label)
+  button.querySelector('span').textContent = label
+  button.querySelector('use').setAttribute('href', expanded ? '#icon-contract' : '#icon-expand')
+}
+
+function resetMarkdownEditor(editor) {
+  if (!editor) return
+  delete editor.dataset.mdExpanded
+  updateWritingLayout(editor)
+  setMarkdownMode(editor, 'write')
+}
+
+function replaceMarkdownText(source, from, to, text, start, end = start) {
+  source.focus({preventScroll: true})
+  source.setSelectionRange(from, to)
+  // Chromium and WebKit retain the native undo entry for toolbar insertions.
+  if (!document.execCommand?.('insertText', false, text)) {
+    source.setRangeText(text, from, to, 'end')
+    source.dispatchEvent(new Event('input', {bubbles: true}))
+  }
+  source.setSelectionRange(start, end)
+}
+
+function applyMarkdownCommand(source, command) {
+  const {value, selectionStart: start, selectionEnd: end} = source
+  const selected = value.slice(start, end)
+  const marker = {bold: '**', italic: '*', code: '`'}[command]
+  if (marker) {
+    const from = start - marker.length
+    const to = end + marker.length
+    const wrapped = from >= 0 && value.slice(from, start) === marker && value.slice(end, to) === marker
+    const onlyBold = command === 'italic' && value.slice(start - 2, start) === '**' &&
+      value.slice(end, end + 2) === '**' && value.slice(start - 3, start) !== '***'
+    if (wrapped && !onlyBold) {
+      replaceMarkdownText(source, from, to, selected, from, from + selected.length)
+    } else {
+      replaceMarkdownText(source, start, end, marker + selected + marker, start + marker.length, end + marker.length)
+    }
+    return
+  }
+  if (command === 'link') {
+    const label = selected || '链接文字'
+    const urlStart = start + label.length + 3
+    replaceMarkdownText(source, start, end, '[' + label + '](https://)', urlStart, urlStart + 8)
+    return
+  }
+  if (command === 'codeBlock') {
+    const prefix = (start && value[start - 1] !== '\n' ? '\n' : '') + '```\n'
+    const suffix = '\n```' + (end < value.length && value[end] !== '\n' ? '\n' : '')
+    replaceMarkdownText(source, start, end, prefix + selected + suffix, start + prefix.length, end + prefix.length)
+    return
+  }
+
+  const from = start ? value.lastIndexOf('\n', start - 1) + 1 : 0
+  const lineBreak = value.indexOf('\n', end > start && value[end - 1] === '\n' ? end - 1 : end)
+  const to = lineBreak === -1 ? value.length : lineBreak
+  const lines = value.slice(from, to).split('\n')
+  const prefix = {h1: '# ', h2: '## ', h3: '### ', bullet: '- ', task: '- [ ] ', quote: '> '}[command]
+  if (!prefix && command !== 'ordered') return
+  const markerFor = index => command === 'ordered' ? `${index + 1}. ` : prefix
+  const decorated = line => {
+    const body = line.trimStart()
+    if (command === 'ordered') return /^\d+\. /.test(body)
+    if (command === 'bullet') return /^- (?!\[[ xX]\](?: |$))/.test(body)
+    if (command === 'task') return /^- \[[ xX]\](?: |$)/.test(body)
+    return body.startsWith(prefix)
+  }
+  const remove = lines.every(decorated)
+  const input = lines.map((line, index) => {
+    if (!line.trim() && lines.length > 1) return line
+    const indent = line.match(/^[ \t]*/)[0]
+    const content = line.slice(indent.length).replace(/^(?:#{1,6} |[-*+] (?:\[[ xX]\](?: |$))?|\d+\. |> )/, '')
+    return indent + (remove ? '' : markerFor(index)) + content
+  }).join('\n')
+  const finish = from + input.length
+  const caret = Math.max(from, Math.min(finish, start + input.length - (to - from)))
+  replaceMarkdownText(source, from, to, input, selected ? from : caret, selected ? finish : caret)
+}
+
+function setMarkdownFormatOpen(editor, open) {
+  editor.classList.toggle('is-format-open', open)
+  editor.querySelector('[data-md-format]').setAttribute('aria-expanded', String(open))
+}
+
+function initMarkdownEditors() {
+  const editors = $$('[data-markdown-editor]')
+  for (const editor of editors) {
+    editor.prepend($('#markdownEditorTools').content.cloneNode(true))
+    editor.append($('#markdownEditorStatus').content.cloneNode(true))
+    const source = editor.querySelector('.markdown-source')
+    const format = editor.querySelector('.markdown-format')
+    const formatToggle = editor.querySelector('[data-md-format]')
+    format.id = editor.id + 'Format'
+    formatToggle.setAttribute('aria-controls', format.id)
+    formatToggle.addEventListener('click', () => setMarkdownFormatOpen(editor, !editor.classList.contains('is-format-open')))
+    let frame = 0
+    source.addEventListener('input', () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => refreshMarkdownEditor(editor))
+    })
+    source.addEventListener('keydown', event => {
+      const command = {b:'bold', i:'italic', k:'link'}[event.key.toLowerCase()]
+      if (!event.isComposing && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && command) {
+        event.preventDefault()
+        if (!event.repeat) applyMarkdownCommand(source, command)
+      }
+    })
+    editor.querySelector('[data-md-heading]').addEventListener('change', event => {
+      const command = event.target.value
+      event.target.value = ''
+      if (command) {
+        setMarkdownFormatOpen(editor, false)
+        applyMarkdownCommand(source, command)
+      }
+    })
+    editor.addEventListener('click', async event => {
+      const mode = event.target.closest('[data-md-mode]')?.dataset.mdMode
+      const command = event.target.closest('[data-md-command]')?.dataset.mdCommand
+      const path = event.target.closest('.md-path')?.dataset.copyPath
+      if (event.target.closest('[data-md-expand]')) {
+        editor.dataset.mdExpanded = String(!editor.closest('[data-writing-window]').classList.contains('is-writing-expanded'))
+        updateWritingLayout(editor)
+      }
+      if (mode) setMarkdownMode(editor, mode)
+      if (command) {
+        setMarkdownFormatOpen(editor, false)
+        applyMarkdownCommand(source, command)
+      }
+      if (path) {
+        try {
+          if (await copyText(path) === false) throw new Error('clipboard unavailable')
+          editor.querySelector('[data-md-status]').textContent = '路径已复制'
+        } catch {
+          editor.querySelector('[data-md-status]').textContent = '无法复制路径'
+        }
+      }
+    })
+    resetMarkdownEditor(editor)
+  }
+  window.matchMedia(compactWritingViewport).addEventListener('change', () => editors.forEach(updateWritingLayout))
+}
+
+function bindMarkdownSave(container, save, enter = false) {
+  container.addEventListener('keydown', event => {
+    if (event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey)) return
+    if (event.key.toLowerCase() !== 's' && !(enter && event.key === 'Enter')) return
+    event.preventDefault()
+    if (!event.repeat) void save()
+  })
 }
 
 async function api(path, options={}) {
@@ -1072,12 +1270,75 @@ async function readRestrictedNote(id, copy=false, btn=null) {
 }
 
 function openCreateNoteModal() {
+  if ($('#createNoteDialog').open) return
+  $('#createNoteForm').reset()
   const f = state.folders.notes
   if ($('#noteFolder') && f) {
     $('#noteFolder').value = f.selected && f.selected !== '__root__' ? f.selected : ''
   }
-  $('#createNoteDialog')?.showModal()
+  showNoteEditor('#createNoteDialog', '#createNoteMarkdownEditor', '#createNoteError')
   $('#noteContent')?.focus()
+}
+
+const noteEditorSnapshots = new WeakMap()
+
+function noteEditorSnapshot(dialog) {
+  return JSON.stringify([...dialog.querySelectorAll('textarea, input, select')].map(field =>
+    field.type === 'checkbox' ? field.checked : field.value))
+}
+
+function hasUnsavedNote(dialog) {
+  return dialog.open && noteEditorSnapshots.get(dialog) !== noteEditorSnapshot(dialog)
+}
+
+function bindNoteEditor(dialog, button, save) {
+  let confirming = false
+  const dismiss = async event => {
+    event.preventDefault()
+    if (button.disabled || confirming) return
+    if (hasUnsavedNote(dialog)) {
+      confirming = true
+      try {
+        const discard = await askConfirm('关闭后，未保存的正文和设置会丢失。', {
+          title: '放弃随手记修改？', confirmText: '放弃修改', cancelText: '继续编辑', danger: true
+        })
+        if (!discard) return
+      } finally {
+        confirming = false
+      }
+    }
+    dialog.close()
+  }
+  const form = dialog.querySelector('form')
+  const submit = async () => {
+    if (button.disabled || confirming) return
+    const focus = document.activeElement
+    const result = save()
+    // The save handlers disable the button synchronously once validation passes.
+    if (!button.disabled) return result
+    form.inert = true
+    try {
+      await result
+    } finally {
+      form.inert = false
+      if (dialog.open) focus?.focus({ preventScroll: true })
+    }
+  }
+  dialog.addEventListener('cancel', dismiss)
+  for (const control of dialog.querySelectorAll('[data-note-dismiss]')) control.addEventListener('click', dismiss)
+  form.addEventListener('submit', event => { event.preventDefault(); void submit() })
+  button.addEventListener('click', () => void submit())
+  bindMarkdownSave(dialog, submit, true)
+}
+
+function showNoteEditor(dialogSelector, editorSelector, errorSelector) {
+  const dialog = $(dialogSelector)
+  const options = dialog?.querySelector?.('details')
+  if (options) options.open = false
+  $(errorSelector).textContent = ''
+  resetMarkdownEditor($(editorSelector))
+  noteEditorSnapshots.set(dialog, noteEditorSnapshot(dialog))
+  dialog.showModal()
 }
 
 function openUploadFileModal() {
@@ -1090,9 +1351,15 @@ function openUploadFileModal() {
 }
 
 async function createNote() {
+  const button = $('#createNoteBtn')
+  if (button.disabled) return
+  const error = $('#createNoteError')
+  error.textContent = ''
   const content = $('#noteContent').value.trim()
   if (!content) {
-    toast('请输入内容', true)
+    error.textContent = '请输入内容'
+    setMarkdownMode($('#createNoteMarkdownEditor'), 'write')
+    $('#noteContent').focus()
     return
   }
   const folder = normalizeClientFolder($('#noteFolder')?.value || '')
@@ -1106,23 +1373,18 @@ async function createNote() {
     ttl_seconds: Number($('#noteTTL').value)
   }
   try {
-    await withButtonBusy($('#createNoteBtn'), '发布中…', async () => {
+    await withButtonBusy(button, '发布中…', async () => {
       await api('/api/v1/notes', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload)
       })
-      $('#noteContent').value = ''
-      $('#noteTags').value = ''
-      $('#notePinned').checked = false
-      $('#noteBurn').checked = false
-      $('#noteMaxReads').value = '0'
       if ($('#createNoteDialog')?.open) $('#createNoteDialog').close()
       toast('随手记已发布')
       await Promise.all([loadNotes(), loadFolders('notes'), loadDashboard()])
     })
   } catch (err) {
-    toast(err.message, true)
+    error.textContent = err.message
   }
 }
 
@@ -1288,14 +1550,16 @@ async function openEditNote(id) {
   try {
     const n = await getManagedNote(id)
     state.editingNote = n
-    $('#editNoteId').textContent = n.id
+    const source = $('#editNoteSource')
+    source.textContent = n.source_node_name ? `来自 ${n.source_node_name}` : ''
+    source.hidden = !source.textContent
     $('#editNoteContent').value = n.content
     if ($('#editNoteFolder')) $('#editNoteFolder').value = n.folder || ''
     $('#editNoteTags').value = (n.tags || []).join(', ')
     $('#editNotePinned').checked = !!n.pinned
     $('#editNoteBurn').checked = !!n.is_burn_after_read
     $('#editNoteMaxReads').value = n.max_read_count || 0
-    $('#editNoteDialog').showModal()
+    showNoteEditor('#editNoteDialog', '#editNoteMarkdownEditor', '#editNoteError')
     $('#editNoteContent')?.focus()
   } catch (err) {
     toast(err.message, true)
@@ -1303,7 +1567,10 @@ async function openEditNote(id) {
 }
 
 async function saveEditNote() {
-  if (!state.editingNote) return
+  const button = $('#saveEditNoteBtn')
+  if (!state.editingNote || button.disabled) return
+  const error = $('#editNoteError')
+  error.textContent = ''
   const payload = {
     content: $('#editNoteContent').value,
     folder: normalizeClientFolder($('#editNoteFolder')?.value || ''),
@@ -1313,7 +1580,7 @@ async function saveEditNote() {
     max_read_count: Number($('#editNoteMaxReads').value || 0)
   }
   try {
-    await withButtonBusy($('#saveEditNoteBtn'), '保存中…', async () => {
+    await withButtonBusy(button, '保存中…', async () => {
       await api(`/api/v1/notes/${encodeURIComponent(state.editingNote.id)}`, {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
@@ -1324,7 +1591,7 @@ async function saveEditNote() {
       await Promise.all([loadNotes(), loadFolders('notes')])
     })
   } catch (err) {
-    toast(err.message, true)
+    error.textContent = err.message
   }
 }
 
@@ -1870,25 +2137,12 @@ function renderPads() {
   `
 }
 
-function applyPadPreviewMode(preview) {
-  state.padPreviewMode = !!preview
-  const textarea = $('#padContent')
-  const previewEl = $('#padPreview')
-  const btn = $('#togglePadPreviewBtn')
-  if (!textarea || !previewEl || !btn) return
-  if (state.padPreviewMode) {
-    previewEl.innerHTML = renderMarkdownSafe(textarea.value) || '<p class="muted-text">暂无正文内容</p>'
-    textarea.classList.add('hidden')
-    previewEl.classList.remove('hidden')
-    btn.innerHTML = '<span>编辑</span>'
-  } else {
-    previewEl.classList.add('hidden')
-    textarea.classList.remove('hidden')
-    btn.innerHTML = '<span>预览</span>'
-  }
+function updatePadMeta(pad) {
+  const source = pad.source_node_name ? `来自 ${pad.source_node_name} · ` : ''
+  $('#padMeta').textContent = `${source}版本 v${pad.version} · 更新于 ${formatDate(pad.updated_at)}`
 }
 
-function renderPadEditor(p) {
+function renderPadEditor(p, preserveMode = false) {
   $('#padConflictActions')?.classList.add('hidden')
   $('#padEmpty').classList.add('hidden')
   $('#padForm').classList.remove('hidden')
@@ -1897,8 +2151,13 @@ function renderPadEditor(p) {
   $('#padTitle').value = p.title
   if ($('#padFolder')) $('#padFolder').value = p.folder || ''
   $('#padContent').value = p.content
-  applyPadPreviewMode(false)
-  $('#padMeta').textContent = `${p.id} · 版本 v${p.version} · 更新于 ${formatDate(p.updated_at)}`
+  const editor = $('#padMarkdownEditor')
+  if (preserveMode) refreshMarkdownEditor(editor)
+  else {
+    $('#padFolderOptionsMenu').open = false
+    resetMarkdownEditor(editor)
+  }
+  updatePadMeta(p)
   $('#saveState').textContent = '已同步'
   $('#saveState').className = 'badge'
   renderPads()
@@ -1910,6 +2169,7 @@ async function closePadEditor() {
     if (!saved && !await askConfirm('当前文档未能保存，仍要返回列表吗？', { title: '返回文档列表', confirmText: '仍要返回', danger: true })) return
   }
   clearTimeout(state.saveTimer)
+  const previousId = state.currentPad?.id
   state.currentPad = null
   state.currentPadDirty = false
   $('#padForm')?.classList.add('hidden')
@@ -1917,6 +2177,7 @@ async function closePadEditor() {
   $('#padEditorCard')?.classList.add('hidden')
   $('#padWorkspace')?.classList.remove('is-editing')
   renderPads()
+  $$('#padsList [data-pad-id]').find(button => button.dataset.padId === previousId)?.focus()
 }
 
 async function selectPad(id) {
@@ -1934,6 +2195,8 @@ async function selectPad(id) {
     state.currentPadDirty = false
     state.padSaveBlocked = false
     renderPadEditor(p)
+    $('#padEditorCard').scrollIntoView?.({block:'start'})
+    $('#padContent').focus({preventScroll:true})
   } catch (err) {
     toast(err.message, true)
   }
@@ -1992,7 +2255,7 @@ async function refreshCurrentPad() {
     }
     const editor = $('#padContent'), start = editor.selectionStart, end = editor.selectionEnd, scroll = editor.scrollTop
     state.currentPad = {...remote}
-    renderPadEditor(remote)
+    renderPadEditor(remote, true)
     if (typeof editor.setSelectionRange === 'function' && Number.isInteger(start)) editor.setSelectionRange(Math.min(start, remote.content.length), Math.min(end, remote.content.length))
     editor.scrollTop = scroll
   } catch (err) {
@@ -2047,7 +2310,7 @@ async function loadRemotePadVersion() {
       return
     }
     state.currentPad = {...remote}; state.currentPadDirty = false; state.padSaveBlocked = false
-    renderPadEditor(remote); $('#padConflictActions').classList.add('hidden')
+    renderPadEditor(remote, true); $('#padConflictActions').classList.add('hidden')
     toast('已载入远端版本；原草稿仍保留在本次会话中')
   } catch (err) { toast(err.message, true) }
 }
@@ -2146,7 +2409,7 @@ async function performPadSave(snapshot, showToast=true) {
       state.currentPadDirty = !unchanged
       $('#saveState').textContent = unchanged ? '已保存' : '待保存'
       $('#saveState').className = `badge${unchanged ? '' : ' muted'}`
-      $('#padMeta').textContent = `${p.id} · 版本 v${p.version} · 更新于 ${formatDate(p.updated_at)}`
+      updatePadMeta(p)
       if (unchanged) sessionRemove(`omnishare.padDraft.${p.id}`)
     }
     renderPads()
@@ -2915,16 +3178,8 @@ function bindEvents() {
   $('#dashNewPadBtn')?.addEventListener('click', () => { switchTab('pads'); void createPad() })
   $('#dashBindBtn')?.addEventListener('click', () => openBindDialog())
   $('#openCreateNoteBtn')?.addEventListener('click', openCreateNoteModal)
-  $('#cancelCreateNoteBtn')?.addEventListener('click', () => $('#createNoteDialog')?.close())
-  $('#closeCreateNoteBtn')?.addEventListener('click', () => $('#createNoteDialog')?.close())
-  $('#createNoteForm')?.addEventListener('submit', e => { e.preventDefault(); void createNote() })
-  $('#createNoteBtn').addEventListener('click', () => void createNote())
-  $('#noteContent').addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault()
-      createNote()
-    }
-  })
+  bindNoteEditor($('#createNoteDialog'), $('#createNoteBtn'), createNote)
+  bindNoteEditor($('#editNoteDialog'), $('#saveEditNoteBtn'), saveEditNote)
   $('#pasteBtn').addEventListener('click', readClipboardPreview)
   $('#clipboardConfirmBtn').addEventListener('click', confirmClipboardSend)
   $('#clipboardCancelBtn').addEventListener('click', closeClipboardPreview)
@@ -2966,7 +3221,6 @@ function bindEvents() {
     else if (rawBtn) await openRawNote(id, rawBtn)
     else if (e.target.closest('.delete-note')) deleteNote(id)
   })
-  $('#saveEditNoteBtn').addEventListener('click', saveEditNote)
 
   $('#openUploadFileBtn')?.addEventListener('click', openUploadFileModal)
   $('#cancelUploadFileBtn')?.addEventListener('click', () => $('#uploadFileDialog')?.close())
@@ -3054,6 +3308,16 @@ function bindEvents() {
     if (item) void selectPad(item.dataset.padId)
   })
   $('#padTitle').addEventListener('input', markPadDirty)
+  const padFolderMenu = $('#padFolderOptionsMenu')
+  document.addEventListener('pointerdown', event => {
+    if (padFolderMenu.open && !padFolderMenu.contains(event.target)) padFolderMenu.open = false
+  })
+  padFolderMenu.addEventListener('keydown', event => {
+    if (event.isComposing || event.key !== 'Escape' || !padFolderMenu.open) return
+    event.preventDefault()
+    padFolderMenu.open = false
+    padFolderMenu.querySelector('summary').focus()
+  })
   $('#padFolder')?.addEventListener('input', markPadDirty)
   $('#padContent').addEventListener('input', markPadDirty)
 
@@ -3111,20 +3375,7 @@ function bindEvents() {
   $('#cancelRenameFileBtn')?.addEventListener('click', () => $('#renameFileDialog')?.close())
   $('#moveItemForm')?.addEventListener('submit', e => { e.preventDefault(); void submitMoveItemModal() })
   $('#cancelMoveItemBtn')?.addEventListener('click', () => $('#moveItemDialog')?.close())
-  $('#padContent').addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-      e.preventDefault()
-      savePad(true)
-    }
-  })
-  $('#togglePadPreviewBtn')?.addEventListener('click', () => applyPadPreviewMode(!state.padPreviewMode))
-  $('#padPreview')?.addEventListener('click', async e => {
-    const pathBtn = e.target.closest('.md-path')
-    if (pathBtn) {
-      await copyText(pathBtn.dataset.copyPath || '')
-      toast('路径已复制到剪贴板')
-    }
-  })
+  bindMarkdownSave($('#padForm'), () => savePad(true))
   $('#savePadBtn').addEventListener('click', () => savePad(true))
   $('#sharePadBtn').addEventListener('click', () => {
     if (state.currentPad) openShare('pad', state.currentPad.id, state.currentPad.title)
@@ -3218,11 +3469,13 @@ function bindEvents() {
 }
 
 async function start() {
+  initMarkdownEditors()
   bindEvents()
   ;['notes', 'files', 'pads'].forEach(renderFolderUI)
   window.addEventListener('beforeunload', event => {
     if (state.currentPadDirty) preservePadDraft()
-    if (state.currentPadDirty || clipboardSending || hasPendingUploads()) {
+    if (state.currentPadDirty || clipboardSending || hasPendingUploads() ||
+        hasUnsavedNote($('#createNoteDialog')) || hasUnsavedNote($('#editNoteDialog'))) {
       event.preventDefault()
       event.returnValue = ''
     }

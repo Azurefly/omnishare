@@ -1,18 +1,22 @@
 {
-  "tag": "v1.0.0",
-  "name": "OmniShare v1.0.0",
-  "notes": "docs/RELEASE_NOTES_v1.0.0.md",
-  "prerelease": false,
-  "platforms": [],
+  "tag": "v1.0.1-rc.1",
+  "name": "OmniShare v1.0.1-rc.1 · Markdown 编辑器候选版",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.1.md",
+  "prerelease": true,
+  "platforms": [
+    "windows",
+    "linux",
+    "macos"
+  ],
   "macos": {
     "tauri_published": false,
     "server_zip_signed": false,
     "signing_mode": "none",
     "notarized": false,
     "minimum_system_version": "12.0",
-    "reason": "v1.0.0 is a source release.",
+    "reason": "Candidate DMG uses ad-hoc signing. Apple notarization is pending.",
     "dmg_published": false
   },
   "release_date": "2026-11-21",
-  "publication_channel": "source"
+  "publication_channel": "candidate"
 }

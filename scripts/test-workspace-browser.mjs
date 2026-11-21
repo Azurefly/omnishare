@@ -18,6 +18,15 @@ async function freePort(){const s=createServer();s.listen(0,'127.0.0.1');await o
 async function api(base,path,method='GET',data){const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});const body=await r.json();if(!r.ok||body.code!==0)throw new Error(`${method} ${path}: ${r.status}`);return body;}
 async function start(name){const port=await freePort(),base=`http://127.0.0.1:${port}`;const child=spawn(binary,['--port',String(port),'--name',name,'--data-dir',join(root,name),'--listen','127.0.0.1','--no-browser','--shutdown-on-stdin-close'],{stdio:['pipe','ignore','ignore']});children.push(child);for(let i=0;i<100;i++){try{await api(base,'/api/v1/health');return base;}catch{await delay(100);}}throw new Error('test server failed to start');}
 async function waitText(page,selector,value){await page.waitForFunction(({selector,value})=>document.querySelector(selector)?.value===value,{selector,value},{timeout:12000});}
+async function assertWritingViewport(page, sourceSelector, saveSelector, minSourceHeight) {
+ const {source,save,height}=await page.evaluate(({sourceSelector,saveSelector}) => {
+   const rect=selector=>document.querySelector(selector).getBoundingClientRect().toJSON();
+   return {source:rect(sourceSelector),save:rect(saveSelector),height:innerHeight};
+ }, {sourceSelector,saveSelector});
+ assert.ok(source.height>=minSourceHeight && source.top>=0 && source.bottom<=height,
+   `Expected a visible writing area of at least ${minSourceHeight}px, got ${JSON.stringify(source)} in ${height}px`);
+ assert.ok(save.top>=0 && save.bottom<=height && save.height>0, 'The save action must be visible without scrolling');
+}
 try {
  const a=await start('工作站 A'), b=await start('Mac B');
  await api(a,'/api/v1/notes','POST',{content:'A 本机上的随手记'});
@@ -43,7 +52,20 @@ try {
  await page.waitForFunction(()=>!document.querySelector('#folderModalDialog').open);
  await page.locator('#openCreateNoteBtn').click();
  await page.locator('#createNoteDialog[open]').waitFor({timeout:5000});
- await page.locator('#noteContent').fill('目录归档随手记验证');
+ const noteSource=page.locator('#noteContent');
+ const noteEditor=page.locator('#createNoteMarkdownEditor');
+ await noteSource.fill('目录归档随手记验证');
+ await noteSource.press('Control+a');
+ await noteEditor.getByRole('button',{name:'加粗',exact:true}).click();
+ assert.equal(await noteSource.inputValue(),'**目录归档随手记验证**');
+ await noteSource.press('Control+z');
+ assert.equal(await noteSource.inputValue(),'目录归档随手记验证');
+ await noteSource.press('Control+a');
+ await noteSource.press('Control+b');
+ await noteEditor.getByRole('button',{name:'分栏',exact:true}).click();
+ await noteEditor.locator('.markdown-preview strong').getByText('目录归档随手记验证').waitFor();
+ await noteSource.dispatchEvent('keydown',{key:'Enter',ctrlKey:true,isComposing:true});
+ assert.ok(await page.locator('#createNoteDialog').isVisible());
  await page.locator('#createNoteBtn').click();
  await page.waitForFunction(()=>!document.querySelector('#createNoteDialog').open);
  await page.getByText('目录归档随手记验证',{exact:false}).first().waitFor({timeout:12000});
@@ -69,16 +91,79 @@ try {
  await other.locator('#notesFolderTree [data-folder=""]').click();
  assert.equal(new URL(other.url()).origin,b);checks.push('B sees empty and non-empty folders created on A with stable counts when filtering');
  await other.close();await page.bringToFront();
+ await page.setViewportSize({width:960,height:640});
+ await page.locator('.note-card').filter({hasText:'目录归档随手记验证'}).locator('.edit-note').click();
+ const editEditor=page.locator('#editNoteMarkdownEditor');
+ const editSource=page.locator('#editNoteContent');
+ await page.locator('#editNoteDialog.is-writing-expanded').waitFor();
+ await assertWritingViewport(page,'#editNoteContent','#saveEditNoteBtn',365);
+ await editSource.fill('目录归档随手记验证\n\n上线准备');
+ await page.keyboard.press('Escape');
+ await page.locator('#confirmDialog[open]').waitFor();
+ await page.locator('#confirmCancelBtn').click();
+ assert.equal(await editSource.inputValue(),'目录归档随手记验证\n\n上线准备');
+ assert.ok(await page.locator('#editNoteDialog').isVisible());
+ await editEditor.getByRole('button',{name:'待办清单',exact:true}).click();
+ await editEditor.getByRole('button',{name:'预览',exact:true}).click();
+ await editEditor.locator('.markdown-task').getByText('上线准备').waitFor();
+ assert.ok(await editSource.isHidden());
+ await page.keyboard.press('Control+s');
+ await page.locator('#editNoteDialog').waitFor({state:'hidden'});
+ assert.ok((await api(a,'/api/v1/notes?scope=local')).data.some(n=>n.content.endsWith('- [ ] 上线准备')));
+ checks.push('shared note editor formats, previews, supports undo and saves Markdown without intercepting IME');
+ await page.setViewportSize({width:1440,height:1000});
  await page.locator('.tab[data-tab="pads"]').click();await page.locator('#newPadBtn').click();await page.locator('#newPadTitle').fill('跨设备协同验证');await page.locator('#createPadSubmitBtn').click();
  await waitText(page,'#padTitle','跨设备协同验证');checks.push('in-page create dialog works without window.prompt');
  const bpad=(await api(b,'/api/v1/pads','POST',{title:'B 上的文档',content:'initial'})).data;
+ await page.locator('#backToPadsListBtn').click();
  await page.getByText('B 上的文档',{exact:true}).waitFor({timeout:12000});await page.getByText('B 上的文档',{exact:true}).click();
  await waitText(page,'#padContent','initial');
- await page.locator('#padContent').fill('从 A 编辑，保存到 B');await page.locator('#savePadBtn').click();
+ const padEditor=page.locator('#padMarkdownEditor');
+ await padEditor.getByRole('button',{name:'分栏',exact:true}).click();
+ await page.locator('#padFolderOptionsMenu summary').click();
+ await page.locator('#padFolder').fill('测试/协作');
+ await page.locator('#padFolder').press('Escape');
+ assert.equal(await page.locator('#padFolderOptionsMenu[open]').count(),0);
+ await page.locator('#padContent').fill('从 A 编辑，保存到 B');
+ await padEditor.locator('.markdown-preview').getByText('从 A 编辑，保存到 B').waitFor();
+ await page.locator('#padContent').press('Control+s');
  await page.waitForFunction(()=>document.querySelector('#saveState').textContent.includes('已保存'));
- let current=(await api(b,`/api/v1/pads/${bpad.id}`)).data;assert.equal(current.content,'从 A 编辑，保存到 B');checks.push('editing a remote document in A writes to B without page navigation');
+ let current=(await api(b,`/api/v1/pads/${bpad.id}`)).data;assert.equal(current.content,'从 A 编辑，保存到 B');assert.equal(current.folder,'测试/协作');checks.push('editing a remote document in A writes to B without page navigation');
  await api(b,`/api/v1/pads/${bpad.id}`,'PUT',{title:current.title,content:'B 的最新更新',version:current.version});
- await waitText(page,'#padContent','B 的最新更新');checks.push('open editor refreshes remote saves');
+ await waitText(page,'#padContent','B 的最新更新');
+ await padEditor.locator('.markdown-preview').getByText('B 的最新更新').waitFor();
+ assert.equal(await padEditor.getAttribute('data-mode'),'split');
+ checks.push('open document keeps split mode while live preview follows remote saves');
+ await page.setViewportSize({width:960,height:640});
+ await page.locator('#padEditorCard.is-writing-expanded').waitFor();
+ await assertWritingViewport(page,'#padContent','#savePadBtn',340);
+ await page.setViewportSize({width:390,height:460});
+ await padEditor.getByRole('button',{name:'写作',exact:true}).click();
+ await assertWritingViewport(page,'#padContent','#savePadBtn',225);
+ const formatToggle=padEditor.getByRole('button',{name:'格式',exact:true});
+ await formatToggle.click();
+ const compactButtons=await padEditor.locator('.markdown-format').evaluate(toolbar => {
+   const right=toolbar.getBoundingClientRect().right;
+   return [...toolbar.querySelectorAll('button')].every(button => {
+     const bounds=button.getBoundingClientRect();
+     return bounds.width>0 && bounds.right<=right;
+   });
+ });
+ assert.ok(compactButtons, 'Compact format controls should wrap into view');
+ await formatToggle.click();
+ await padEditor.getByRole('button',{name:'分栏',exact:true}).click();
+ const splitFits=await padEditor.locator('.markdown-preview').evaluate(preview =>
+   preview.getBoundingClientRect().bottom<=preview.parentElement.getBoundingClientRect().bottom+1);
+ assert.ok(splitFits, 'The split preview should fit the visible sheet');
+ await padEditor.getByRole('button',{name:'写作',exact:true}).click();
+ await page.setViewportSize({width:720,height:390});
+ await assertWritingViewport(page,'#padContent','#savePadBtn',165);
+ await page.setViewportSize({width:1440,height:1000});
+ await padEditor.getByRole('button',{name:'铺满窗口',exact:true}).click();
+ assert.equal(await page.locator('#padEditorCard.is-writing-expanded').count(),1);
+ await padEditor.getByRole('button',{name:'还原窗口',exact:true}).click();
+ assert.equal(await page.locator('#padEditorCard.is-writing-expanded').count(),0);
+ assert.equal(await page.locator('#padContent').inputValue(),'B 的最新更新');
  current=(await api(b,`/api/v1/pads/${bpad.id}`)).data;
  await page.locator('#padContent').fill('本地未保存草稿');
  await api(b,`/api/v1/pads/${bpad.id}`,'PUT',{title:current.title,content:'远端冲突版本',version:current.version});
@@ -91,6 +176,25 @@ try {
  await page.waitForFunction(()=>!document.querySelector('#confirmDialog').open && document.querySelector('#padForm').classList.contains('hidden'));
  const bPadsAfterDelete=(await api(b,'/api/v1/pads')).data;
  assert.equal(bPadsAfterDelete.length,0);checks.push('visible bound device can delete a remote collaborative pad via in-app confirm');
+ await page.setViewportSize({width:390,height:460});
+ await page.locator('.tab[data-tab="notes"]').click();
+ await page.locator('#openCreateNoteBtn').click();
+ await page.locator('#createNoteDialog.is-writing-expanded').waitFor();
+ await page.locator('#noteContent').fill('小窗口输入验证');
+ await assertWritingViewport(page,'#noteContent','#createNoteBtn',235);
+ await page.locator('#createNoteDialog summary').click();
+ await page.locator('#noteTTL').selectOption('3600');
+ await page.locator('#closeCreateNoteBtn').click();
+ await page.locator('#confirmDialog[open]').waitFor();
+ await page.locator('#confirmSubmitBtn').click();
+ await page.locator('#createNoteDialog').waitFor({state:'hidden'});
+ await page.locator('#openCreateNoteBtn').click();
+ assert.equal(await page.locator('#noteContent').inputValue(),'');
+ assert.equal(await page.locator('#noteTTL').inputValue(),'0');
+ await page.locator('#cancelCreateNoteBtn').click();
+ await page.locator('#createNoteDialog').waitFor({state:'hidden'});
+ checks.push('dirty notes offer continue editing or discard, and new notes reset options');
+ checks.push('compact note and document editors keep enough space to type and keep the save action in view');
  await page.setViewportSize({width:390,height:844});await page.locator('.tab[data-tab="notes"]').click();
  await page.screenshot({path:join(output,'unified-workspace-mobile.png'),fullPage:true});
  const clipboard = await context.newCDPSession(page);

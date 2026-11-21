@@ -6,15 +6,15 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 
 ## 工作区功能
 
-- **随手记**支持目录、标签、置顶和 Markdown 预览。
+- **随手记**支持目录、标签、置顶和 Markdown 写作、分栏与预览。
 - **文件**支持批量上传、保留目录结构、按需下载和视频播放。
-- **协同文档**支持自动保存、版本冲突提示和草稿保留。
+- **协同文档**提供同一套 Markdown 编辑器，支持自动保存、版本冲突提示和草稿保留。
 - **安全分享**支持有效期、访问次数和随时撤销。分享链接生成后可直接复制。
 - **本机数据**可通过回收站恢复，支持导出备份及使用口令加密备份。
 
 ## 界面预览
 
-以下截图来自 Windows 11 上运行的 OmniShare v1.0.0，使用独立演示数据。设备地址已遮挡。
+截图使用 Windows 11 上运行的独立演示工作区。画面中的设备地址已遮挡。
 
 ![工作台展示当前设备、已绑定设备和内容概况](docs/assets/screenshots/workspace.png)
 
@@ -24,9 +24,13 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 
 随手记按目录筛选，并标明每条内容的来源设备。
 
-![协同文档展示具有目录和来源标签的文档编辑区](docs/assets/screenshots/document.png)
+![960×640 小窗口中的协同文档编辑器](docs/assets/screenshots/document-editor.png)
 
-协同文档在当前界面保存到内容所属设备。
+候选版在小窗口中优先显示正文，目录和格式工具按需展开。协同文档在当前界面保存到内容所属设备。
+
+## 下载
+
+[候选版 v1.0.1-rc.1](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.1) 提供 Markdown 编辑器改进，适合试用。
 
 ## 从源码运行
 
@@ -48,4 +52,5 @@ go run ./cmd/omnishare --listen localhost --port 8081 --data-dir ..\data --no-br
 - [系统架构](docs/ARCHITECTURE.md)
 - [安全分享](docs/SECURE_SHARING.md)
 - [安全说明](SECURITY.md)
+- [v1.0.1-rc.1 发布说明](docs/RELEASE_NOTES_v1.0.1-rc.1.md)
 - [v1.0.0 发布说明](docs/RELEASE_NOTES_v1.0.0.md)
