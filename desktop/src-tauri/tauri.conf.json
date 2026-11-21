@@ -14,11 +14,12 @@
         "title": "OmniShare",
         "width": 1200,
         "height": 800,
-        "minWidth": 960,
-        "minHeight": 640,
+        "minWidth": 390,
+        "minHeight": 420,
         "resizable": true,
         "fullscreen": false,
-        "center": true
+        "center": true,
+        "preventOverflow": { "width": 16, "height": 16 }
       }
     ],
     "security": {
