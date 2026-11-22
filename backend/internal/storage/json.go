@@ -45,13 +45,24 @@ type state struct {
 }
 
 type Store struct {
-	mu      sync.RWMutex
-	path    string
-	dataDir string
-	state   state
+	mu         sync.RWMutex
+	path       string
+	dataDir    string
+	state      state
+	folderMode bool
 }
 
 func New(dataDir string) (*Store, error) {
+	return newJSONStore(dataDir, "omnishare.json", false, nil)
+}
+
+// NewFolder opens the workspace index and visible Markdown files. A seed
+// snapshot is used only for first migration from a legacy installation.
+func NewFolder(dataDir string, seed []byte) (*Store, error) {
+	return newJSONStore(dataDir, "workspace.json", true, seed)
+}
+
+func newJSONStore(dataDir, index string, folderMode bool, seed []byte) (*Store, error) {
 	if strings.TrimSpace(dataDir) == "" {
 		return nil, errors.New("data directory is required")
 	}
@@ -64,10 +75,15 @@ func New(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dataDir, "uploads", ".purging"), 0o700); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dataDir, "omnishare.json"), dataDir: dataDir}
+	s := &Store{path: filepath.Join(dataDir, index), dataDir: dataDir, folderMode: folderMode}
 	loaded, recovered, err := s.load()
 	if err != nil {
 		return nil, err
+	}
+	if !loaded && len(seed) > 0 {
+		if err := json.Unmarshal(seed, &s.state); err != nil {
+			return nil, fmt.Errorf("decode previous workspace: %w", err)
+		}
 	}
 	s.initializeState()
 	if recovered || !loaded || s.state.SchemaVersion != currentStateSchema {
@@ -83,25 +99,42 @@ func New(dataDir string) (*Store, error) {
 func (s *Store) DataDir() string { return s.dataDir }
 
 func (s *Store) load() (loaded, recovered bool, err error) {
-	data, readErr := os.ReadFile(s.path)
-	if readErr == nil {
-		if json.Unmarshal(data, &s.state) == nil {
-			return true, false, nil
+	read := func(path string) (state, error) {
+		var candidate state
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return candidate, err
 		}
+		if err := json.Unmarshal(data, &candidate); err != nil {
+			return candidate, err
+		}
+		if s.folderMode {
+			if err := s.hydrateMarkdown(&candidate); err != nil {
+				return candidate, err
+			}
+		}
+		return candidate, nil
 	}
-	backup, backupErr := os.ReadFile(s.path + ".bak")
+	candidate, currentErr := read(s.path)
+	if currentErr == nil {
+		s.state = candidate
+		return true, false, nil
+	}
+	candidate, backupErr := read(s.path + ".bak")
 	if backupErr == nil {
-		if unmarshalErr := json.Unmarshal(backup, &s.state); unmarshalErr == nil {
-			return true, true, nil
+		s.state = candidate
+		return true, true, nil
+	}
+	if errors.Is(currentErr, os.ErrNotExist) && errors.Is(backupErr, os.ErrNotExist) {
+		// Only a missing index qualifies as a fresh workspace. A missing
+		// Markdown document is a recoverable data error, not a fresh store.
+		if _, statErr := os.Stat(s.path); errors.Is(statErr, os.ErrNotExist) {
+			if _, statErr := os.Stat(s.path + ".bak"); errors.Is(statErr, os.ErrNotExist) {
+				return false, false, nil
+			}
 		}
 	}
-	if errors.Is(readErr, os.ErrNotExist) && errors.Is(backupErr, os.ErrNotExist) {
-		return false, false, nil
-	}
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return false, false, readErr
-	}
-	return false, false, errors.New("omnishare.json is corrupt and no valid backup exists")
+	return false, false, fmt.Errorf("%s and backup could not be opened: %w", filepath.Base(s.path), errors.Join(currentErr, backupErr))
 }
 
 func (s *Store) initializeState() {
@@ -127,6 +160,13 @@ func (s *Store) initializeState() {
 
 func (s *Store) persistCandidate(candidate state) error {
 	candidate.SchemaVersion = currentStateSchema
+	if s.folderMode {
+		var err error
+		candidate, err = s.writeMarkdownFiles(candidate)
+		if err != nil {
+			return err
+		}
+	}
 	return durable.WriteFileFunc(s.path, 0o600, func(w io.Writer) error {
 		encoder := json.NewEncoder(w)
 		encoder.SetIndent("", "  ")

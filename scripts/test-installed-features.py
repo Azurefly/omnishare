@@ -81,7 +81,7 @@ class InstalledFeatures:
     def health(self):
         health = self.api("GET", "/api/v1/health")
         require(health.get("status") == "ok" and health.get("version") == self.version
-                and health.get("storage") == "sqlite", "Installed backend/version/storage mismatch")
+                and health.get("storage") == "folder", "Installed backend/version/storage mismatch")
         status, headers, raw = self.request("GET", "/", authenticated=False)
         require(status == 200 and "text/html" in headers.get("Content-Type", "")
                 and b"<title>OmniShare</title>" in raw and b"app.js" in raw,
@@ -158,16 +158,15 @@ class InstalledFeatures:
         require(status == 206 and part == payload[:9], "HTTP range did not return the original bytes")
         self.passed("file_upload_download_and_range")
 
-        self.current_check = "share_access_and_revocation"
-        share = self.api("POST", "/api/v1/shares", {
-            "object_type": "note", "object_id": note["id"], "ttl_seconds": 3600, "max_access_count": 3}, 201)
-        parsed_share = urllib.parse.urlsplit(share["url"])
-        require(parsed_share.scheme + "://" + parsed_share.netloc == self.base, "Share URL left the installed server")
-        status, _, raw = self.request("GET", parsed_share.path, authenticated=False)
-        require(status == 200 and content.encode() in raw, "Share did not expose the intended test content")
-        self.api("DELETE", "/api/v1/shares/" + share["id"])
-        require(self.request("GET", parsed_share.path, authenticated=False)[0] == 410, "Revoked share remained usable")
-        self.passed("share_access_and_revocation")
+        self.current_check = "public_delivery_disabled_until_configured"
+        delivery = self.api("GET", "/api/v1/delivery/config")
+        require(delivery["configured"] is False, "First run enabled public delivery")
+        selection = {"object_type": "note", "object_id": note["id"]}
+        require(self.request("POST", "/api/v1/delivery/prepare", selection)[0] == 412,
+                "Unconfigured desktop prepared a public delivery")
+        require(self.request("POST", "/api/v1/shares", selection)[0] == 412,
+                "Local legacy share endpoint created an intranet link")
+        self.passed("public_delivery_disabled_until_configured")
 
         self.current_check = "encrypted_backup_restore"
         password = secrets.token_urlsafe(32)

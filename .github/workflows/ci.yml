@@ -43,6 +43,11 @@ jobs:
           go vet ./...
       - name: Go tests
         run: cd backend && go test ./... -count=1 -race
+      - name: Independent public delivery tests
+        run: |
+          test -z "$(gofmt -l delivery-server)"
+          go -C delivery-server vet ./...
+          go -C delivery-server test ./... -count=1 -race
       - name: Real HTTP process integration
         run: |
           (cd backend && go build -trimpath -o "$RUNNER_TEMP/omnishare-http-test" ./cmd/omnishare)

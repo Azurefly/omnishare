@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "omnishare-desktop"
-version = "1.0.1-rc.1"
+version = "1.0.1-rc.2"
 dependencies = [
  "reqwest",
  "rustls",

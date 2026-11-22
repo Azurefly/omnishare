@@ -1,7 +1,7 @@
 {
-  "tag": "v1.0.1-rc.1",
-  "name": "OmniShare v1.0.1-rc.1 · Markdown 编辑器候选版",
-  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.1.md",
+  "tag": "v1.0.1-rc.2",
+  "name": "OmniShare v1.0.1-rc.2 · 公开交付与文件工作区候选版",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.2.md",
   "prerelease": true,
   "platforms": [
     "windows",
@@ -17,6 +17,6 @@
     "reason": "Candidate DMG uses ad-hoc signing. Apple notarization is pending.",
     "dmg_published": false
   },
-  "release_date": "2026-11-21",
+  "release_date": "2026-11-22",
   "publication_channel": "candidate"
 }

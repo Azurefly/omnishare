@@ -176,6 +176,16 @@ func (s *Server) deleteFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if kind == "files" && mode == "trash_items" {
+		s.fileStorageMu.Lock()
+		defer s.fileStorageMu.Unlock()
+		for _, file := range s.store.ListFilesInFolder("", "", path, true) {
+			if _, busy := s.activeFileTransfers.Load(file.ID); busy {
+				respond(w, 409, 409, "目录中有正在转移的文件，请稍后再删除", nil)
+				return
+			}
+		}
+	}
 	affected, err := s.store.DeleteFolder(kind, path, mode)
 	if err != nil {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)

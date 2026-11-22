@@ -107,6 +107,13 @@ func (s *Server) federated(next http.Handler) http.Handler {
 			}
 		}
 		if resource == "shares" && len(segments) == 3 && r.Method == "POST" {
+			s.storageMu.RLock()
+			folderWorkspace := s.storageState.Engine == "folder"
+			s.storageMu.RUnlock()
+			if folderWorkspace {
+				next.ServeHTTP(w, r)
+				return
+			}
 			body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			if err == nil && len(body) <= maxJSONBody {
@@ -444,7 +451,8 @@ func (s *Server) proxyObject(w http.ResponseWriter, r *http.Request, id, path st
 		respond(w, 404, 404, "设备未绑定或已解绑", nil)
 		return
 	}
-	if !peerContentPath(strings.SplitN(path, "?", 2)[0]) {
+	route := strings.SplitN(path, "?", 2)[0]
+	if !peerContentPath(route) || strings.HasSuffix(route, "/finish-transfer") {
 		respond(w, 400, 400, "unsupported remote action", nil)
 		return
 	}

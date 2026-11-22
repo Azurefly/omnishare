@@ -63,6 +63,7 @@ jobs:
           node --test scripts/test-release-contract.mjs
           git diff --exit-code -- backend/internal/frontend/dist
           (cd backend && go vet ./... && go test ./... -race -count=1 -timeout=6m)
+          go -C delivery-server test ./... -race -count=1
           python3 scripts/test-http-integration.py dist/binaries/omnishare-linux-amd64
       - name: Real Chromium workflow, not API mocks
         timeout-minutes: 5

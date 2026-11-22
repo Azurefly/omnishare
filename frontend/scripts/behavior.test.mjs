@@ -66,7 +66,7 @@ function createApp(options = {}) {
   const app = vm.runInContext(`({ state, authHeaders, sessionGet, sessionSet, api, apiPage, apiBlob, openRawNote, loadAll, loadConfig, verifyAuth,
     sessionRemove, keyHeaders, fillSettings, saveSettings, showAuth, updateAccessKeyControls, exportBackup, preservePadDraft, performPadSave,
     restoreBackup, openRestoreDialog, createPad, submitNewPad, refreshCurrentPad, refreshWorkspace, loadRemotePadVersion, savePadDraftCopy, enqueuePadSave, workspacePath, submitPeerBinding, listView, renderNotes, createPoller,
-    openDownload, loadShares, loadAudit, loadDevices, deletePad, askConfirm,
+    openDownload, loadDeliveryConfig, loadShares, loadAudit, loadDevices, deletePad, askConfirm,
     normalizeClientFolder, joinFolderPaths, loadFolders, loadNotes, selectFolder, appendFolderQuery, uploadFiles, renameFile, submitRenameFile, savePad })`, context)
   return { app, element, stored, downloads, blobs, requests, replacedURLs }
 }
@@ -661,15 +661,17 @@ test('openDownload gives immediate busy feedback, completion status, and downloa
 test('manual refresh actions show completion toasts and restore button labels', async () => {
   const { app, element } = createApp({
     fetch: async url => {
-      if (String(url).startsWith('/api/v1/shares')) return Response.json({ code: 0, data: [] })
+      if (url === '/api/v1/delivery/config') return Response.json({ code: 0, data: { configured: true } })
+      if (url === '/api/v1/delivery/items') return Response.json({ code: 0, data: [] })
       if (String(url).startsWith('/api/v1/audit')) return Response.json({ code: 0, data: [] })
       if (String(url).startsWith('/api/v1/devices')) return Response.json({ code: 0, data: [] })
       throw new Error(`Unexpected fetch ${url}`)
     }
   })
+  await app.loadDeliveryConfig()
   element('#refreshSharesBtn').textContent = '刷新列表'
   await app.loadShares(false, true)
-  assert.equal(element('#toast').textContent, '分享列表已刷新')
+  assert.equal(element('#toast').textContent, '交付列表已刷新')
   assert.equal(element('#refreshSharesBtn').disabled, false)
   assert.equal(element('#refreshSharesBtn').textContent, '刷新列表')
 

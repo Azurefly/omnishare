@@ -31,7 +31,7 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "TLS private key file")
 	noBrowser := flag.Bool("no-browser", false, "do not open the browser automatically")
 	shutdownOnStdinClose := flag.Bool("shutdown-on-stdin-close", false, "shut down when the launching desktop process closes stdin")
-	storageEngine := flag.String("storage-engine", defaultStorageEngine(), "storage engine: sqlite (default) or json")
+	storageEngine := flag.String("storage-engine", defaultStorageEngine(), "storage engine: folder (default), sqlite or json")
 	migrateStorage := flag.Bool("migrate-storage", false, "migrate omnishare.json to SQLite and exit")
 	flag.Parse()
 	parentClosed := parentInputClosed(*shutdownOnStdinClose, os.Stdin)
@@ -112,7 +112,7 @@ func main() {
 	cleanupDone := make(chan struct{})
 	go func() {
 		defer close(cleanupDone)
-		cleanupLoop(ctx, store, cfg)
+		cleanupLoop(ctx, store, cfg, server)
 	}()
 
 	serveErr := make(chan error, 1)
@@ -168,10 +168,10 @@ func main() {
 	server.FlushDeniedAudits()
 }
 
-// openStorage selects the production SQLite engine. If the one-shot JSON
-// import fails, the process keeps running on the legacy JSON engine and reports
-// "not migrated" through the health endpoint instead of failing to boot.
 func openStorage(dataDir, engine string) (storage.Backend, api.StorageState, error) {
+	if engine == "folder" {
+		return openFolderWorkspace(dataDir)
+	}
 	if engine == "json" {
 		store, err := storage.New(dataDir)
 		if err != nil {
@@ -180,7 +180,7 @@ func openStorage(dataDir, engine string) (storage.Backend, api.StorageState, err
 		return store, api.StorageState{Engine: "json"}, nil
 	}
 	if engine != "sqlite" {
-		return nil, api.StorageState{}, fmt.Errorf("unknown storage engine %q: use sqlite or json", engine)
+		return nil, api.StorageState{}, fmt.Errorf("unknown storage engine %q: use folder, sqlite or json", engine)
 	}
 	_, statErr := os.Stat(filepath.Join(dataDir, "omnishare.db"))
 	hadSQLite := statErr == nil
@@ -210,6 +210,44 @@ func openStorage(dataDir, engine string) (storage.Backend, api.StorageState, err
 	return legacy, api.StorageState{Engine: "json", MigrationFailed: true, MigrationError: err.Error()}, nil
 }
 
+func openFolderWorkspace(dataDir string) (storage.Backend, api.StorageState, error) {
+	var seed []byte
+	index := filepath.Join(dataDir, "workspace.json")
+	if _, err := os.Stat(index); errors.Is(err, os.ErrNotExist) {
+		if _, backupErr := os.Stat(index + ".bak"); errors.Is(backupErr, os.ErrNotExist) {
+			for _, legacy := range []struct {
+				name   string
+				engine string
+			}{{"omnishare.db", "sqlite"}, {"omnishare.json", "json"}} {
+				if _, err := os.Stat(filepath.Join(dataDir, legacy.name)); errors.Is(err, os.ErrNotExist) {
+					continue
+				} else if err != nil {
+					return nil, api.StorageState{}, err
+				}
+				store, _, err := openStorage(dataDir, legacy.engine)
+				if err != nil {
+					return nil, api.StorageState{}, err
+				}
+				seed, err = store.Snapshot()
+				closeErr := store.Close()
+				if err != nil || closeErr != nil {
+					return nil, api.StorageState{}, errors.Join(err, closeErr)
+				}
+				break
+			}
+		} else if backupErr != nil {
+			return nil, api.StorageState{}, backupErr
+		}
+	} else if err != nil {
+		return nil, api.StorageState{}, err
+	}
+	store, err := storage.NewFolder(dataDir, seed)
+	if err != nil {
+		return nil, api.StorageState{}, err
+	}
+	return store, api.StorageState{Engine: "folder"}, nil
+}
+
 func migrateStorageNow(dataDir string) (storage.MigrationReport, error) {
 	store, err := storage.NewSQLite(dataDir)
 	if err != nil {
@@ -223,10 +261,10 @@ func defaultStorageEngine() string {
 	if value := os.Getenv("OMNISHARE_STORAGE"); value != "" {
 		return value
 	}
-	return "sqlite"
+	return "folder"
 }
 
-func cleanupLoop(ctx context.Context, store storage.Backend, cfg *config.Manager) {
+func cleanupLoop(ctx context.Context, store storage.Backend, cfg *config.Manager, server *api.Server) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	defer store.FlushStats()
@@ -242,19 +280,8 @@ func cleanupLoop(ctx context.Context, store storage.Backend, cfg *config.Manager
 			if _, err := store.PruneAudits(current.AuditRetentionDays, current.AuditMaxEvents); err != nil {
 				log.Printf("prune audits: %v", err)
 			}
-			files, _, err := store.PurgeExpiredTrash(current.TrashRetentionDays)
-			if err != nil {
+			if err := server.PurgeExpiredFileTrash(current.TrashRetentionDays); err != nil {
 				log.Printf("purge expired trash: %v", err)
-				continue
-			}
-			for _, f := range files {
-				if store.StorageReferencedByOthers(f.StoragePath, f.ID) {
-					continue
-				}
-				if err := os.Remove(filepath.Join(current.DataDir, f.StoragePath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-					log.Printf("purge file %s: %v", f.ID, err)
-					_ = store.AddAudit("purge_pending", "file", f.ID, "automatic physical deletion failed", map[string]interface{}{"error": err.Error()})
-				}
 			}
 		}
 	}

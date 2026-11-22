@@ -1,0 +1,30 @@
+[Unit]
+Description=OmniShare public delivery gateway
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=omnishare-delivery
+StateDirectoryMode=0700
+EnvironmentFile=/etc/omnishare-delivery/server.env
+LoadCredential=publishers.json:/etc/omnishare-delivery/publishers.json
+ExecStart=/opt/omnishare-delivery/omnishare-delivery -data-dir=/var/lib/omnishare-delivery -public-origin=${PUBLIC_ORIGIN} -publishers=${CREDENTIALS_DIRECTORY}/publishers.json
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryMax=160M
+
+[Install]
+WantedBy=multi-user.target

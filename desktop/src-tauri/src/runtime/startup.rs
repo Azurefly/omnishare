@@ -59,7 +59,10 @@ pub fn initialize(
             .join("logs"),
     };
     let log_path = log_dir.join("backend.log");
-    let data_dir = bootstrap::backend_data_dir(&executable)?;
+    let data_dir = match settings::resolve_data_dir(app) {
+        Some(directory) if directory.is_absolute() => directory,
+        _ => bootstrap::backend_data_dir(&executable)?,
+    };
     let status = backend_state.start(&executable, &log_path, &data_dir)?;
 
     if health::wait_backend(DEFAULT_BACKEND_HOST, status.port, Duration::from_secs(20)) {

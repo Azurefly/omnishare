@@ -140,3 +140,49 @@ func TestOpenStorageSuccessfulSQLiteIsNotPending(t *testing.T) {
 		}
 	}
 }
+
+func TestFolderWorkspaceMigratesLatestSQLiteContent(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyState(t, dir)
+	legacy, _, err := openStorage(dir, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	const body = "SQLite latest content saved to Markdown"
+	note := model.QuickNote{ID: "sqlite-latest", Content: body, ContentType: "text", CreatedAt: now, UpdatedAt: now}
+	if err := legacy.CreateNote(note); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		folder, state, err := openStorage(dir, "folder")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := folder.GetNote(note.ID)
+		if err != nil || got.Content != body || state.Engine != "folder" {
+			t.Fatalf("folder storage did not load the newest data: %+v %+v %v", state, got, err)
+		}
+		if err := folder.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := filepath.Glob(filepath.Join(dir, "notes", note.ID+"--*.md"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("could not find the note Markdown file: %v %v", paths, err)
+	}
+	text, err := os.ReadFile(paths[0])
+	if err != nil || string(text) != body {
+		t.Fatalf("Markdown file mismatch: %q %v", text, err)
+	}
+	index, err := os.ReadFile(filepath.Join(dir, "workspace.json"))
+	if err != nil || strings.Contains(string(index), body) {
+		t.Fatalf("workspace index should point at Markdown content: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "omnishare.db")); err != nil {
+		t.Fatalf("legacy database was not retained: %v", err)
+	}
+}

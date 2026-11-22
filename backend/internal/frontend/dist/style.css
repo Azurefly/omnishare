@@ -517,6 +517,18 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   white-space: nowrap;
 }
 .markdown-toolbar .markdown-format-toggle { display: none; }
+.markdown-toolbar .markdown-file-button { display: inline-flex; align-items: center; gap: 4px; border-color: var(--line); }
+.markdown-file-button .ui-icon { width: 15px; height: 15px; flex: none; }
+.markdown-file-button:hover { background: var(--surface-hover); color: var(--text); }
+.md-workspace-file { display: inline-flex; align-items: center; vertical-align: middle; gap: 5px; max-width: 100%; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface2); color: var(--accent-text); font: inherit; font-size: 0.88em; text-align: start; cursor: pointer; }
+.md-workspace-file .ui-icon { flex: none; width: 15px; height: 15px; }
+.md-workspace-file span { overflow-wrap: anywhere; }
+.workspace-file-picker-results { display: grid; gap: 5px; max-height: min(44dvh, 360px); overflow: auto; }
+.workspace-file-choice { display: grid; gap: 3px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface2); color: var(--text); text-align: start; overflow-wrap: anywhere; cursor: pointer; }
+.workspace-file-choice:hover { background: var(--surface-hover); }
+.workspace-file-choice span { color: var(--muted); font-size: 12px; }
+#workspaceFilePickerStatus { margin: 8px 0; }
+#workspaceFilePickerStatus:empty { margin: 0; }
 .markdown-tool-group button { display: inline-grid; min-width: 30px; place-items: center; }
 .markdown-tool-group button:hover, .markdown-tool-group select:hover { background: var(--surface-hover); color: var(--text); }
 .markdown-tool-group button > b, .markdown-tool-group button > i { font-size: 14px; }
@@ -977,7 +989,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   .markdown-toolbar button, .markdown-toolbar select { min-height: 36px; }
   .markdown-view-actions .markdown-modes button { padding-inline: 8px; }
   .modal.note-editor-dialog { width: calc(100% - 20px); border-radius: var(--radius-xl); }
-  .markdown-expand > span { display: none; }
+  .markdown-expand > span, .markdown-file-button > span { display: none; }
   .markdown-view-actions .markdown-expand { min-width: 36px; }
 }
 @media (max-height: 540px) {

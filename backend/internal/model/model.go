@@ -23,20 +23,22 @@ type QuickNote struct {
 }
 
 type FileAsset struct {
-	ID            string     `json:"id"`
-	FileName      string     `json:"file_name"`
-	FileSize      int64      `json:"file_size"`
-	MIMEType      string     `json:"mime_type"`
-	Folder        string     `json:"folder,omitempty"`
-	StoragePath   string     `json:"storage_path,omitempty"`
-	FileHash      string     `json:"file_hash,omitempty"`
-	DownloadCount int        `json:"download_count"`
-	IsVideo       bool       `json:"is_video"`
-	DownloadURL   string     `json:"download_url"`
-	StreamURL     string     `json:"stream_url,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	SourceShortcut  bool       `json:"source_shortcut,omitempty"`
+	SourceFileError string     `json:"source_file_error,omitempty"`
+	ID              string     `json:"id"`
+	FileName        string     `json:"file_name"`
+	FileSize        int64      `json:"file_size"`
+	MIMEType        string     `json:"mime_type"`
+	Folder          string     `json:"folder,omitempty"`
+	StoragePath     string     `json:"storage_path,omitempty"`
+	FileHash        string     `json:"file_hash,omitempty"`
+	DownloadCount   int        `json:"download_count"`
+	IsVideo         bool       `json:"is_video"`
+	DownloadURL     string     `json:"download_url"`
+	StreamURL       string     `json:"stream_url,omitempty"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type PadDocument struct {

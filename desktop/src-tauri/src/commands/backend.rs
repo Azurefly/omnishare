@@ -22,7 +22,11 @@ pub fn desktop_boot(
     app: AppHandle,
     state: State<'_, BackendState>,
     requested_port: Option<u16>,
+    requested_data_dir: Option<String>,
 ) -> Result<BackendNavigation, String> {
+    if let Some(directory) = requested_data_dir.filter(|path| !path.trim().is_empty()) {
+        settings::save_user_data_dir(&app, directory.trim())?;
+    }
     let preferred = requested_port.unwrap_or_else(|| settings::resolve(&app).port);
     startup::initialize(&app, state.inner(), preferred)?;
     state.inner().navigation()

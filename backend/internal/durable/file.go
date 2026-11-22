@@ -26,6 +26,18 @@ func WriteFile(path string, data []byte, mode fs.FileMode) error {
 // encoded directly into the temporary file, which avoids a second multi-megabyte
 // allocation on every mutation.
 func WriteFileFunc(path string, mode fs.FileMode, write func(io.Writer) error) error {
+	return writeFile(path, mode, write, true)
+}
+
+// WriteSecretFile installs a flushed credential file without retaining an older copy.
+func WriteSecretFile(path string, data []byte) error {
+	return writeFile(path, 0o600, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	}, false)
+}
+
+func writeFile(path string, mode fs.FileMode, write func(io.Writer) error, keepBackup bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -57,6 +69,13 @@ func WriteFileFunc(path string, mode fs.FileMode, write func(io.Writer) error) e
 		return err
 	}
 
+	if !keepBackup {
+		if err := os.Rename(tmp, path); err != nil {
+			return err
+		}
+		return SyncDir(dir)
+	}
+
 	backup := path + ".bak"
 	_ = os.Remove(backup)
 	hadCurrent := false
@@ -74,13 +93,14 @@ func WriteFileFunc(path string, mode fs.FileMode, write func(io.Writer) error) e
 		}
 		return fmt.Errorf("activate new generation: %w", err)
 	}
-	if err := syncDir(dir); err != nil {
+	if err := SyncDir(dir); err != nil {
 		return err
 	}
 	return nil
 }
 
-func syncDir(dir string) error {
+// SyncDir persists directory changes on systems that support directory sync.
+func SyncDir(dir string) error {
 	// Windows does not provide a portable directory-handle equivalent of the
 	// Unix directory fsync used to persist rename metadata. os.File.Sync on a
 	// directory returns ERROR_ACCESS_DENIED even after the file itself was

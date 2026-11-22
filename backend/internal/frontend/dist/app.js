@@ -210,9 +210,15 @@ function sourceLabel(item) {
   return `<span class="source-label${item.source_online === false ? ' source-offline' : ''}">来自 ${escapeHTML(name)}${item.source_online === false ? ' · 离线快照' : ''}</span>`
 }
 
+const workspaceFileRef = /^node-[0-9a-f]{20}~[A-Za-z0-9_-]{1,160}$/
+let filePickerEditor = null
+let filePickerSequence = 0
+const transferringFiles = new Set()
+
 function looksLikeMarkdown(text='') {
   const s = String(text || '')
   if (!s.trim()) return false
+  if (s.includes('](omnishare-file:')) return true
   if (/```[\s\S]*?```/.test(s)) return true
   if (/^\s{0,3}#{1,4}\s+\S/m.test(s)) return true
   if (/^\s*>\s+\S/m.test(s)) return true
@@ -234,6 +240,12 @@ function renderInlineMarkdown(escapedText) {
   out = out.replace(/\[([^\]\n]+)\]\((?:&lt;([^&\n]+)&gt;|([^)\s]+))\)/g, (_, label, angleTarget, plainTarget) => {
     const target = angleTarget || plainTarget || ''
     const rawTarget = target.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    if (rawTarget.startsWith('omnishare-file:')) {
+      const ref = rawTarget.slice('omnishare-file:'.length)
+      if (workspaceFileRef.test(ref)) {
+        return `<button type="button" class="md-workspace-file" data-workspace-file="${ref}" title="从工作区打开文件">${uiIcon('document')}<span>${label}</span></button>`
+      }
+    }
     if (/^https?:\/\//i.test(rawTarget)) {
       return `<a href="${target}" target="_blank" rel="noopener noreferrer">${label}</a>`
     }
@@ -347,6 +359,7 @@ function setMarkdownMode(editor, mode) {
   editor.querySelector('.markdown-preview').hidden = mode === 'write'
   editor.querySelector('.markdown-format').hidden = mode === 'preview'
   editor.querySelector('[data-md-format]').hidden = mode === 'preview'
+  editor.querySelector('[data-md-file]').hidden = mode === 'preview'
   setMarkdownFormatOpen(editor, false)
   editor.querySelector('[data-md-status]').textContent = ''
   for (const button of editor.querySelectorAll('[data-md-mode]')) {
@@ -486,6 +499,15 @@ function initMarkdownEditors() {
       const mode = event.target.closest('[data-md-mode]')?.dataset.mdMode
       const command = event.target.closest('[data-md-command]')?.dataset.mdCommand
       const path = event.target.closest('.md-path')?.dataset.copyPath
+      const file = event.target.closest('[data-workspace-file]')
+      if (file) {
+        await openWorkspaceFile(file)
+        return
+      }
+      if (event.target.closest('[data-md-file]')) {
+        openWorkspaceFilePicker(editor)
+        return
+      }
       if (event.target.closest('[data-md-expand]')) {
         editor.dataset.mdExpanded = String(!editor.closest('[data-writing-window]').classList.contains('is-writing-expanded'))
         updateWritingLayout(editor)
@@ -507,6 +529,77 @@ function initMarkdownEditors() {
     resetMarkdownEditor(editor)
   }
   window.matchMedia(compactWritingViewport).addEventListener('change', () => editors.forEach(updateWritingLayout))
+}
+
+function openWorkspaceFilePicker(editor) {
+  const dialog = $('#workspaceFilePicker')
+  if (dialog.open) return
+  const source = editor.querySelector('.markdown-source')
+  filePickerEditor = {source, start:source.selectionStart, end:source.selectionEnd}
+  $('#workspaceFileQuery').value = ''
+  $('#workspaceFileResults').replaceChildren()
+  dialog.showModal()
+  $('#workspaceFileQuery').focus()
+  void loadWorkspaceFileChoices()
+}
+
+async function loadWorkspaceFileChoices() {
+  const dialog = $('#workspaceFilePicker')
+  const results = $('#workspaceFileResults')
+  const status = $('#workspaceFilePickerStatus')
+  const seq = ++filePickerSequence
+  status.textContent = '正在查询工作区…'
+  results.replaceChildren()
+  try {
+    const q = encodeURIComponent($('#workspaceFileQuery').value.trim())
+    const payload = await apiPage(`/api/v1/files?q=${q}&limit=100`)
+    if (seq !== filePickerSequence || !dialog.open) return
+    for (const file of payload.items) {
+      const node = file.source_node_id || state.workspaceStatus?.local_node_id
+      const ref = file.id.includes('~') ? file.id : `${node}~${file.id}`
+      if (!workspaceFileRef.test(ref)) continue
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'workspace-file-choice'
+      const name = document.createElement('strong')
+      name.textContent = file.file_name
+      const meta = document.createElement('span')
+      meta.textContent = [file.source_node_name || '本机', file.folder, formatBytes(file.file_size),
+        file.source_online === false ? '来源离线' : ''].filter(Boolean).join(' · ')
+      button.append(name, meta)
+      button.addEventListener('click', () => {
+        if (!filePickerEditor) return
+        const {source, start, end} = filePickerEditor
+        const title = `${name.textContent} · ${file.source_node_name || '本机'}`
+          .replaceAll('[', '［').replaceAll(']', '］').replace(/[\r\n|]/g, ' ')
+        const reference = `[${title}](omnishare-file:${ref})`
+        dialog.close()
+        replaceMarkdownText(source, start, end, reference, start + reference.length)
+      })
+      results.append(button)
+    }
+    status.textContent = !results.childElementCount ? '没有找到文件' :
+      payload.total > 100 ? '仅显示前 100 个文件，可按名称缩小范围' : ''
+  } catch (err) {
+    if (seq === filePickerSequence && dialog.open) status.textContent = err.message
+  }
+}
+
+async function openWorkspaceFile(button) {
+  if (button.disabled) return
+  button.disabled = true
+  try {
+    const result = await api(`/api/v1/file-reference/${encodeURIComponent(button.dataset.workspaceFile)}`)
+    if (!result?.file) return
+    if (result.file.source_file_error) throw new Error(result.file.source_file_error)
+    button.querySelector('span').textContent = `${result.file.file_name} · ${result.source_node_name || '本机'}`
+    if (result.file.is_video) await playFile(result.file)
+    else await openDownload(result.file)
+  } catch (err) {
+    toast(err.message, true)
+  } finally {
+    button.disabled = false
+  }
 }
 
 function bindMarkdownSave(container, save, enter = false) {
@@ -1238,6 +1331,7 @@ function renderNotes() {
       <p>点击右上角“新建随手记”或点击“从剪贴板发送”以创建第一条随手记</p>
     </div>
   `
+  renderDeliveryControls()
 }
 
 async function getManagedNote(id) {
@@ -1339,6 +1433,43 @@ function showNoteEditor(dialogSelector, editorSelector, errorSelector) {
   resetMarkdownEditor($(editorSelector))
   noteEditorSnapshots.set(dialog, noteEditorSnapshot(dialog))
   dialog.showModal()
+}
+
+function openShortcutModal() {
+  $('#shortcutForm').reset()
+  $('#shortcutFolder').value = state.folders.files.selected === '__root__' ? '' : state.folders.files.selected || ''
+  $('#shortcutError').textContent = ''
+  $('#shortcutDialog').showModal()
+  $('#shortcutPath').focus()
+}
+
+let addingShortcut = false
+async function submitFileShortcut(pick) {
+  if (addingShortcut) return
+  const error = $('#shortcutError')
+  const path = $('#shortcutPath').value.trim()
+  if (!pick && !path) {
+    error.textContent = '请输入本机文件的完整路径'
+    return
+  }
+  addingShortcut = true
+  error.textContent = ''
+  try {
+    const file = await withButtonBusy(pick ? $('#pickShortcutBtn') : $('#addShortcutBtn'), '正在添加…', () =>
+      api('/api/v1/local-files/shortcuts', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({path, pick, folder:$('#shortcutFolder').value})
+      }))
+    if (!file) return
+    $('#shortcutDialog').close()
+    toast('文件快捷方式已添加')
+    await Promise.all([loadFiles(), loadFolders('files'), loadDashboard()])
+  } catch (err) {
+    error.textContent = err.message
+  } finally {
+    addingShortcut = false
+  }
 }
 
 function openUploadFileModal() {
@@ -1638,6 +1769,8 @@ function fileIcon(f) {
 }
 
 function fileAvailability(file) {
+  if (file.source_file_error) return escapeHTML(file.source_file_error)
+  if (file.source_shortcut && file.source_online !== false) return '文件快捷方式'
   const remote = typeof file.id === 'string' && /^node-[0-9a-f]{20}~/.test(file.id)
   if (!remote) return '本机文件'
   return file.source_online === false ? '远端索引 · 来源离线' : '远端索引 · 按需读取'
@@ -1662,10 +1795,11 @@ function renderFiles() {
         </div>
       </div>
       <div class="file-actions">
-        ${f.is_video ? `<button class="button ghost small play-file" ${f.source_online === false ? 'disabled title="来源设备离线，暂时无法读取原文件"' : ''}>${uiIcon('play')}<span>按需播放</span></button>` : ''}
-        <button class="button ghost small download-file" ${f.source_online === false ? 'disabled title="来源设备离线，暂时无法下载"' : ''}>下载到本机</button>
+        ${f.is_video ? `<button class="button ghost small play-file" ${f.source_online === false || f.source_file_error ? 'disabled' : ''}>${uiIcon('play')}<span>按需播放</span></button>` : ''}
+        <button class="button ghost small download-file" ${f.source_online === false || f.source_file_error ? 'disabled' : ''}>下载到本机</button>
         <button class="text-button share-file">分享</button>
-        <button class="text-button move-file">移动</button>
+        <button class="text-button move-file">移动目录</button>
+        ${f.id.includes('~') ? `<button class="text-button transfer-file" ${f.source_online === false || f.source_file_error || transferringFiles.has(f.id) ? 'disabled' : ''}>${transferringFiles.has(f.id) ? '转移中…' : '转移到本机'}</button>` : ''}
         <button class="text-button rename-file">重命名</button>
         <button class="text-button danger delete-file">删除</button>
       </div>
@@ -1677,6 +1811,7 @@ function renderFiles() {
       <p>点击右上角“上传本机文件”或直接拖放文件到此页面；仅在需要时按需传输</p>
     </div>
   `
+  renderDeliveryControls()
 }
 
 async function createFileTicket(file, disposition='attachment') {
@@ -1757,6 +1892,35 @@ async function openRawNote(id, btn=null) {
     })
   } catch (err) {
     toast(err.message, true)
+  }
+}
+
+async function transferFile(file, button) {
+  if (transferringFiles.has(file.id)) return
+  transferringFiles.add(file.id)
+  button.disabled = true
+  try {
+    const name = file.source_node_name || '来源设备'
+    const cleanup = file.source_shortcut
+      ? `只移除「${name}」中的快捷方式，保留外部原件`
+      : `移除「${name}」中的文件`
+    if (!await askConfirm(
+      `将「${file.file_name}」存入本机文件库？本机保存并校验后会${cleanup}，原有外链将失效。`,
+      {title:'转移到本机', confirmText:'确认转移', danger:true}
+    )) return
+    button.textContent = '转移中…'
+    const result = await api('/api/v1/file-transfers', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:file.id})
+    })
+    toast(result.moved ? '文件已转移到本机' : '本机副本已保存，来源清理未确认，可重试转移', !result.moved, 6000)
+    await Promise.all([loadFiles(), loadFolders('files'), loadDashboard()])
+  } catch (err) {
+    toast(err.message, true)
+  } finally {
+    transferringFiles.delete(file.id)
+    renderFiles()
   }
 }
 
@@ -2482,91 +2646,159 @@ async function copyText(value) {
   }
 }
 
-function openShare(type, id, name) {
-  state.shareDialogSession++
+let deliveryConfigured = false
+const deliveryLinks = new Map()
+let deliveryPreview = null
+
+function renderDeliveryControls() {
+  for (const button of $$('.share-file, .share-note, #sharePadBtn')) {
+    button.disabled = !deliveryConfigured
+    button.title = deliveryConfigured ? '公开交付' : '请先在「公开交付」配置服务器'
+  }
+}
+
+async function loadDeliveryConfig() {
+  if (!isLoopbackHost(location.hostname)) return
+  try {
+    const data = await api('/api/v1/delivery/config')
+    deliveryConfigured = data?.configured === true
+  } catch {
+    deliveryConfigured = false
+  }
+  renderDeliveryControls()
+}
+
+async function openDeliverySettings() {
+  if (!isLoopbackHost(location.hostname)) return
+  const dialog = $('#deliverySettingsDialog')
+  $('#deliverySettingsError').textContent = ''
+  $('#deliveryToken').value = ''
+  try {
+    const data = await api('/api/v1/delivery/config')
+    $('#deliveryPublicOrigin').value = data?.settings?.public_origin || ''
+    $('#deliveryManagement').value = data?.settings?.management || 'http://127.0.0.1:18485'
+    $('#deliveryPublisher').value = data?.settings?.publisher || ''
+    dialog.showModal()
+  } catch (err) {
+    toast(err.message,true)
+  }
+}
+
+async function saveDeliverySettings() {
+  const error = $('#deliverySettingsError')
+  const button = $('#deliverySettingsSave')
+  if (button.disabled) return
+  error.textContent = ''
+  try {
+    await withButtonBusy(button, '保存中…', async () => {
+      const value = await api('/api/v1/delivery/config', {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          public_origin:$('#deliveryPublicOrigin').value.trim(),
+          management:$('#deliveryManagement').value.trim(),
+          publisher:$('#deliveryPublisher').value.trim(),
+          token:$('#deliveryToken').value.trim()
+        })
+      })
+      $('#deliveryToken').value = ''
+      deliveryConfigured = value.configured === true
+      deliveryLinks.clear()
+      renderDeliveryControls()
+      $('#deliverySettingsDialog').close()
+      await loadShares(false)
+    })
+  } catch (err) {
+    error.textContent = err.message
+  }
+}
+
+function deliveryRandom() {
+  return [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2,'0')).join('')
+}
+
+async function openShare(type, id, name) {
+  if (!deliveryConfigured) return
+  const session = ++state.shareDialogSession
+  deliveryPreview = null
   $('#shareObjectType').value = type
   $('#shareObjectId').value = id
   $('#shareObjectName').textContent = name
-  $('#shareTitle').textContent = '创建安全外链分享'
+  $('#shareTitle').textContent = '公开交付'
   $('#shareCreateFields').hidden = false
   $('#shareTTL').value = '604800'
-  $('#shareMaxAccess').value = '0'
-  $('#shareCreateError').textContent = ''
+  $('#sharePassword').value = ''
+  $('#shareAttachments').replaceChildren()
+  $('#shareCreateError').textContent = '正在确认交付内容…'
   $('#shareResult').hidden = true
   $('#shareResultURL').value = ''
   $('#shareCopyStatus').textContent = ''
   $('#createShareBtn').hidden = false
+  $('#createShareBtn').disabled = true
   $('#copyShareBtn').hidden = true
   $('#closeShareBtn').textContent = '取消'
   $('#shareDialog').showModal()
-}
-
-function shareAccessibleURL(link) {
-  const raw = String(link?.url || '').trim()
-  if (!raw) return { url: '', loopbackOnly: false }
   try {
-    const parsed = new URL(raw, location.href)
-    if (!isLoopbackHost(parsed.hostname)) return { url: parsed.href, loopbackOnly: false }
-    const dev = link.source_node_id
-      ? state.devices.find(d => d.id === link.source_node_id)
-      : state.devices.find(d => d.is_local)
-    const candidates = [
-      !link.source_node_id || dev?.is_local ? safeDeviceURL(location.origin) : '',
-      ...(dev ? deviceAddresses(dev) : []),
-    ].filter(Boolean)
-    const reachable = candidates.find(addr => {
-      try { return !isLoopbackHost(new URL(addr).hostname) } catch { return false }
+    const preview = await api('/api/v1/delivery/prepare', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({object_type:type, object_id:id})
     })
-    if (reachable) {
-      const target = new URL(reachable)
-      parsed.protocol = target.protocol
-      parsed.hostname = target.hostname
-      parsed.port = target.port
-      return { url: parsed.href, loopbackOnly: false }
+    if (session !== state.shareDialogSession || !$('#shareDialog').open) return
+    deliveryPreview = {...preview, requestID:deliveryRandom(), token:deliveryRandom()}
+    $('#shareObjectName').textContent = preview.title
+    if (preview.references?.length) {
+      const label = document.createElement('p')
+      label.textContent = '一并发布的附件'
+      $('#shareAttachments').append(label)
     }
-    return { url: parsed.href, loopbackOnly: true }
-  } catch {
-    return { url: raw, loopbackOnly: false }
+    for (const ref of preview.references || []) {
+      const option = document.createElement('label')
+      option.className = 'switch-row'
+      const box = document.createElement('input')
+      box.type = 'checkbox'
+      box.value = ref.id
+      option.append(document.createTextNode(ref.name),box)
+      $('#shareAttachments').append(option)
+    }
+    $('#shareCreateError').textContent = ''
+    $('#createShareBtn').disabled = false
+  } catch (err) {
+    if (session === state.shareDialogSession) $('#shareCreateError').textContent = err.message
   }
 }
 
 async function createShare() {
   const dialog = $('#shareDialog')
   const createButton = $('#createShareBtn')
-  if (!dialog.open || createButton.disabled || createButton.hidden) return
+  if (!dialog.open || createButton.disabled || createButton.hidden || !deliveryPreview) return
   const session = state.shareDialogSession
+  const preview = deliveryPreview
   const payload = {
-    object_type: $('#shareObjectType').value,
-    object_id: $('#shareObjectId').value,
-    ttl_seconds: Number($('#shareTTL').value),
-    max_access_count: Number($('#shareMaxAccess').value)
+    object_type:$('#shareObjectType').value, object_id:$('#shareObjectId').value,
+    ttl_seconds:Number($('#shareTTL').value), password:$('#sharePassword').value,
+    revision:preview.revision, request_id:preview.requestID, token:preview.token,
+    attachments:$$('#shareAttachments input:checked').map(input => input.value)
   }
   $('#shareCreateError').textContent = ''
   try {
-    await withButtonBusy(createButton, '创建中…', async () => {
-      const link = await api('/api/v1/shares', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
+    await withButtonBusy(createButton, '正在发布…', async () => {
+      const link = await api('/api/v1/delivery/items', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
       })
+      deliveryLinks.set(link.id,link.url)
       if (dialog.open && session === state.shareDialogSession) {
-        const resolved = shareAccessibleURL(link)
-        $('#shareTitle').textContent = '分享链接已创建'
+        $('#shareTitle').textContent = '交付已发布'
         $('#shareCreateFields').hidden = true
         createButton.hidden = true
-        $('#shareResultURL').value = resolved.url
-        $('#shareReachability').hidden = !resolved.loopbackOnly
+        $('#shareResultURL').value = link.url
         $('#shareResult').hidden = false
         $('#copyShareBtn').hidden = false
         $('#closeShareBtn').textContent = '完成'
         $('#copyShareBtn').focus()
       }
-      await Promise.all([loadShares(), loadDashboard()])
+      await loadShares()
     })
   } catch (err) {
-    if (dialog.open && session === state.shareDialogSession) {
-      $('#shareCreateError').textContent = err.message
-    }
+    if (dialog.open && session === state.shareDialogSession) $('#shareCreateError').textContent = err.message
   }
 }
 
@@ -2576,25 +2808,25 @@ async function copyShareLink(url) {
 
 async function copyCreatedShareLink() {
   const session = state.shareDialogSession
-  const url = $('#shareResultURL')
+  const input = $('#shareResultURL')
   const status = $('#shareCopyStatus')
   try {
-    await copyShareLink(url.value)
+    await copyShareLink(input.value)
     if (session === state.shareDialogSession) status.textContent = '已复制链接'
   } catch {
     if ($('#shareDialog').open && session === state.shareDialogSession) {
       status.textContent = '剪贴板不可用，已选中链接，可手动复制。'
-      url.focus()
-      url.select()
+      input.focus()
+      input.select()
     }
   }
 }
 
 async function loadShares(strict=false, manual=false) {
   const run = async () => {
-    state.shares = await apiCollection('/api/v1/shares')
+    state.shares = deliveryConfigured ? await api('/api/v1/delivery/items') : []
     renderShares()
-    if (manual) toast('分享列表已刷新')
+    if (manual && deliveryConfigured) toast('交付列表已刷新')
   }
   try {
     await (manual ? withButtonBusy($('#refreshSharesBtn'), '刷新中…', run) : run())
@@ -2603,55 +2835,31 @@ async function loadShares(strict=false, manual=false) {
   }
 }
 
-function shareStatus(link) {
-  const labels = {active:'有效', revoked:'已撤销', expired:'已过期', exhausted:'次数用尽', target_missing:'目标不存在', target_deleted:'目标已删除', target_expired:'目标已过期'}
-  const status = link.status || 'active'
-  return [labels[status] || status, status === 'active' ? '' : 'danger']
-}
-
 function renderShares() {
-  const labels = {note:'随手记', file:'文件', pad:'协同文档'}
-  listView('#sharesList').innerHTML = state.shares.length ? state.shares.map(link => {
-    const [status, cls] = shareStatus(link)
-    const limit = link.max_access_count > 0 ? `${link.access_count}/${link.max_access_count}` : `${link.access_count}/不限`
-    const resolved = shareAccessibleURL(link)
-    return `
-      <article class="card share-card" data-share-id="${escapeHTML(link.id)}">
-        <div>
-          <div class="note-meta">
-            <span class="tag">${labels[link.object_type] || escapeHTML(link.object_type)}</span>
-            <span class="badge ${cls === 'danger' ? 'muted' : ''}">${status}</span>
-          </div>
-          ${sourceLabel(link)}<h3>${escapeHTML(link.name)}</h3>
-          <p class="muted-text">访问 ${limit} · 到期 ${link.expires_at ? formatDate(link.expires_at) : '长期有效'}</p>
-          <code class="share-url">${escapeHTML(resolved.url)}</code>
-          ${resolved.loopbackOnly ? '<p class="share-url-warn">仅来源设备可用。请先在来源设备设置可访问的地址。</p>' : ''}
-        </div>
-        <div class="file-actions">
-          <button class="button ghost small copy-share">${uiIcon('copy')}<span>复制</span></button>
-          <button class="button ghost small open-share">${uiIcon('external')}<span>打开</span></button>
-          ${link.revoked_at ? '' : `<button class="button danger small revoke-share">${uiIcon('ban')}<span>撤销</span></button>`}
-        </div>
-      </article>
-    `
-  }).join('') : `
-    <div class="empty">
-      <div class="empty-icon">${uiIcon('link')}</div>
-      <h3>尚未创建安全分享</h3>
-      <p>您可以在随手记、文件或协同文档中点击“分享”按钮生成匿名安全访问链接</p>
-    </div>
-  `
+  $('#deliverySettingsBtn').hidden = !isLoopbackHost(location.hostname)
+  $('#refreshSharesBtn').disabled = !deliveryConfigured
+  listView('#sharesList').innerHTML = state.shares.length ? state.shares.map(link =>
+    `<article class="card share-card" data-share-id="${escapeHTML(link.id)}">
+      <div><h3>${escapeHTML(link.title)}</h3><p class="muted-text">到期 ${formatDate(link.expires_at)}</p></div>
+      <div class="file-actions">
+        ${deliveryLinks.has(link.id) ? '<button class="button ghost small copy-share">复制链接</button>' : ''}
+        <button class="button danger small revoke-share">撤销</button>
+      </div>
+    </article>`).join('') : `
+    <div class="empty"><div class="empty-icon">${uiIcon('link')}</div>
+      <h3>${deliveryConfigured ? '尚未发布交付' : '公开交付未启用'}</h3>
+      <p>${deliveryConfigured ? '从文件、随手记或协同文档选择「公开交付」。' : '在本机应用配置远程交付服务器后启用。'}</p>
+    </div>`
 }
 
 async function revokeShare(id) {
-  if (!await askConfirm('撤销后该安全外链将立即失效，是否继续？', { title: '撤销分享链接', confirmText: '撤销分享', danger: true })) return
+  if (!await askConfirm('撤销后，新的领取和下载请求将立即失效。', {title:'撤销交付', confirmText:'撤销', danger:true})) return
   try {
-    await api(`/api/v1/shares/${encodeURIComponent(id)}`, {method:'DELETE'})
-    toast('分享链接已撤销')
-    await Promise.all([loadShares(), loadDashboard()])
-  } catch (err) {
-    toast(err.message, true)
-  }
+    await api(`/api/v1/delivery/items/${encodeURIComponent(id)}`, {method:'DELETE'})
+    deliveryLinks.delete(id)
+    toast('交付已撤销')
+    await loadShares()
+  } catch (err) { toast(err.message,true) }
 }
 
 async function loadTrash(strict=false) {
@@ -3174,12 +3382,22 @@ function bindEvents() {
   $$('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)))
   $$('.dashboard-link').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.targetTab)))
   $('#dashNewNoteBtn')?.addEventListener('click', () => { switchTab('notes'); openCreateNoteModal() })
-  $('#dashUploadFileBtn')?.addEventListener('click', () => { switchTab('files'); openUploadFileModal() })
+  $('#dashUploadFileBtn')?.addEventListener('click', () => {
+    switchTab('files')
+    if (isLoopbackHost(location.hostname)) openShortcutModal()
+    else openUploadFileModal()
+  })
   $('#dashNewPadBtn')?.addEventListener('click', () => { switchTab('pads'); void createPad() })
   $('#dashBindBtn')?.addEventListener('click', () => openBindDialog())
   $('#openCreateNoteBtn')?.addEventListener('click', openCreateNoteModal)
   bindNoteEditor($('#createNoteDialog'), $('#createNoteBtn'), createNote)
   bindNoteEditor($('#editNoteDialog'), $('#saveEditNoteBtn'), saveEditNote)
+  $('#workspaceFileQuery').addEventListener('input', debounce(loadWorkspaceFileChoices))
+  $('#workspaceFilePickerClose').addEventListener('click', () => $('#workspaceFilePicker').close())
+  $('#workspaceFilePicker').addEventListener('close', () => {
+    filePickerEditor = null
+    filePickerSequence++
+  })
   $('#pasteBtn').addEventListener('click', readClipboardPreview)
   $('#clipboardConfirmBtn').addEventListener('click', confirmClipboardSend)
   $('#clipboardCancelBtn').addEventListener('click', closeClipboardPreview)
@@ -3191,6 +3409,11 @@ function bindEvents() {
   $('#noteSearch').addEventListener('input', debounce(() => loadNotes()))
   $('#noteTagFilter').addEventListener('change', () => loadNotes())
   $('#notesList').addEventListener('click', async e => {
+    const file = e.target.closest('[data-workspace-file]')
+    if (file) {
+      await openWorkspaceFile(file)
+      return
+    }
     const pathBtn = e.target.closest('.md-path')
     if (pathBtn) {
       await copyText(pathBtn.dataset.copyPath || '')
@@ -3223,6 +3446,14 @@ function bindEvents() {
   })
 
   $('#openUploadFileBtn')?.addEventListener('click', openUploadFileModal)
+  const localBrowser = isLoopbackHost(location.hostname)
+  $('#openShortcutBtn').hidden = !localBrowser
+  $('#openShortcutBtn').addEventListener('click', openShortcutModal)
+  $('#pickShortcutBtn').hidden = !/Windows/i.test(navigator.platform)
+  $('#pickShortcutBtn').addEventListener('click', () => void submitFileShortcut(true))
+  $('#shortcutForm').addEventListener('submit', event => { event.preventDefault(); void submitFileShortcut(false) })
+  $('#closeShortcutBtn').addEventListener('click', () => { if (!addingShortcut) $('#shortcutDialog').close() })
+  $('#shortcutDialog').addEventListener('cancel', event => { if (addingShortcut) event.preventDefault() })
   $('#cancelUploadFileBtn')?.addEventListener('click', () => $('#uploadFileDialog')?.close())
   $('#closeUploadFileBtn')?.addEventListener('click', () => $('#uploadFileDialog')?.close())
   $('#chooseFilesBtn').addEventListener('click', e => {
@@ -3292,6 +3523,8 @@ function bindEvents() {
     const f = state.files.find(x => x.id === card.dataset.fileId)
     const dlBtn = e.target.closest('.download-file')
     const playBtn = e.target.closest('.play-file')
+    const transferBtn = e.target.closest('.transfer-file')
+    if (transferBtn) void transferFile(f, transferBtn)
     if (dlBtn) void openDownload(f, dlBtn)
     if (playBtn) void playFile(f, playBtn)
     if (e.target.closest('.share-file')) openShare('file', f.id, f.file_name)
@@ -3378,7 +3611,10 @@ function bindEvents() {
   bindMarkdownSave($('#padForm'), () => savePad(true))
   $('#savePadBtn').addEventListener('click', () => savePad(true))
   $('#sharePadBtn').addEventListener('click', () => {
-    if (state.currentPad) openShare('pad', state.currentPad.id, state.currentPad.title)
+    void (async () => {
+      if (!state.currentPad || (state.currentPadDirty && !await savePad(false))) return
+      await openShare('pad', state.currentPad.id, state.currentPad.title)
+    })()
   })
   $('#deletePadBtn').addEventListener('click', deletePad)
 
@@ -3388,18 +3624,19 @@ function bindEvents() {
   })
   $('#copyShareBtn').addEventListener('click', copyCreatedShareLink)
   $('#refreshSharesBtn').addEventListener('click', () => loadShares(false, true))
+  $('#deliverySettingsBtn').addEventListener('click', () => void openDeliverySettings())
+  $('#deliverySettingsClose').addEventListener('click', () => $('#deliverySettingsDialog').close())
+  $('#deliverySettingsDialog').addEventListener('close', () => { $('#deliveryToken').value = '' })
+  $('#deliverySettingsForm').addEventListener('submit', e => { e.preventDefault(); void saveDeliverySettings() })
   $('#sharesList').addEventListener('click', e => {
     const card = e.target.closest('[data-share-id]')
     if (!card) return
-    const link = state.shares.find(x => x.id === card.dataset.shareId)
-    const resolved = shareAccessibleURL(link)
-    if (e.target.closest('.copy-share')) {
-      copyShareLink(resolved.url)
-        .then(() => toast(resolved.loopbackOnly ? '已复制链接（仅来源设备可用）' : '分享链接已复制', resolved.loopbackOnly))
-        .catch(() => toast('剪贴板不可用，请选中卡片中的链接手动复制', true))
+    const id = card.dataset.shareId
+    if (e.target.closest('.copy-share') && deliveryLinks.has(id)) {
+      copyShareLink(deliveryLinks.get(id)).then(() => toast('已复制链接'))
+        .catch(() => toast('剪贴板不可用，请在发布窗口复制链接',true))
     }
-    if (e.target.closest('.open-share')) { try { const url = new URL(resolved.url, location.href); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error('分享地址无效'); window.open(url.href, '_blank', 'noopener'); toast('已在新窗口打开分享链接') } catch (err) { toast(err.message, true) } }
-    if (e.target.closest('.revoke-share')) revokeShare(link.id)
+    if (e.target.closest('.revoke-share')) void revokeShare(id)
   })
 
   $('#trashType').addEventListener('change', loadTrash)
@@ -3482,6 +3719,7 @@ async function start() {
   })
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {})
   await loadAll()
+  await loadDeliveryConfig()
   switchTab(state.activeTab)
   // A background tab must not keep polling the local server on a timer, and a
   // window nobody is looking at (behind other apps, or hidden to the tray where

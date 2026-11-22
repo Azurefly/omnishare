@@ -88,7 +88,11 @@
           本地服务端口
           <input id="port" name="port" type="number" min="1024" max="65535" value="8081" required />
         </label>
-        <p class="hint">端口会保存到当前用户配置。若端口已被占用，OmniShare 会自动选择后续可用端口。</p>
+        <label>
+          本机存储文件夹
+          <input id="dataDir" name="dataDir" type="text" placeholder="输入完整路径，留空使用用户目录下的 .omnishare" spellcheck="false" />
+        </label>
+        <p class="hint">每台设备独立保存文件。若端口已被占用，OmniShare 会自动选择可用端口。</p>
         <button id="start" type="submit">保存并启动</button>
       </form>
 
@@ -112,7 +116,8 @@
         status.textContent = `正在启动本地服务，首选端口 ${requestedPort}。`;
 
         try {
-          const backend = await invoke('desktop_boot', { requestedPort });
+          const requestedDataDir = document.getElementById('dataDir').value.trim() || null;
+          const backend = await invoke('desktop_boot', { requestedPort, requestedDataDir });
           status.textContent = `服务已在端口 ${backend.port} 启动，正在打开工作台。`;
           window.location.replace(backend.url);
         } catch (error) {
@@ -140,6 +145,7 @@
         try {
           const settings = await invoke('desktop_settings');
           portInput.value = String(settings.port);
+          document.getElementById('dataDir').value = settings.data_dir || '';
           if (settings.configured) {
             await boot(settings.port);
           } else {

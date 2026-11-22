@@ -18,6 +18,7 @@ const PREFERRED_SCAN_LIMIT: u16 = 100;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DesktopSettings {
     pub port: Option<u16>,
+    pub data_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +26,7 @@ pub struct DesktopSettingsView {
     pub port: u16,
     pub configured: bool,
     pub source: String,
+    pub data_dir: Option<PathBuf>,
 }
 
 pub fn validate_port(port: u16) -> Result<u16, String> {
@@ -38,6 +40,7 @@ pub fn validate_port(port: u16) -> Result<u16, String> {
 }
 
 pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
+    let data_dir = resolve_data_dir(app);
     if let Ok(raw) = env::var(PORT_ENV) {
         if let Ok(parsed) = raw.parse::<u16>() {
             if let Ok(port) = validate_port(parsed) {
@@ -45,6 +48,7 @@ pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
                     port,
                     configured: true,
                     source: PORT_ENV.to_string(),
+                    data_dir,
                 };
             }
         }
@@ -56,6 +60,7 @@ pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
                 port,
                 configured: true,
                 source: path.display().to_string(),
+                data_dir,
             };
         }
     }
@@ -66,6 +71,7 @@ pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
                 port,
                 configured: true,
                 source: path.display().to_string(),
+                data_dir,
             };
         }
     }
@@ -74,6 +80,7 @@ pub fn resolve(app: &AppHandle) -> DesktopSettingsView {
         port: DEFAULT_BACKEND_PORT,
         configured: false,
         source: "default".to_string(),
+        data_dir,
     }
 }
 
@@ -82,13 +89,42 @@ pub fn save_user_port(app: &AppHandle, port: u16) -> Result<PathBuf, String> {
     let path = user_settings_path(app).ok_or_else(|| {
         "Unable to resolve the OmniShare desktop configuration directory.".to_string()
     })?;
+    let mut settings = read_settings(&path).unwrap_or_default();
+    settings.port = Some(port);
+    write_settings(&path, &settings)?;
+    Ok(path)
+}
+
+fn write_settings(path: &Path, settings: &DesktopSettings) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(settings).map_err(|err| err.to_string())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let content = serde_json::to_string_pretty(&DesktopSettings { port: Some(port) })
-        .map_err(|err| err.to_string())?;
-    fs::write(&path, format!("{}\n", content)).map_err(|err| err.to_string())?;
-    Ok(path)
+    fs::write(path, format!("{}\n", content)).map_err(|err| err.to_string())
+}
+
+pub fn resolve_data_dir(app: &AppHandle) -> Option<PathBuf> {
+    if let Some(path) = env::var_os("OMNISHARE_DATA_DIR").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    user_settings_path(app)
+        .and_then(|path| read_settings(&path))
+        .and_then(|settings| settings.data_dir)
+}
+
+pub fn save_user_data_dir(app: &AppHandle, requested: &str) -> Result<(), String> {
+    let directory = PathBuf::from(requested);
+    if !directory.is_absolute() {
+        return Err("请输入当前设备上的完整文件夹路径。".to_string());
+    }
+    fs::create_dir_all(&directory).map_err(|err| format!("无法打开存储文件夹：{err}"))?;
+    if !directory.is_dir() {
+        return Err("请选择文件夹作为存储位置。".to_string());
+    }
+    let path = user_settings_path(app).ok_or("无法打开本机配置目录。")?;
+    let mut settings = read_settings(&path).unwrap_or_default();
+    settings.data_dir = Some(directory);
+    write_settings(&path, &settings)
 }
 
 pub fn find_available_port(preferred: u16) -> Result<u16, String> {
@@ -118,9 +154,11 @@ fn port_is_available(port: u16) -> bool {
 }
 
 fn read_port(path: &Path) -> Option<u16> {
-    let content = fs::read_to_string(path).ok()?;
-    let settings = serde_json::from_str::<DesktopSettings>(&content).ok()?;
-    validate_port(settings.port?).ok()
+    validate_port(read_settings(path)?.port?).ok()
+}
+
+fn read_settings(path: &Path) -> Option<DesktopSettings> {
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
 fn user_settings_path(app: &AppHandle) -> Option<PathBuf> {

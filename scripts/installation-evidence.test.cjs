@@ -14,7 +14,7 @@ const windowsName = 'omnishare-windows-installation.json';
 const ubuntuName = os => `omnishare-ubuntu-${os}-installation.json`;
 // These are the public producer contract, not an import from the verifier under test.
 const exerciseChecks = ['health_and_embedded_ui', 'first_run_authentication', 'notes_and_trash',
-  'documents_and_conflicts', 'file_upload_download_and_range', 'share_access_and_revocation', 'encrypted_backup_restore'];
+  'documents_and_conflicts', 'file_upload_download_and_range', 'public_delivery_disabled_until_configured', 'encrypted_backup_restore'];
 const persistenceChecks = ['health_and_embedded_ui', 'configuration_persistence',
   'note_and_counter_persistence', 'file_persistence', 'document_persistence'];
 const windowsChecks = ['actual_installation', 'registration_and_shortcut', 'first_run_gui',

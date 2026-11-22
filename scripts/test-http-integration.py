@@ -75,7 +75,8 @@ def run(binary):
         try:
             start()
             assert request('GET', '/api/v1/notes')[0] == 200
-            assert data('GET', '/api/v1/health')['storage'] == 'sqlite'
+            assert data('GET', '/api/v1/health')['storage'] == 'folder'
+            assert not (root / 'data' / 'omnishare.db').exists()
             assert not (root / 'data' / 'init-token').exists()
             original = data('POST', '/api/v1/notes', {'content': '集成测试：保留的原始笔记'}, 201)
             body, headers = multipart('file', 'sample.txt', b'omnishare range payload')
@@ -102,7 +103,7 @@ def run(binary):
             stop()
             start()
             assert data('GET', '/api/v1/notes/' + original['id'] + '/manage')['content'] == original['content']
-            print(json.dumps({'result': 'passed', 'checks': ['token-free LAN first run', 'SQLite startup', 'Chinese note creation', 'file upload and HTTP Range', 'encrypted v3 backup', 'wrong-password restore preserves state', 'encrypted restore round trip', 'single-instance lock', 'restart persistence']}, ensure_ascii=False))
+            print(json.dumps({'result': 'passed', 'checks': ['token-free LAN first run', 'folder workspace startup', 'Chinese note creation', 'file upload and HTTP Range', 'encrypted v3 backup', 'wrong-password restore preserves state', 'encrypted restore round trip', 'single-instance lock', 'restart persistence']}, ensure_ascii=False))
         finally:
             stop()
             log.close()

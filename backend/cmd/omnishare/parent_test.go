@@ -162,7 +162,7 @@ func TestDesktopParentPipeShutdownPreservesBufferedCounters(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("desktop child ignored parent pipe closure")
 	}
-	store, _, err := openStorage(dir, "sqlite")
+	store, _, err := openStorage(dir, defaultStorageEngine())
 	if err != nil {
 		t.Fatal(err)
 	}

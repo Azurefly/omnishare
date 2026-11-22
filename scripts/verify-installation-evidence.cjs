@@ -8,7 +8,7 @@ const REPORT_LIMIT = 1024 * 1024;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FEATURE_CHECKS = {
   exercise: ['health_and_embedded_ui', 'first_run_authentication', 'notes_and_trash',
-    'documents_and_conflicts', 'file_upload_download_and_range', 'share_access_and_revocation', 'encrypted_backup_restore'],
+    'documents_and_conflicts', 'file_upload_download_and_range', 'public_delivery_disabled_until_configured', 'encrypted_backup_restore'],
   verify: ['health_and_embedded_ui', 'configuration_persistence', 'note_and_counter_persistence',
     'file_persistence', 'document_persistence']
 };

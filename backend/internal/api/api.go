@@ -69,6 +69,10 @@ type Server struct {
 	// the write lock. Uploading and validating an archive do not block requests.
 	dataMu sync.RWMutex
 
+	deliverySettingsMu  sync.Mutex
+	fileStorageMu       sync.Mutex
+	activeFileTransfers sync.Map
+
 	storageMu    sync.RWMutex
 	storageState StorageState
 
@@ -207,6 +211,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/notes/bulk-move", s.protected(s.bulkMoveNotes))
 	mux.HandleFunc("GET /n/{id}/raw", s.protected(s.rawNote))
 	mux.HandleFunc("GET /api/v1/files", s.protected(s.listFiles))
+	mux.HandleFunc("GET /api/v1/files/{id}/reference", s.protected(s.describeFileReference))
+	mux.HandleFunc("POST /api/v1/files/{id}/finish-transfer", s.protected(s.finalizeOutgoingFile))
+	mux.HandleFunc("GET /api/v1/file-reference/{reference}", s.protected(s.resolveWorkspaceFile))
+	mux.HandleFunc("POST /api/v1/file-transfers", s.protected(s.transferFileToLocal))
+	mux.HandleFunc("POST /api/v1/local-files/shortcuts", s.protected(s.addFileShortcut))
 	mux.HandleFunc("POST /api/v1/files/upload", s.protected(s.uploadFile))
 	mux.HandleFunc("PUT /api/v1/files/{id}", s.protected(s.renameFile))
 	mux.HandleFunc("GET /api/v1/files/{id}/download", s.protected(s.downloadFile))
@@ -227,6 +236,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/folders/rename", s.protected(s.renameFolder))
 	mux.HandleFunc("POST /api/v1/folders/delete", s.protected(s.deleteFolder))
 	mux.HandleFunc("GET /api/v1/devices", s.protected(s.listDevices))
+	mux.HandleFunc("GET /api/v1/delivery/config", s.protected(localDelivery(s.deliverySettings)))
+	mux.HandleFunc("PUT /api/v1/delivery/config", s.protected(localDelivery(s.deliverySettings)))
+	mux.HandleFunc("POST /api/v1/delivery/prepare", s.protected(localDelivery(s.prepareDelivery)))
+	mux.HandleFunc("POST /api/v1/delivery/items", s.protected(localDelivery(s.publishDelivery)))
+	mux.HandleFunc("GET /api/v1/delivery/items", s.protected(localDelivery(s.manageDeliveries)))
+	mux.HandleFunc("DELETE /api/v1/delivery/items/{id}", s.protected(localDelivery(s.manageDeliveries)))
 	mux.HandleFunc("GET /api/v1/shares", s.protected(s.listShares))
 	mux.HandleFunc("POST /api/v1/shares", s.protected(s.createShare))
 	mux.HandleFunc("DELETE /api/v1/shares/{id}", s.protected(s.revokeShare))
@@ -888,6 +903,9 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := s.store.ListFilesInFolder(r.URL.Query().Get("q"), r.URL.Query().Get("type"), folder, recursive)
+	for i, item := range items {
+		items[i] = s.presentFile(item)
+	}
 	respondPage(w, r, items)
 }
 
@@ -1003,50 +1021,26 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
 	}
-	blobRelative := filepath.Join("uploads", "blobs", digest[:2], digest)
-	blobPath := filepath.Join(s.dataDir, blobRelative)
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o700); err != nil {
-		respond(w, http.StatusInternalServerError, 500, err.Error(), nil)
-		return
-	}
-	newBlob := false
-	if info, statErr := os.Stat(blobPath); statErr == nil {
-		if info.Size() != size || !fileHashMatches(blobPath, digest) {
-			respond(w, http.StatusConflict, 409, "existing blob failed integrity validation", nil)
-			return
-		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		respond(w, http.StatusInternalServerError, 500, statErr.Error(), nil)
-		return
-	} else if err := os.Link(stagingPath, blobPath); err != nil {
-		if info, statErr := os.Stat(blobPath); statErr == nil && info.Size() == size && fileHashMatches(blobPath, digest) {
-			_ = s.createUploadedAsset(w, filename, mimeType, size, digest, folder, exp, blobRelative)
-			return
-		}
-		respond(w, http.StatusInternalServerError, 500, err.Error(), nil)
-		return
-	} else {
-		newBlob = true
-	}
-	_ = os.Remove(stagingPath)
-	_ = s.createUploadedAsset(w, filename, mimeType, size, digest, folder, exp, blobRelative, newBlob)
-}
-
-func (s *Server) createUploadedAsset(w http.ResponseWriter, filename, mimeType string, size int64, digest, folder string, exp *time.Time, blobRelative string, newBlob ...bool) error {
 	id := storage.NewID("f")
-	asset := model.FileAsset{ID: id, FileName: filename, FileSize: size, MIMEType: mimeType, Folder: folder, StoragePath: blobRelative, FileHash: digest, IsVideo: strings.HasPrefix(mimeType, "video/"), DownloadURL: "/api/v1/files/" + id + "/download", ExpiresAt: exp, CreatedAt: time.Now()}
+	asset := model.FileAsset{
+		ID: id, FileName: filename, FileSize: size, MIMEType: mimeType, Folder: folder,
+		FileHash: digest, IsVideo: strings.HasPrefix(mimeType, "video/"),
+		DownloadURL: "/api/v1/files/" + id + "/download", ExpiresAt: exp, CreatedAt: time.Now(),
+	}
+	asset.StoragePath = s.managedFilePath(asset)
 	if asset.IsVideo {
 		asset.StreamURL = "/api/v1/files/" + id + "/stream"
 	}
-	if err := s.store.CreateFile(asset); err != nil {
-		if len(newBlob) > 0 && newBlob[0] {
-			_ = os.Remove(filepath.Join(s.dataDir, blobRelative))
-		}
-		respond(w, http.StatusInternalServerError, 500, err.Error(), nil)
-		return err
+	s.fileStorageMu.Lock()
+	err = s.commitFileBlob(stagingPath, asset, false)
+	s.fileStorageMu.Unlock()
+	if errors.Is(err, errBlobIntegrity) {
+		respond(w, 409, 409, err.Error(), nil)
+	} else if err != nil {
+		respond(w, 500, 500, err.Error(), nil)
+	} else {
+		respond(w, 201, 0, "uploaded", asset)
 	}
-	respond(w, http.StatusCreated, 0, "uploaded", asset)
-	return nil
 }
 
 func (s *Server) renameFile(w http.ResponseWriter, r *http.Request) {
@@ -1071,7 +1065,7 @@ func (s *Server) renameFile(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusBadRequest, 400, err.Error(), nil)
 		return
 	}
-	respond(w, http.StatusOK, 0, "renamed", asset)
+	respond(w, http.StatusOK, 0, "renamed", s.presentFile(asset))
 }
 
 func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) { s.serveAsset(w, r, false) }
@@ -1090,6 +1084,10 @@ func (s *Server) createMediaTicket(w http.ResponseWriter, r *http.Request) {
 	asset, err := s.store.GetFile(r.PathValue("id"))
 	if err != nil {
 		respond(w, http.StatusNotFound, 404, "file not found", nil)
+		return
+	}
+	if _, err := s.readableFile(asset); err != nil {
+		respond(w, 409, 409, err.Error(), nil)
 		return
 	}
 	var req struct {
@@ -1156,21 +1154,16 @@ func (s *Server) markTicketCounted(nonce string, expires time.Time) bool {
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, asset model.FileAsset, inline, count bool) {
-	if err := storage.ValidateStoragePath(asset.StoragePath); err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	f, err := os.Open(filepath.Join(s.dataDir, filepath.FromSlash(asset.StoragePath)))
+	f, err := s.openAsset(asset)
 	if err != nil {
-		http.NotFound(w, r)
+		if errors.Is(err, errShortcutMissing) || errors.Is(err, errShortcutUnavailable) || errors.Is(err, errShortcutChanged) || errors.Is(err, errBlobIntegrity) {
+			http.Error(w, err.Error(), http.StatusConflict)
+		} else {
+			http.NotFound(w, r)
+		}
 		return
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || info.Size() != asset.FileSize {
-		http.Error(w, "file integrity check failed", http.StatusConflict)
-		return
-	}
 	w.Header().Set("Content-Type", asset.MIMEType)
 	w.Header().Set("ETag", `"sha256-`+asset.FileHash+`"`)
 	disposition := "attachment"
@@ -1203,6 +1196,14 @@ func (s *Server) bulkDeleteFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteFiles(w http.ResponseWriter, ids []string) {
+	s.fileStorageMu.Lock()
+	defer s.fileStorageMu.Unlock()
+	for _, id := range ids {
+		if _, busy := s.activeFileTransfers.Load(id); busy {
+			respond(w, 409, 409, "文件正在转移，请稍后再删除", nil)
+			return
+		}
+	}
 	deleted, err := s.store.DeleteFiles(ids)
 	if errors.Is(err, storage.ErrNotFound) {
 		respond(w, http.StatusNotFound, 404, "file not found", nil)
@@ -1308,6 +1309,13 @@ func (s *Server) listShares(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) createShare(w http.ResponseWriter, r *http.Request) {
+	s.storageMu.RLock()
+	folderWorkspace := s.storageState.Engine == "folder"
+	s.storageMu.RUnlock()
+	if folderWorkspace {
+		respond(w, 412, 412, "请先配置公开交付服务器，再从公开交付创建链接", nil)
+		return
+	}
 	var req struct {
 		ObjectType     string `json:"object_type"`
 		ObjectID       string `json:"object_id"`
@@ -1364,7 +1372,9 @@ func (s *Server) shareObjectName(kind, id string) (string, error) {
 	case "file":
 		f, err := s.store.GetFile(id)
 		if err == nil {
-			if info, statErr := os.Stat(filepath.Join(s.dataDir, f.StoragePath)); statErr != nil || info.Size() != f.FileSize {
+			if path, pathErr := s.readableFile(f); pathErr != nil {
+				return "", pathErr
+			} else if info, statErr := os.Stat(path); statErr != nil || info.Size() != f.FileSize {
 				return "", storage.ErrNotFound
 			}
 		}
@@ -1448,7 +1458,11 @@ func (s *Server) validateShareTarget(link model.ShareLink) error {
 		if err != nil {
 			return err
 		}
-		info, err := os.Stat(filepath.Join(s.dataDir, f.StoragePath))
+		path, err := s.readableFile(f)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(path)
 		if err != nil || info.Size() != f.FileSize {
 			return storage.ErrNotFound
 		}
@@ -1506,18 +1520,12 @@ func (s *Server) writeShareError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) servePublicFile(w http.ResponseWriter, r *http.Request, f model.FileAsset) {
-	path := filepath.Join(s.dataDir, f.StoragePath)
-	file, err := os.Open(path)
+	file, err := s.openAsset(f)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || info.Size() != f.FileSize {
-		http.Error(w, "file integrity check failed", http.StatusConflict)
-		return
-	}
 	w.Header().Set("Content-Type", f.MIMEType)
 	w.Header().Set("ETag", `"sha256-`+f.FileHash+`"`)
 	disposition := "attachment"
@@ -1625,6 +1633,8 @@ func (s *Server) listTrash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {
+	s.fileStorageMu.Lock()
+	defer s.fileStorageMu.Unlock()
 	if err := s.store.RestoreTrash(r.PathValue("type"), r.PathValue("id")); errors.Is(err, storage.ErrNotFound) {
 		respond(w, http.StatusNotFound, 404, "trash item not found", nil)
 	} else if err != nil {
@@ -1635,50 +1645,79 @@ func (s *Server) restoreTrash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) purgeTrash(w http.ResponseWriter, r *http.Request) {
-	kind, id := r.PathValue("type"), r.PathValue("id")
+	s.fileStorageMu.Lock()
+	defer s.fileStorageMu.Unlock()
+	warning, err := s.purgeTrashItem(r.PathValue("type"), r.PathValue("id"))
+	if errors.Is(err, storage.ErrNotFound) {
+		respond(w, 404, 404, "trash item not found", nil)
+	} else if err != nil {
+		respond(w, 500, 500, err.Error(), nil)
+	} else {
+		respond(w, http.StatusOK, 0, "permanently deleted", map[string]string{"warning": warning})
+	}
+}
+
+// File blob publication and physical removal share fileStorageMu.
+func (s *Server) purgeTrashItem(kind, id string) (string, error) {
 	var stagedFrom, stagedTo string
 	if kind == "file" {
 		f, err := s.store.GetTrashedFile(id)
 		if err != nil {
-			respond(w, http.StatusNotFound, 404, "trash item not found", nil)
-			return
+			return "", err
 		}
 		if !s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
 			stagedFrom = filepath.Join(s.dataDir, f.StoragePath)
 			stagedTo = filepath.Join(s.dataDir, "uploads", ".purging", f.ID)
 			if err := os.MkdirAll(filepath.Dir(stagedTo), 0o700); err != nil {
-				respond(w, 500, 500, err.Error(), nil)
-				return
+				return "", err
 			}
 			if err := os.Rename(stagedFrom, stagedTo); err != nil && !errors.Is(err, os.ErrNotExist) {
-				respond(w, 500, 500, err.Error(), nil)
-				return
+				return "", err
 			}
 		}
 	}
-	_, err := s.store.PurgeTrash(kind, id)
-	if err != nil {
+	if _, err := s.store.PurgeTrash(kind, id); err != nil {
 		if stagedTo != "" {
 			_ = os.Rename(stagedTo, stagedFrom)
 		}
-		if errors.Is(err, storage.ErrNotFound) {
-			respond(w, 404, 404, "trash item not found", nil)
-		} else {
-			respond(w, 500, 500, err.Error(), nil)
-		}
-		return
+		return "", err
 	}
-	warning := ""
 	if stagedTo != "" {
 		if err := os.Remove(stagedTo); err != nil && !errors.Is(err, os.ErrNotExist) {
-			warning = "metadata removed; physical purge is pending"
+			warning := "metadata removed; physical purge is pending"
 			_ = s.store.AddAudit("purge_pending", "file", id, warning, map[string]interface{}{"path": filepath.Base(stagedTo), "error": err.Error()})
+			return warning, nil
 		}
 	}
-	respond(w, http.StatusOK, 0, "permanently deleted", map[string]string{"warning": warning})
+	return "", nil
+}
+
+// PurgeExpiredFileTrash uses the same publication lock as interactive file
+// deletion and transfer so a new reference cannot race a physical unlink.
+func (s *Server) PurgeExpiredFileTrash(days int) error {
+	s.dataMu.RLock()
+	defer s.dataMu.RUnlock()
+	s.fileStorageMu.Lock()
+	defer s.fileStorageMu.Unlock()
+	files, _, err := s.store.PurgeExpiredTrash(days)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
+			continue
+		}
+		if removeErr := os.Remove(filepath.Join(s.dataDir, f.StoragePath)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+			_ = s.store.AddAudit("purge_pending", "file", f.ID, "automatic physical deletion failed", nil)
+		}
+	}
+	return err
 }
 
 func (s *Server) emptyTrash(w http.ResponseWriter, _ *http.Request) {
+	s.fileStorageMu.Lock()
+	defer s.fileStorageMu.Unlock()
 	files, count, err := s.store.EmptyTrash()
 	if errors.Is(err, storage.ErrNotFound) {
 		respond(w, 200, 0, "trash already empty", map[string]int{"deleted": 0})
@@ -1791,7 +1830,17 @@ func (s *Server) generateBackup(path string) (model.BackupManifest, error) {
 			if err != nil {
 				return fmt.Errorf("backup missing file %s: %w", f.ID, err)
 			}
-			if info.Size() != f.FileSize || !fileHashMatches(full, f.FileHash) {
+			digest := f.FileHash
+			if shortcutBlob(p) {
+				if _, err := s.readShortcut(f); err != nil || info.Size() > 16<<10 {
+					return fmt.Errorf("backup shortcut integrity failure for %s", f.ID)
+				}
+				data, err := os.ReadFile(full)
+				if err != nil {
+					return err
+				}
+				digest = hexDigest(data)
+			} else if info.Size() != f.FileSize || !fileHashMatches(full, f.FileHash) {
 				return fmt.Errorf("backup integrity failure for %s", f.ID)
 			}
 			total += info.Size()
@@ -1800,7 +1849,7 @@ func (s *Server) generateBackup(path string) (model.BackupManifest, error) {
 				// here with an actionable message.
 				return fmt.Errorf("backup exceeds the configured %d MB limit; raise backup_max_mb first", s.cfg.Get().BackupMaxMB)
 			}
-			manifest.Files = append(manifest.Files, model.BackupFileManifest{ID: f.ID, ArchivePath: filepath.ToSlash(p), Size: info.Size(), SHA256: f.FileHash})
+			manifest.Files = append(manifest.Files, model.BackupFileManifest{ID: f.ID, ArchivePath: filepath.ToSlash(p), Size: info.Size(), SHA256: digest})
 		}
 		out, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {

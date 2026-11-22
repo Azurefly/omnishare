@@ -84,7 +84,7 @@
             <button type="button" class="tab" data-tab="notes"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-note"></use></svg><span>随手记</span></button>
             <button type="button" class="tab" data-tab="files"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-folder"></use></svg><span>文件</span></button>
             <button type="button" class="tab" data-tab="pads"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg><span>协同文档</span></button>
-            <button type="button" class="tab" data-tab="shares"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>安全分享</span></button>
+            <button type="button" class="tab" data-tab="shares"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg><span>公开交付</span></button>
             <button type="button" class="tab" data-tab="trash"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg><span>回收站</span></button>
             <button type="button" class="tab" data-tab="activity"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-activity"></use></svg><span>活动记录</span></button>
           </nav>
@@ -137,7 +137,7 @@
               </div>
               <div class="overview-actions">
                 <button id="dashNewNoteBtn" type="button" class="button primary small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>新建随手记</span></button>
-                <button id="dashUploadFileBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg><span>上传文件</span></button>
+                <button id="dashUploadFileBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg><span>添加文件</span></button>
                 <button id="dashNewPadBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg><span>新建文档</span></button>
                 <button id="dashBindBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-device"></use></svg><span>添加设备</span></button>
               </div>
@@ -162,7 +162,7 @@
               <article class="card dashboard-card">
                 <span class="dashboard-card-icon app-teal"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-link"></use></svg></span>
                 <div><h3>分享与审计</h3><p>管理匿名外链、回收站和操作记录。</p></div>
-                <button class="button ghost small dashboard-link" data-target-tab="shares" aria-label="进入安全分享"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg><span class="visually-hidden">进入模块</span></button>
+                <button class="button ghost small dashboard-link" data-target-tab="shares" aria-label="进入公开交付"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
             </div>
           </section>
@@ -220,7 +220,8 @@
                   </div>
                   <div class="inline-actions">
                     <span class="file-index-notice" title="绑定只同步文件名称、大小和来源，点击下载或播放时按需读取原文件">索引 · 按需读取</span>
-                    <button id="openUploadFileBtn" type="button" class="button primary small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg><span>上传文件 / 文件夹</span></button>
+                    <button id="openShortcutBtn" type="button" class="button primary small" hidden>添加本机文件</button>
+                    <button id="openUploadFileBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg><span>导入副本</span></button>
                   </div>
                 </div>
                 <section id="uploadActivityPanel" class="transfer-panel" aria-labelledby="transferHeading" hidden>
@@ -310,13 +311,14 @@
             </div>
           </section>
 
-          <!-- 安全分享 Panel -->
+          <!-- 公开交付 Panel -->
           <section id="sharesPanel" class="panel-view">
             <div class="list-toolbar">
               <div>
-                <h2>安全分享</h2>
+                <h2>公开交付</h2>
                 <p class="muted-text">用独立链接分享指定内容，并设置有效期与访问次数。持有链接的人即可访问。</p>
               </div>
+              <button id="deliverySettingsBtn" type="button" class="button primary small">配置交付服务器</button>
               <button id="refreshSharesBtn" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg><span>刷新</span></button>
             </div>
             <div id="sharesList" class="stack"></div>
@@ -525,12 +527,29 @@
     </form>
   </dialog>
 
+  <dialog id="deliverySettingsDialog" class="modal auth-modal" aria-labelledby="deliverySettingsTitle">
+    <form id="deliverySettingsForm" class="modal-card">
+      <div class="modal-head"><h2 id="deliverySettingsTitle">配置公开交付</h2></div>
+      <div class="share-fields">
+        <label>公网领取地址<input id="deliveryPublicOrigin" type="url" placeholder="https://服务器IP" autocomplete="off" /></label>
+        <label>发布管理地址<input id="deliveryManagement" type="url" autocomplete="off" /></label>
+        <label>发布设备名<input id="deliveryPublisher" autocomplete="off" /></label>
+        <label>发布密钥<input id="deliveryToken" type="password" maxlength="64" autocomplete="new-password" /><small>已配置且地址未变时留空可沿用现有密钥。</small></label>
+        <p class="muted-text">清空公网领取地址并保存可停用分享。</p>
+        <p id="deliverySettingsError" class="error-text" role="alert"></p>
+      </div>
+      <div class="modal-actions">
+        <button id="deliverySettingsClose" type="button" class="button ghost">取消</button>
+        <button id="deliverySettingsSave" type="submit" class="button primary">保存配置</button>
+      </div>
+    </form>
+  </dialog>
   <!-- 创建分享对话框 -->
   <dialog id="shareDialog" class="modal auth-modal" aria-labelledby="shareTitle">
     <form id="shareForm" method="dialog" class="modal-card">
       <div class="modal-head">
         <div>
-          <h2 id="shareTitle">创建安全外链分享</h2>
+          <h2 id="shareTitle">公开交付</h2>
           <p id="shareObjectName">—</p>
         </div>
         <button type="button" data-close-share class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
@@ -544,25 +563,22 @@
             <option value="3600">1 小时</option>
             <option value="86400">24 小时</option>
             <option value="604800" selected>7 天</option>
-            <option value="2592000">30 天</option>
-            <option value="0">长期有效</option>
           </select>
         </label>
         <label>
-          最大访问次数
-          <input id="shareMaxAccess" type="number" min="0" max="1000000" value="0" />
-          <small>0 表示不限制访问次数</small>
+          提取码（可选）
+          <input id="sharePassword" type="password" maxlength="128" autocomplete="new-password" />
         </label>
+        <div id="shareAttachments" class="stack"></div>
         <p id="shareCreateError" class="share-feedback share-url-warn" role="alert"></p>
       </div>
       <div id="shareResult" class="share-fields" hidden>
-        <label>分享链接<textarea id="shareResultURL" rows="3" readonly spellcheck="false" aria-describedby="shareReachability"></textarea></label>
-        <p id="shareReachability" class="share-feedback share-url-warn" hidden>此链接仅能在来源设备上使用。请在来源设备设置可访问的地址，再从「安全分享」复制链接。</p>
+        <label>分享链接<textarea id="shareResultURL" rows="3" readonly spellcheck="false"></textarea></label>
         <p id="shareCopyStatus" class="share-feedback" role="status"></p>
       </div>
       <div class="modal-actions">
         <button id="closeShareBtn" type="button" data-close-share class="button ghost">取消</button>
-        <button id="createShareBtn" type="submit" class="button primary">创建链接</button>
+        <button id="createShareBtn" type="submit" class="button primary">发布副本</button>
         <button id="copyShareBtn" type="button" class="button primary" hidden>复制链接</button>
       </div>
     </form>
@@ -755,6 +771,34 @@
       </div>
     </form>
   </dialog>
+  <dialog id="shortcutDialog" class="modal" aria-labelledby="shortcutTitle">
+    <form id="shortcutForm" class="modal-card">
+      <div class="modal-head"><h2 id="shortcutTitle">添加本机文件快捷方式</h2></div>
+      <div class="settings-grid">
+        <label class="full">本机文件路径<input id="shortcutPath" autocomplete="off" placeholder="粘贴文件的完整路径" spellcheck="false" /></label>
+        <label class="full">应用内目录<input id="shortcutFolder" list="filesFolderOptions" autocomplete="off" placeholder="留空表示根目录" /></label>
+      </div>
+      <p class="muted-text">文件留在原位置。移动或删除原文件后，快捷方式会显示当前状态。</p>
+      <p id="shortcutError" class="error-text" role="alert"></p>
+      <div class="modal-actions">
+        <button id="closeShortcutBtn" type="button" class="button ghost">取消</button>
+        <button id="pickShortcutBtn" type="button" class="button ghost">选择本机文件</button>
+        <button id="addShortcutBtn" type="submit" class="button primary">添加快捷方式</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="workspaceFilePicker" class="modal" aria-labelledby="workspaceFilePickerTitle">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="workspaceFilePickerTitle">引用工作区文件</h2>
+        <button id="workspaceFilePickerClose" type="button" class="button ghost small">关闭</button>
+      </div>
+      <label for="workspaceFileQuery" class="visually-hidden">搜索可引用的文件</label>
+      <input id="workspaceFileQuery" type="search" placeholder="搜索文件名" autocomplete="off" />
+      <p id="workspaceFilePickerStatus" class="muted-text" role="status"></p>
+      <div id="workspaceFileResults" class="workspace-file-picker-results"></div>
+    </div>
+  </dialog>
   <template id="markdownEditorTools">
     <div class="markdown-toolbar">
       <button type="button" class="markdown-format-toggle" data-md-format aria-expanded="false">格式</button>
@@ -779,6 +823,7 @@
         </div>
       </div>
       <div class="markdown-view-actions">
+        <button type="button" class="markdown-file-button" data-md-file title="引用工作区文件" aria-label="引用工作区文件"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-document"></use></svg><span>引用文件</span></button>
         <div class="markdown-modes" role="group" aria-label="编辑器视图">
           <button type="button" data-md-mode="write" aria-pressed="true">写作</button>
           <button type="button" data-md-mode="split" aria-pressed="false">分栏</button>
