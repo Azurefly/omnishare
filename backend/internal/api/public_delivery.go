@@ -512,5 +512,8 @@ func (s *Server) manageDeliveries(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, 0, "交付已撤销", nil)
 		return
 	}
+	if reply.Entries == nil {
+		reply.Entries = []gatewayEntry{}
+	}
 	respond(w, 200, 0, "公开交付", reply.Entries)
 }

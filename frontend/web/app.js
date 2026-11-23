@@ -2824,7 +2824,8 @@ async function copyCreatedShareLink() {
 
 async function loadShares(strict=false, manual=false) {
   const run = async () => {
-    state.shares = deliveryConfigured ? await api('/api/v1/delivery/items') : []
+    const entries = deliveryConfigured ? await api('/api/v1/delivery/items') : []
+    state.shares = Array.isArray(entries) ? entries : []
     renderShares()
     if (manual && deliveryConfigured) toast('交付列表已刷新')
   }
@@ -3143,7 +3144,7 @@ const TAB_CONFIG = {
   notes: { panel: '#notesPanel', title: '随手记', load: loadNotes },
   files: { panel: '#filesPanel', title: '文件', load: loadFiles },
   pads: { panel: '#padsPanel', title: '协同文档', load: loadPads },
-  shares: { panel: '#sharesPanel', title: '安全分享', load: loadShares },
+  shares: { panel: '#sharesPanel', title: '公开交付', load: loadShares },
   trash: { panel: '#trashPanel', title: '回收站', load: loadTrash },
   activity: { panel: '#activityPanel', title: '活动记录', load: loadAudit }
 }

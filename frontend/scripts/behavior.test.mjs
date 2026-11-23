@@ -662,7 +662,7 @@ test('manual refresh actions show completion toasts and restore button labels', 
   const { app, element } = createApp({
     fetch: async url => {
       if (url === '/api/v1/delivery/config') return Response.json({ code: 0, data: { configured: true } })
-      if (url === '/api/v1/delivery/items') return Response.json({ code: 0, data: [] })
+      if (url === '/api/v1/delivery/items') return Response.json({ code: 0, data: null })
       if (String(url).startsWith('/api/v1/audit')) return Response.json({ code: 0, data: [] })
       if (String(url).startsWith('/api/v1/devices')) return Response.json({ code: 0, data: [] })
       throw new Error(`Unexpected fetch ${url}`)
@@ -672,6 +672,7 @@ test('manual refresh actions show completion toasts and restore button labels', 
   element('#refreshSharesBtn').textContent = '刷新列表'
   await app.loadShares(false, true)
   assert.equal(element('#toast').textContent, '交付列表已刷新')
+  assert.match(element('#sharesList').innerHTML, /尚未发布交付/)
   assert.equal(element('#refreshSharesBtn').disabled, false)
   assert.equal(element('#refreshSharesBtn').textContent, '刷新列表')
 
