@@ -2449,7 +2449,7 @@ async function refreshWorkspace() {
   if (state.workspaceBusy) { await editorRefresh; return }
   state.workspaceBusy = true
   try {
-    const loaders = {dashboard:()=>loadNotes(false,false,true), notes:()=>loadNotes(false,false,true), files:()=>loadFiles(false,false,true), pads:loadPads, shares:loadShares, trash:loadTrash, activity:loadAudit}
+    const loaders = {dashboard:()=>loadNotes(false,false,true), notes:()=>loadNotes(false,false,true), files:()=>loadFiles(false,false,true), pads:loadPads, trash:loadTrash, activity:loadAudit}
     const tickFolders = state.folders[state.activeTab] ? loadFolders(state.activeTab) : Promise.resolve()
     await Promise.all([loadDashboard(), loaders[state.activeTab]?.(), tickFolders, editorRefresh])
   } finally { state.workspaceBusy = false }
@@ -2675,9 +2675,13 @@ async function openDeliverySettings() {
   $('#deliveryToken').value = ''
   try {
     const data = await api('/api/v1/delivery/config')
-    $('#deliveryPublicOrigin').value = data?.settings?.public_origin || ''
-    $('#deliveryManagement').value = data?.settings?.management || 'http://127.0.0.1:18485'
-    $('#deliveryPublisher').value = data?.settings?.publisher || ''
+    const settings = data?.settings
+    const server = settings?.public_origin || ''
+    const privateManagement = settings?.management !== server ? settings?.management || '' : ''
+    $('#deliveryPublicOrigin').value = server
+    $('#deliveryManagement').value = privateManagement
+    $('#deliveryAdvancedSettings').open = Boolean(privateManagement)
+    $('#deliveryPublisher').value = settings?.publisher || ''
     dialog.showModal()
   } catch (err) {
     toast(err.message,true)
@@ -2690,8 +2694,8 @@ async function saveDeliverySettings() {
   if (button.disabled) return
   error.textContent = ''
   try {
-    await withButtonBusy(button, '保存中…', async () => {
-      const value = await api('/api/v1/delivery/config', {
+    await withButtonBusy(button, '连接中…', async () => {
+      const value = await api('/api/v1/delivery/config?verify=1', {
         method:'PUT', headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
           public_origin:$('#deliveryPublicOrigin').value.trim(),
@@ -2705,7 +2709,7 @@ async function saveDeliverySettings() {
       deliveryLinks.clear()
       renderDeliveryControls()
       $('#deliverySettingsDialog').close()
-      await loadShares(false)
+      await loadShares(false, deliveryConfigured)
     })
   } catch (err) {
     error.textContent = err.message

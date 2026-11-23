@@ -884,16 +884,15 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .delivery-settings-modal .modal-card { display: flex; flex-direction: column; max-height: calc(100dvh - 44px); }
 .delivery-settings-modal .modal-head, .delivery-settings-modal .modal-actions { flex: none; }
 .delivery-settings-body { display: grid; gap: 12px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 5px; }
-.delivery-settings-body .muted-text, .delivery-settings-ssh { font-size: 12px; line-height: 1.65; }
+.delivery-settings-body .muted-text, .delivery-settings-advanced { font-size: 12px; line-height: 1.65; }
 .delivery-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
 .delivery-field { display: grid; align-content: start; gap: 5px; min-width: 0; }
 .delivery-field label { color: var(--text-secondary); font-size: 12px; font-weight: 650; }
 .delivery-field input { min-width: 0; }
-.delivery-settings-ssh { padding: 10px 12px; border-radius: var(--radius-md); background: var(--surface2); }
-.delivery-settings-ssh summary { cursor: pointer; font-weight: 650; }
-.delivery-settings-ssh p, .delivery-settings-ssh pre { margin-top: 6px; }
-.delivery-settings-ssh pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.delivery-settings-body code { overflow-wrap: anywhere; }
+.delivery-settings-advanced { padding: 10px 12px; border-radius: var(--radius-md); background: var(--surface2); }
+.delivery-settings-advanced summary { cursor: pointer; font-weight: 650; }
+.delivery-settings-advanced .delivery-field { margin-top: 10px; }
+.delivery-field-wide { grid-column: 1 / -1; }
 .delivery-settings-body .error-text { min-height: 0; margin: 0; }
 .delivery-settings-body .error-text:empty { display: none; }
 @media (max-width: 540px) {

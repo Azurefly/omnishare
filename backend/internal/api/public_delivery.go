@@ -149,7 +149,11 @@ func (s *Server) deliverySettings(w http.ResponseWriter, r *http.Request) {
 		} else {
 			input.PublicOrigin, err = deliveryOrigin(input.PublicOrigin, false)
 			if err == nil {
-				input.Management, err = deliveryOrigin(input.Management, true)
+				if strings.TrimSpace(input.Management) == "" {
+					input.Management = input.PublicOrigin
+				} else {
+					input.Management, err = deliveryOrigin(input.Management, true)
+				}
 			}
 			if input.Token == "" && input.Publisher == cfg.Publisher && input.Management == cfg.Management && input.PublicOrigin == cfg.PublicOrigin {
 				input.Token = cfg.Token
@@ -157,6 +161,22 @@ func (s *Server) deliverySettings(w http.ResponseWriter, r *http.Request) {
 			if err != nil || !deliveryHex.MatchString(input.Token) || !deliveryPublisher.MatchString(input.Publisher) {
 				respond(w, 400, 400, "请填写有效的 HTTPS 领取地址、管理地址、发布设备名和 64 字符发布密钥", nil)
 				return
+			}
+			if r.URL.Query().Get("verify") == "1" {
+				ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+				_, status, err := gatewayRequest(ctx, input, http.MethodGet, "/v1/deliveries", nil, "")
+				cancel()
+				switch {
+				case status == http.StatusUnauthorized || status == http.StatusForbidden:
+					respond(w, 422, 422, "发布凭据被拒绝，请核对发布设备名和密钥", nil)
+					return
+				case status == http.StatusTooManyRequests:
+					respond(w, 429, 429, "交付服务器请求过多，请稍后重试", nil)
+					return
+				case err != nil || status != http.StatusOK:
+					respond(w, 502, 502, "无法连通交付管理接口，请检查服务器地址、HTTPS 证书及管理路由", nil)
+					return
+				}
 			}
 			raw, _ := json.Marshal(input)
 			if err := durable.WriteSecretFile(s.deliveryConfigPath(), raw); err != nil {
