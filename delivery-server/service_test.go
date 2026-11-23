@@ -114,6 +114,13 @@ func TestPublishClaimRevokeAndRestart(t *testing.T) {
 	if o := claim("valid&code", "https://other.test"); o.Code != 403 {
 		t.Fatal("foreign origin was accepted")
 	}
+	if o := claim("valid&code", "null"); o.Code != 403 {
+		t.Fatal("opaque origin was accepted")
+	}
+	form := run(s.Public(), "GET", root, "", "", nil)
+	if form.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatal("claim form must send its same-origin browser Origin")
+	}
 	valid := claim("valid&code", "https://example.test")
 	if valid.Code != 303 {
 		t.Fatalf("valid claim: %d", valid.Code)

@@ -179,7 +179,8 @@ func New(options Options) (*Service, error) {
 func headers(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Cache-Control", "private, no-store")
-	h.Set("Referrer-Policy", "no-referrer")
+	// Preserve the browser form POST Origin while suppressing cross-origin referrers.
+	h.Set("Referrer-Policy", "same-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
