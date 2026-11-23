@@ -527,15 +527,41 @@
     </form>
   </dialog>
 
-  <dialog id="deliverySettingsDialog" class="modal auth-modal" aria-labelledby="deliverySettingsTitle">
+  <dialog id="deliverySettingsDialog" class="modal delivery-settings-modal" aria-labelledby="deliverySettingsTitle">
     <form id="deliverySettingsForm" class="modal-card">
       <div class="modal-head"><h2 id="deliverySettingsTitle">配置公开交付</h2></div>
-      <div class="share-fields">
-        <label>公网领取地址<input id="deliveryPublicOrigin" type="url" placeholder="https://服务器IP" autocomplete="off" /></label>
-        <label>发布管理地址<input id="deliveryManagement" type="url" autocomplete="off" /></label>
-        <label>发布设备名<input id="deliveryPublisher" autocomplete="off" /></label>
-        <label>发布密钥<input id="deliveryToken" type="password" maxlength="64" autocomplete="new-password" /><small>已配置且地址未变时留空可沿用现有密钥。</small></label>
-        <p class="muted-text">清空公网领取地址并保存可停用分享。</p>
+      <div class="delivery-settings-body">
+        <p class="muted-text">已有独立领取站时，向管理员索取领取地址、管理连接方式、发布设备名和发布密钥。</p>
+        <div class="delivery-settings-grid">
+          <div class="delivery-field">
+            <label for="deliveryPublicOrigin">公网领取地址</label>
+            <input id="deliveryPublicOrigin" type="url" placeholder="https://delivery.example.com" autocomplete="off" aria-describedby="deliveryPublicHelp" />
+            <small id="deliveryPublicHelp">收件人能访问的 HTTPS 根地址。填写到域名或 IP（可带端口）为止。</small>
+          </div>
+          <div class="delivery-field">
+            <label for="deliveryManagement">发布管理地址</label>
+            <input id="deliveryManagement" type="url" autocomplete="off" aria-describedby="deliveryManagementHelp" />
+            <small id="deliveryManagementHelp">SSH 转发用本机的 <code>http://127.0.0.1:18485</code>。若管理员提供了私有 HTTPS 管理地址，填入该地址。</small>
+          </div>
+          <div class="delivery-field">
+            <label for="deliveryPublisher">发布设备名</label>
+            <input id="deliveryPublisher" placeholder="例如 office-pc" autocomplete="off" aria-describedby="deliveryPublisherHelp" />
+            <small id="deliveryPublisherHelp">填写管理员给此设备登记的名称，需与服务器上的名称完全一致。</small>
+          </div>
+          <div class="delivery-field">
+            <label for="deliveryToken">发布密钥</label>
+            <input id="deliveryToken" type="password" maxlength="64" autocomplete="new-password" aria-describedby="deliveryTokenHelp" />
+            <small id="deliveryTokenHelp">填管理员发给你的 64 位小写十六进制原密钥。已保存配置且其余三项没改时可留空。</small>
+          </div>
+        </div>
+        <details class="delivery-settings-ssh">
+          <summary>如何启动 SSH 隧道</summary>
+          <p>在本机 PowerShell 执行。将登录用户和 SSH 主机改成管理员提供的值。</p>
+          <pre><code>ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:18485:127.0.0.1:18485 DEPLOY_USER@DELIVERY_HOST</code></pre>
+          <p>使用指定私钥时加上 <code>-i "C:\路径\私钥文件"</code>。先向管理员核对主机指纹。SSH 运行后可回到应用，保持终端打开。</p>
+        </details>
+        <p class="muted-text">保存后在「公开交付」点「刷新」。看到「交付列表已刷新」后，就可以从文件、随手记或协同文档发起交付。</p>
+        <p class="muted-text">清空公网领取地址并保存会停用本机的交付功能。需要作废已发链接时，请先逐条撤销。</p>
         <p id="deliverySettingsError" class="error-text" role="alert"></p>
       </div>
       <div class="modal-actions">

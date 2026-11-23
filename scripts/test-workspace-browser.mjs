@@ -202,9 +202,17 @@ try {
  await page.locator('.tab[data-tab="shares"]').click();
  await page.getByRole('heading',{name:'公开交付未启用'}).waitFor();
  await page.locator('#deliverySettingsBtn').click();
- await page.locator('#deliverySettingsDialog[open]').waitFor();
- assert.equal(await page.locator('#deliveryPublicOrigin').inputValue(),'');
- await page.locator('#deliverySettingsClose').click();
+ const deliverySettings=page.locator('#deliverySettingsDialog[open]');
+ await deliverySettings.waitFor();
+ assert.equal(await deliverySettings.getByLabel('公网领取地址').inputValue(),'');
+ assert.equal(await deliverySettings.getByLabel('发布管理地址').inputValue(),'http://127.0.0.1:18485');
+ await page.setViewportSize({width:390,height:460});
+ await deliverySettings.getByText('如何启动 SSH 隧道').click();
+ assert.match(await deliverySettings.locator('pre').innerText(),/127\.0\.0\.1:18485:127\.0\.0\.1:18485/);
+ const bounds=await deliverySettings.getByRole('button',{name:'保存配置'}).boundingBox();
+ assert.ok(bounds && bounds.y>=0 && bounds.y+bounds.height<=460,'Save remains visible with the SSH guide expanded');
+ await deliverySettings.getByRole('button',{name:'取消'}).click();
+ await page.setViewportSize({width:390,height:844});
  await page.locator('.tab[data-tab="notes"]').click();
  checks.push('public delivery stays disabled until this device configures a server');
 

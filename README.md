@@ -48,7 +48,7 @@ go run ./cmd/omnishare --listen localhost --port 8081 --data-dir ..\data --no-br
 
 ## 公开交付服务
 
-[独立领取站的源码与部署说明](delivery-server/README.md)位于 delivery-server 目录。领取站提供 HTTPS 领取页和附件下载。发布、查看交付记录和撤销走独立管理通道。每台设备可从「公开交付」配置服务器，也可以随时停用。
+[独立领取站的源码与部署说明](delivery-server/README.md)位于 delivery-server 目录。领取站提供 HTTPS 领取页和附件下载。发布、查看交付记录和撤销走独立管理通道。在每台设备的「公开交付 → 配置交付服务器」填写管理员提供的连接信息。[查看四个字段的填写方法与验证步骤](delivery-server/README.md#在-omnishare-中配置)。
 
 ## 项目文档
 
