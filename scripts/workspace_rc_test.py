@@ -44,8 +44,10 @@ class ProvenanceTests(unittest.TestCase):
             self.reports[kind] = report
             self.save(kind)
         self.browser = {'success': True, 'source_commit': SOURCE, 'workflow_run_id': RUN,
-                        'scope': 'two real SQLite backend processes and Chromium',
-                        'checks': ['bind', 'merged notes', 'create doc', 'edit doc', 'remote refresh', 'conflict']}
+                        'scope': 'two real folder-backed processes and Chromium',
+                        'checks': ['bind', 'merged notes', 'edit doc', 'conflict',
+                                   'public delivery stays disabled until this device configures a server',
+                                   'note and document references share the picker; a real file move removes the source and preserves the note reference']}
         rc.write_json(self.root / 'workspace-browser-results.json', self.browser)
 
     def save(self, kind):

@@ -151,7 +151,10 @@ def verify_build_inputs(directory, version, source, run):
     browser = read_json(directory / 'workspace-browser-results.json')
     require(browser.get('source_commit') == source and str(browser.get('workflow_run_id')) == str(run),
             'Browser evidence came from a different source or run')
-    require(browser.get('success') is True and browser.get('scope') == 'two real SQLite backend processes and Chromium'
-            and isinstance(browser.get('checks'), list) and len(set(browser['checks'])) >= 6,
+    require(browser.get('success') is True and browser.get('scope') == 'two real folder-backed processes and Chromium'
+            and isinstance(browser.get('checks'), list) and len(set(browser['checks'])) >= 6
+            and {'public delivery stays disabled until this device configures a server',
+                 'note and document references share the picker; a real file move removes the source and preserves the note reference'}
+                <= set(browser['checks']),
             'Real two-device browser verification did not complete')
     return reports, files, browser
