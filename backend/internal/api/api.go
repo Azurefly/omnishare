@@ -216,6 +216,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/file-reference/{reference}", s.protected(s.resolveWorkspaceFile))
 	mux.HandleFunc("POST /api/v1/file-transfers", s.protected(s.transferFileToLocal))
 	mux.HandleFunc("POST /api/v1/local-files/shortcuts", s.protected(s.addFileShortcut))
+	mux.HandleFunc("POST /api/v1/local-files/selection", s.protected(s.selectLocalFiles))
 	mux.HandleFunc("POST /api/v1/files/upload", s.protected(s.uploadFile))
 	mux.HandleFunc("PUT /api/v1/files/{id}", s.protected(s.renameFile))
 	mux.HandleFunc("GET /api/v1/files/{id}/download", s.protected(s.downloadFile))
@@ -939,7 +940,22 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 			respond(w, http.StatusBadRequest, 400, partErr.Error(), nil)
 			return
 		}
-		if part.FileName() == "" {
+		var source io.Reader = part
+		sourceName := part.FileName()
+		if part.FormName() == "local_path" && sourceName == "" {
+			file, err := s.openLocalPart(r, part)
+			if err != nil {
+				_ = part.Close()
+				if stagingPath != "" {
+					_ = os.Remove(stagingPath)
+				}
+				respond(w, 400, 400, err.Error(), nil)
+				return
+			}
+			defer file.Close()
+			source, sourceName = file, filepath.Base(file.Name())
+		}
+		if sourceName == "" {
 			data, _ := io.ReadAll(io.LimitReader(part, 1024))
 			switch part.FormName() {
 			case "ttl_seconds":
@@ -956,7 +972,7 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 			respond(w, http.StatusBadRequest, 400, "only one file per request is allowed", nil)
 			return
 		}
-		filename = sanitizeFilename(part.FileName())
+		filename = sanitizeFilename(sourceName)
 		if filename == "" {
 			_ = part.Close()
 			respond(w, http.StatusBadRequest, 400, "invalid file name", nil)
@@ -977,7 +993,7 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		h := sha256.New()
 		prefix := make([]byte, 512)
-		n, readErr := io.ReadFull(part, prefix)
+		n, readErr := io.ReadFull(source, prefix)
 		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
 			_ = dst.Close()
 			_ = part.Close()
@@ -987,7 +1003,7 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		prefix = prefix[:n]
 		mimeType = http.DetectContentType(prefix)
-		written, copyErr := io.Copy(io.MultiWriter(dst, h), io.MultiReader(bytes.NewReader(prefix), part))
+		written, copyErr := io.Copy(io.MultiWriter(dst, h), io.LimitReader(io.MultiReader(bytes.NewReader(prefix), source), maxBytes+1))
 		size = written
 		closeErr := dst.Close()
 		_ = part.Close()
@@ -1925,7 +1941,8 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 	// Restore accepts a backup no larger than the export allows; the old
 	// MaxUploadMB-derived cap silently rejected archives the server had just
 	// produced.
-	max := s.cfg.Get().BackupMaxMB*1024*1024 + multipartOverheadMB*1024*1024
+	backupLimit := s.cfg.Get().BackupMaxMB * 1024 * 1024
+	max := backupLimit + multipartOverheadMB*1024*1024
 	r.Body = http.MaxBytesReader(w, r.Body, max)
 	// A restore may upload for hours on a slow link, but a dead connection must
 	// still be reclaimed. Reset an idle timer on every successful read instead
@@ -1948,7 +1965,17 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 			respond(w, 400, 400, err.Error(), nil)
 			return
 		}
-		if part.FormName() != "backup" || part.FileName() == "" {
+		var source io.Reader = part
+		if part.FormName() == "local_path" && part.FileName() == "" {
+			max = backupLimit
+			file, err := s.openLocalPart(r, part)
+			if err != nil {
+				respond(w, 400, 400, err.Error(), nil)
+				return
+			}
+			defer file.Close()
+			source = file
+		} else if part.FormName() != "backup" || part.FileName() == "" {
 			_ = part.Close()
 			continue
 		}
@@ -1958,9 +1985,14 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		archive = tmp.Name()
-		_, copyErr := io.Copy(tmp, part)
+		copied, copyErr := io.Copy(tmp, io.LimitReader(source, max+1))
 		closeErr := tmp.Close()
 		_ = part.Close()
+		if copied > max {
+			_ = os.Remove(archive)
+			respond(w, 413, 413, "备份文件超过恢复上限", nil)
+			return
+		}
 		if copyErr != nil || closeErr != nil {
 			_ = os.Remove(archive)
 			respond(w, 400, 400, "could not save backup", nil)

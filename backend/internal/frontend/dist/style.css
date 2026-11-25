@@ -639,6 +639,10 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 /* Uploads & Finder file row cards */
 .drop-zone { padding: 26px 20px; border: 1.5px dashed var(--field-line); border-radius: var(--radius-lg); background: var(--surface2); text-align: center; transition: border-color 140ms var(--ease), background-color 140ms var(--ease); }
 .drop-zone.dragging { background: var(--accent-bg); border: 2px dashed var(--primary); padding: 25.5px 19.5px; }
+.modal.dragging .modal-card { outline: 2px dashed var(--primary); outline-offset: -4px; }
+#uploadPathForm { display: grid; gap: 8px; margin-top: 14px; }
+#uploadPathForm label { display: grid; gap: 6px; font-size: 13px; }
+#importPathBtn { justify-self: start; }
 .drop-icon { display: grid; width: 44px; height: 44px; margin: 0 auto 12px; place-items: center; border-radius: 12px; color: var(--accent-text); background: var(--surface); box-shadow: var(--shadow-xs); }
 .drop-icon .ui-icon { width: 20px; height: 20px; }
 .drop-zone h2 { font-size: 16px; font-weight: 650; }

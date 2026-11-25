@@ -213,6 +213,21 @@ jobs:
           grep -q arm64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
           grep -q x86_64 "$EVIDENCE_DIR/bundled-backend-architectures.txt"
 
+      - name: Exercise file drops and keyboard paste in macOS WebKit
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix frontend ci --ignore-scripts
+          (cd frontend && npx --no-install playwright install webkit)
+          node scripts/test-file-inputs.mjs desktop/src-tauri/resources/omnishare webkit | tee "$EVIDENCE_DIR/file-inputs-webkit.log"
+
+      - name: Launch packaged macOS application and verify window lifecycle
+        if: runner.os == 'macOS'
+        run: |
+          app=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/OmniShare.app
+          python3 desktop/tests/macos-window-reopen.py --app "$app" --report "$EVIDENCE_DIR/macos-window-reopen.json"
+
       - name: Verify embedded Microsoft WebView2 offline installers
         if: runner.os == 'Windows'
         shell: pwsh

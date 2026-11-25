@@ -113,7 +113,25 @@ pub fn resolve_data_dir(app: &AppHandle) -> Option<PathBuf> {
 }
 
 pub fn save_user_data_dir(app: &AppHandle, requested: &str) -> Result<(), String> {
-    let directory = PathBuf::from(requested);
+    let text = requested.trim();
+    let text = ['"', '\'']
+        .iter()
+        .find_map(|quote| text.strip_prefix(*quote)?.strip_suffix(*quote))
+        .unwrap_or(text);
+    let directory = if text.to_ascii_lowercase().starts_with("file:") {
+        tauri::Url::parse(text)
+            .ok()
+            .filter(|url| matches!(url.host_str(), None | Some("localhost")))
+            .and_then(|url| url.to_file_path().ok())
+            .ok_or("请输入本机文件夹的路径。")?
+    } else if let Some(relative) = text.strip_prefix("~/") {
+        app.path()
+            .home_dir()
+            .map_err(|e| e.to_string())?
+            .join(relative)
+    } else {
+        PathBuf::from(text)
+    };
     if !directory.is_absolute() {
         return Err("请输入当前设备上的完整文件夹路径。".to_string());
     }

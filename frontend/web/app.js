@@ -1447,28 +1447,37 @@ let addingShortcut = false
 async function submitFileShortcut(pick) {
   if (addingShortcut) return
   const error = $('#shortcutError')
-  const path = $('#shortcutPath').value.trim()
-  if (!pick && !path) {
-    error.textContent = '请输入本机文件的完整路径'
+  const input = $('#shortcutPath')
+  const paths = pathLines(input.value)
+  if (!pick && (!paths.length || paths.length > MAX_UPLOAD_TASKS)) {
+    error.textContent = '请每行输入一个文件的完整路径，每次最多 100 项'
     return
   }
   addingShortcut = true
+  input.readOnly = true
+  const folder = $('#shortcutFolder').value
   error.textContent = ''
+  let added = 0
   try {
-    const file = await withButtonBusy(pick ? $('#pickShortcutBtn') : $('#addShortcutBtn'), '正在添加…', () =>
-      api('/api/v1/local-files/shortcuts', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({path, pick, folder:$('#shortcutFolder').value})
-      }))
-    if (!file) return
+    await withButtonBusy(pick ? $('#pickShortcutBtn') : $('#addShortcutBtn'), '正在添加…', async () => {
+      for (const path of pick ? [''] : paths) {
+        const file = await api('/api/v1/local-files/shortcuts', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, pick, folder})
+        })
+        if (!file) return
+        added++
+        if (!pick) input.value = paths.slice(added).join('\n')
+      }
+    })
+    if (!added) return
     $('#shortcutDialog').close()
-    toast('文件快捷方式已添加')
-    await Promise.all([loadFiles(), loadFolders('files'), loadDashboard()])
+    toast(`已添加 ${added} 个文件快捷方式`)
   } catch (err) {
-    error.textContent = err.message
+    error.textContent = (added ? `已添加 ${added} 项。剩余文件：` : '') + err.message
   } finally {
+    input.readOnly = false
     addingShortcut = false
+    if (added) await Promise.all([loadFiles(), loadFolders('files'), loadDashboard()])
   }
 }
 
@@ -1477,8 +1486,10 @@ function openUploadFileModal() {
   if ($('#fileUploadFolder') && f) {
     $('#fileUploadFolder').value = f.selected && f.selected !== '__root__' ? f.selected : ''
   }
+  $('#uploadPath').value = ''
+  $('#uploadInputError').textContent = ''
   $('#uploadFileDialog')?.showModal()
-  $('#fileUploadFolder')?.focus()
+  $('#dropZone').focus()
 }
 
 async function createNote() {
@@ -1969,31 +1980,155 @@ async function submitRenameFile() {
   }
 }
 
+function pathLines(text) {
+  return String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+}
+
+function transferPaths(transfer) {
+  const uris = pathLines(transfer.getData('text/uri-list')).filter(line => !line.startsWith('#'))
+  const paths = uris.length ? uris : pathLines(transfer.getData('text/plain'))
+  return paths.length && paths.every(path => /^["']?(?:file:\/|\/|~\/|[a-z]:[\\/])/i.test(path)) ? paths : []
+}
+
+function uploadDestination(dialog) {
+  return {
+    folder: dialog ? $('#fileUploadFolder').value : state.folders.files.selected.replace(/^__root__$/, ''),
+    ttl: $('#fileTTL').value
+  }
+}
+
+async function importLocalPaths(paths, dialog) {
+  const destination = uploadDestination(dialog)
+  const selection = await api('/api/v1/local-files/selection', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({paths})
+  })
+  if (dialog && !dialog.open) return
+  if (!selection?.length) throw new Error('所选目录中没有可导入的文件')
+  uploadFiles(selection.map(file => ({
+    name:file.name, size:file.size, localPath:file.path, _relativeFolder:file.relative_folder
+  })), destination)
+}
+
+function reportFileInput(error, dialog) {
+  const status = {shortcutDialog:'#shortcutError', uploadFileDialog:'#uploadInputError', restoreDialog:'#restoreStatus'}[dialog?.id]
+  if (status) $(status).textContent = error.message
+  else toast(error.message, true)
+}
+
+function receivePaths(paths, dialog, paste = false) {
+  if (!isLoopbackHost(location.hostname)) {
+    throw new Error('请使用文件选择器，或直接拖入本设备上的文件')
+  }
+  if (dialog?.id === 'shortcutDialog') {
+    if (addingShortcut) return
+    if (paths.some(path => /[\r\n]/.test(path))) throw new Error('文件名含换行，请使用本机文件选择器')
+    $('#shortcutPath').value = paths.join('\n')
+    $('#shortcutError').textContent = ''
+  } else if (dialog?.id === 'restoreDialog') {
+    if (state.restoreInFlight) return
+    if (paths.length !== 1) throw new Error('一次只能选择一个备份文件')
+    $('#restorePath').value = paths[0]
+    $('#restoreFile').value = ''
+    $('#restoreConfirm').checked = false
+    $('#restoreStatus').textContent = ''
+  } else if (dialog?.id === 'uploadFileDialog' && paste) {
+    $('#uploadPath').value = paths.join('\n')
+    $('#uploadPath').focus()
+  } else if (dialog?.id === 'uploadFileDialog' || (!dialog && state.activeTab === 'files')) {
+    return importLocalPaths(paths, dialog)
+  } else if (!dialog && state.activeTab === 'dashboard') {
+    switchTab('files')
+    openShortcutModal()
+    return receivePaths(paths, $('#shortcutDialog'))
+  }
+}
+
+async function receiveTransfer(transfer, dialog, paste) {
+  // Capture strings, File objects and entries while the transfer is readable.
+  const paths = transferPaths(transfer)
+  const files = Array.from(transfer.files || [])
+  if (dialog?.id === 'shortcutDialog') {
+    if (paths.length) return receivePaths(paths, dialog, paste)
+    throw new Error('浏览器未提供原文件路径。请选择本机文件，或从访达用 ⌥⌘C 拷贝路径后粘贴。')
+  }
+  if (dialog?.id === 'restoreDialog') {
+    if (state.restoreInFlight) return
+    if (!files.length) return receivePaths(paths, dialog, paste)
+    if (files.length !== 1) throw new Error('一次只能选择一个备份文件')
+    const dt = new DataTransfer()
+    dt.items.add(files[0])
+    $('#restoreFile').files = dt.files
+    $('#restoreFile').dispatchEvent(new Event('change'))
+    return
+  }
+  if (!files.length && paths.length) return receivePaths(paths, dialog, paste)
+  const destination = uploadDestination(dialog)
+  const collected = await collectDroppedFiles(transfer)
+  if (dialog && !dialog.open) return
+  if (!collected.length) throw new Error('没有可导入的文件，请选择文件或含文件的文件夹')
+  uploadFiles(collected, destination)
+}
+
+function bindFileInputs() {
+  for (const target of [$('#filesPanel'), $('#uploadFileDialog'), $('#shortcutDialog'), $('#restoreDialog')]) {
+    const dialog = target.tagName === 'DIALOG' ? target : null
+    for (const type of ['dragenter', 'dragover', 'dragleave', 'drop', 'paste']) {
+      target.addEventListener(type, event => {
+        const paste = type === 'paste'
+        const transfer = paste ? event.clipboardData : event.dataTransfer
+        if (!transfer) return
+        const filePayload = Array.from(transfer.types || []).includes('Files')
+        const editable = event.target.closest('input, textarea, [contenteditable="true"]')
+        if (paste && editable && (!filePayload || !['uploadPath','shortcutPath','restorePath','restoreFile'].includes(editable.id))) return
+        if (!filePayload && !(type === 'drop' || paste ? transferPaths(transfer).length : Array.from(transfer.types || []).includes('text/uri-list'))) return
+        event.preventDefault()
+        event.stopPropagation()
+        const highlight = dialog?.id === 'uploadFileDialog' ? $('#dropZone') : target
+        highlight.classList.toggle('dragging', type === 'dragenter' || type === 'dragover')
+        if (type === 'drop' || paste) {
+          void receiveTransfer(transfer, dialog, paste).catch(error => reportFileInput(error, dialog))
+        }
+      })
+    }
+  }
+  window.addEventListener('omnishare:file-drop', async ({detail}) => {
+    const dialog = document.activeElement?.closest('dialog[open]') || $('dialog[open]')
+    try {
+      if (detail.error) throw new Error(detail.error)
+      if (detail.paths?.length) await receivePaths(detail.paths, dialog)
+    } catch (error) { reportFileInput(error, dialog) }
+  })
+}
+
 async function collectDroppedFiles(dataTransfer) {
-  const items = [...(dataTransfer?.items || [])]
-  const entries = items.map(i => typeof i.webkitGetAsEntry === 'function' ? i.webkitGetAsEntry() : null).filter(Boolean)
-  if (!entries.length) return [...(dataTransfer?.files || [])]
+  const items = Array.from(dataTransfer?.items || []).filter(item => item.kind === 'file')
+  const sources = items.map(item => ({
+    entry: item.webkitGetAsEntry?.(), file: item.getAsFile?.()
+  }))
+  const fallback = Array.from(dataTransfer?.files || [])
+  if (!sources.some(source => source.entry)) return fallback.length ? fallback : sources.map(s => s.file).filter(Boolean)
   const out = []
   const walk = async (entry, relDir) => {
     if (entry.isFile) {
-      await new Promise(resolve => entry.file(file => {
-        if (relDir) file._relativeFolder = relDir
-        out.push(file)
-        resolve()
-      }, () => resolve()))
+      const file = await new Promise((resolve, reject) => entry.file(resolve, reject))
+      if (relDir) file._relativeFolder = relDir
+      out.push(file)
       return
     }
     if (entry.isDirectory) {
       const nextDir = joinFolderPaths(relDir, entry.name)
       const reader = entry.createReader()
       while (true) {
-        const batch = await new Promise(resolve => reader.readEntries(resolve, () => resolve([])))
+        const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
         if (!batch || !batch.length) break
         for (const child of batch) await walk(child, nextDir)
       }
     }
   }
-  for (const entry of entries) await walk(entry, '')
+  for (const {entry, file} of sources) {
+    if (entry) await walk(entry, '')
+    else if (file) out.push(file)
+  }
   return out
 }
 
@@ -2256,7 +2391,8 @@ function uploadOne(task) {
     xhr.ontimeout = () => finish('failed', '上传超时，文件可能已在服务端保存；请检查文件列表后再重试。')
     xhr.onabort = () => finish('cancelled', UPLOAD_CANCEL_NOTICE)
     const form = new FormData()
-    form.append('file', task.file)
+    if (task.file.localPath) form.append('local_path', task.file.localPath)
+    else form.append('file', task.file)
     form.append('ttl_seconds', task.ttl)
     if (task.folder) form.append('folder', task.folder)
     xhr.send(form)
@@ -3272,6 +3408,7 @@ function openRestoreDialog() {
     return
   }
   $('#restoreFile').value = ''
+  $('#restorePath').value = ''
   $('#restorePassword').value = ''
   $('#restoreConfirm').checked = false
   $('#restoreProgress').classList.add('hidden')
@@ -3284,10 +3421,11 @@ function openRestoreDialog() {
 function restoreBackup() {
   if (state.restoreInFlight) return
   const file = $('#restoreFile').files?.[0]
+  const localPath = $('#restorePath').value.trim()
   const status = $('#restoreStatus')
   const progress = $('#restoreProgress')
   const submit = $('#restoreSubmitBtn')
-  if (!file) {
+  if (!file && !localPath) {
     status.textContent = '请先选择备份文件'
     return
   }
@@ -3301,7 +3439,8 @@ function restoreBackup() {
   const restorePassword = $('#restorePassword').value
   if (restorePassword) restoreHeaders['X-OmniShare-Backup-Password'] = restorePassword
   const form = new FormData()
-  form.append('backup', file)
+  if (file) form.append('backup', file)
+  else form.append('local_path', localPath)
   submit.disabled = true
   progress.classList.remove('hidden')
   progress.value = 0
@@ -3333,7 +3472,7 @@ function restoreBackup() {
     finishRestore()
     let payload = {}
     try { payload = JSON.parse(xhr.responseText) } catch { /* non-JSON error page */ }
-    if (xhr.status >= 200 && xhr.status < 300) {
+    if (xhr.status >= 200 && xhr.status < 300 && payload?.code === 0) {
       status.textContent = '恢复完成，正在刷新数据…'
       toast('备份已恢复，建议重启程序')
       $('#restoreDialog').close()
@@ -3452,13 +3591,32 @@ function bindEvents() {
 
   $('#openUploadFileBtn')?.addEventListener('click', openUploadFileModal)
   const localBrowser = isLoopbackHost(location.hostname)
+  $$('[data-local-path]').forEach(element => { element.hidden = !localBrowser })
   $('#openShortcutBtn').hidden = !localBrowser
   $('#openShortcutBtn').addEventListener('click', openShortcutModal)
-  $('#pickShortcutBtn').hidden = !/Windows/i.test(navigator.platform)
+  $('#pickShortcutBtn').hidden = !/Win|Mac/i.test(navigator.platform)
   $('#pickShortcutBtn').addEventListener('click', () => void submitFileShortcut(true))
   $('#shortcutForm').addEventListener('submit', event => { event.preventDefault(); void submitFileShortcut(false) })
   $('#closeShortcutBtn').addEventListener('click', () => { if (!addingShortcut) $('#shortcutDialog').close() })
   $('#shortcutDialog').addEventListener('cancel', event => { if (addingShortcut) event.preventDefault() })
+  $('#uploadPathForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const paths = pathLines($('#uploadPath').value)
+    try {
+      if (!paths.length) throw new Error('请先粘贴文件或文件夹的完整路径')
+      await withButtonBusy($('#importPathBtn'), '正在读取…', () => importLocalPaths(paths, $('#uploadFileDialog')))
+    } catch (error) { reportFileInput(error, $('#uploadFileDialog')) }
+  })
+  $('#restoreFile').addEventListener('change', () => {
+    $('#restorePath').value = ''
+    $('#restoreConfirm').checked = false
+    $('#restoreStatus').textContent = ''
+  })
+  $('#restorePath').addEventListener('input', () => {
+    $('#restoreFile').value = ''
+    $('#restoreConfirm').checked = false
+    $('#restoreStatus').textContent = ''
+  })
   $('#cancelUploadFileBtn')?.addEventListener('click', () => $('#uploadFileDialog')?.close())
   $('#closeUploadFileBtn')?.addEventListener('click', () => $('#uploadFileDialog')?.close())
   $('#chooseFilesBtn').addEventListener('click', e => {
@@ -3486,34 +3644,7 @@ function bindEvents() {
     uploadFiles(e.target.files)
     e.target.value = ''
   })
-  ;['dragenter', 'dragover'].forEach(type => $('#dropZone').addEventListener(type, e => {
-    e.preventDefault()
-    $('#dropZone').classList.add('dragging')
-  }))
-  ;['dragleave', 'drop'].forEach(type => $('#dropZone').addEventListener(type, e => {
-    e.preventDefault()
-    $('#dropZone').classList.remove('dragging')
-  }))
-  $('#dropZone').addEventListener('drop', async e => {
-    e.stopPropagation()
-    const files = await collectDroppedFiles(e.dataTransfer)
-    uploadFiles(files)
-  })
-  ;['dragenter', 'dragover'].forEach(type => $('#filesPanel')?.addEventListener(type, e => {
-    if (e.target.closest('#dropZone')) return
-    e.preventDefault()
-    $('#filesPanel').classList.add('dragging')
-  }))
-  ;['dragleave', 'drop'].forEach(type => $('#filesPanel')?.addEventListener(type, e => {
-    if (e.target.closest('#dropZone')) return
-    e.preventDefault()
-    $('#filesPanel').classList.remove('dragging')
-  }))
-  $('#filesPanel')?.addEventListener('drop', async e => {
-    if (e.target.closest('#dropZone')) return
-    const files = await collectDroppedFiles(e.dataTransfer)
-    uploadFiles(files)
-  })
+  bindFileInputs()
   $('#clearFinishedUploadsBtn').addEventListener('click', clearFinishedUploads)
   $('#cancelAllUploadsBtn').addEventListener('click', cancelAllUploads)
   updateUploadSummary()

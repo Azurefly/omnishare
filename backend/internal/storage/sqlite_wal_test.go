@@ -457,8 +457,16 @@ func TestWAL_CrashPowerLossRecovery(t *testing.T) {
 
 	// Phase 1: 写入 500 条包含 SHA-256 审计链的记录并强制留在 WAL
 	{
-		db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", dbPath))
+		db, err := sql.Open("sqlite", sqliteWriteDSN(dbPath))
 		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		var mode string
+		if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil || mode != "wal" {
+			t.Fatalf("enable WAL: %q, %v", mode, err)
+		}
+		if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(sqliteSchema); err != nil {

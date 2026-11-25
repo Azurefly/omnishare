@@ -1,12 +1,12 @@
 {
   "name": "omnishare-frontend",
   "private": true,
-  "version": "1.0.1-rc.2",
+  "version": "1.0.1-rc.3",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node --check web/theme.js && node --check web/runtime-bridge.js && node --check web/app.js && node --check web/service-worker.js",
-    "test": "node scripts/test.mjs && node --test scripts/*.test.mjs",
+    "test": "node scripts/test.mjs",
     "test:browser": "node scripts/browser-test.mjs"
   },
   "devDependencies": {

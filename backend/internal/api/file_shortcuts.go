@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -92,15 +91,7 @@ func (s *Server) readableFile(asset model.FileAsset) (string, error) {
 func (s *Server) addFileShortcut(w http.ResponseWriter, r *http.Request) {
 	// This endpoint may register an existing path on the server PC. The same
 	// browser connected over LAN or a bound peer can only use existing links.
-	host := r.Host
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		host = parsed
-	}
-	host = strings.Trim(host, "[]")
-	hostIP := net.ParseIP(host)
-	if !net.ParseIP(clientIP(r)).IsLoopback() ||
-		(!strings.EqualFold(host, "localhost") && !hostIP.IsLoopback()) ||
-		r.Header.Get("X-OmniShare-Peer") != "" {
+	if !localWorkbench(r) {
 		respond(w, 403, 403, "请在源文件所在设备的本机工作台添加快捷方式", nil)
 		return
 	}
@@ -125,23 +116,18 @@ func (s *Server) addFileShortcut(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Path = picked
 	}
-	if !filepath.IsAbs(strings.TrimSpace(req.Path)) {
-		respond(w, 400, 400, "请输入本机文件的完整路径", nil)
-		return
-	}
-	path, err := filepath.EvalSymlinks(filepath.Clean(strings.TrimSpace(req.Path)))
+	path, info, err := s.externalPath(req.Path)
 	if err != nil {
-		respond(w, 404, 404, errShortcutMissing.Error(), nil)
+		status := http.StatusBadRequest
+		if errors.Is(err, errShortcutMissing) {
+			status = http.StatusNotFound
+		}
+		respond(w, status, status, err.Error(), nil)
 		return
 	}
-	// Do not accidentally make the application's private configuration,
-	// backups, or keys readable through a bound peer or a file share.
-	if root, err := filepath.EvalSymlinks(s.dataDir); err == nil {
-		rel, err := filepath.Rel(root, path)
-		if err == nil && filepath.IsLocal(rel) {
-			respond(w, 400, 400, "应用数据目录内的文件请通过文件列表使用", nil)
-			return
-		}
+	if !info.Mode().IsRegular() {
+		respond(w, 400, 400, "请选择单个文件；文件夹可通过“导入副本”添加", nil)
+		return
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -152,7 +138,7 @@ func (s *Server) addFileShortcut(w http.ResponseWriter, r *http.Request) {
 	before, err := file.Stat()
 	name := sanitizeFilename(filepath.Base(path))
 	folder, folderErr := storage.NormalizeFolderPath(req.Folder)
-	if err != nil || !before.Mode().IsRegular() || name == "" || folderErr != nil {
+	if err != nil || !os.SameFile(info, before) || name == "" || folderErr != nil {
 		respond(w, 400, 400, "请选择常规文件和有效的应用目录", nil)
 		return
 	}

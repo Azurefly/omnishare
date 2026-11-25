@@ -449,8 +449,9 @@
       <label>
         备份文件（.zip 或 .osb）
         <input id="restoreFile" type="file" accept=".zip,.osb,application/zip,application/x-zip-compressed,application/octet-stream" />
-        <small>支持未加密 ZIP 与 AES-256-GCM 加密包；上传大小受“备份上限”限制。</small>
+        <small>可拖入或粘贴一个备份文件。</small>
       </label>
+      <label data-local-path hidden>或使用本机备份路径<input id="restorePath" autocomplete="off" spellcheck="false" placeholder="粘贴 .zip 或 .osb 的完整路径" /></label>
       <label>
         备份口令（仅 .osb 加密包需要）
         <input id="restorePassword" type="password" autocomplete="off" placeholder="未加密 ZIP 留空即可" />
@@ -705,7 +706,7 @@
         <input id="fileInput" type="file" multiple hidden />
         <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
         <div class="drop-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg></div>
-        <p>拖入文件或整个文件夹到这里，或通过下方按钮选择。</p>
+        <p>拖入文件或文件夹，也可以在此粘贴已复制的文件。</p>
         <div class="form-row compact upload-controls">
           <label for="fileUploadFolder" class="visually-hidden">上传目标目录</label><input id="fileUploadFolder" list="filesFolderOptions" placeholder="上传目标目录（留空为根目录）" autocomplete="off" />
           <label for="fileTTL" class="visually-hidden">上传文件保留时长</label><select id="fileTTL" title="文件有效期">
@@ -718,6 +719,11 @@
           <button id="chooseFolderBtn" type="button" class="button ghost"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#icon-folder"></use></svg><span>选择文件夹</span></button>
         </div>
       </article>
+      <form id="uploadPathForm" data-local-path hidden>
+        <label>从本机路径导入副本<textarea id="uploadPath" rows="2" placeholder="粘贴文件或文件夹的完整路径，每行一项" spellcheck="false"></textarea></label>
+        <button id="importPathBtn" type="submit" class="button ghost small">按路径导入</button>
+      </form>
+      <p id="uploadInputError" role="alert" class="error-text"></p>
       <div class="modal-actions">
         <button type="button" id="cancelUploadFileBtn" class="button ghost">关闭</button>
       </div>
@@ -797,10 +803,10 @@
     <form id="shortcutForm" class="modal-card">
       <div class="modal-head"><h2 id="shortcutTitle">添加本机文件快捷方式</h2></div>
       <div class="settings-grid">
-        <label class="full">本机文件路径<input id="shortcutPath" autocomplete="off" placeholder="粘贴文件的完整路径" spellcheck="false" /></label>
+        <label class="full">本机文件路径<textarea id="shortcutPath" rows="2" placeholder="拖入文件或粘贴完整路径，每行一个文件" spellcheck="false"></textarea></label>
         <label class="full">应用内目录<input id="shortcutFolder" list="filesFolderOptions" autocomplete="off" placeholder="留空表示根目录" /></label>
       </div>
-      <p class="muted-text">文件留在原位置。移动或删除原文件后，快捷方式会显示当前状态。</p>
+      <p class="muted-text">文件留在原位置。在 Mac 的访达中，按 ⌥⌘C 可拷贝路径，在这里按 ⌘V 粘贴。</p>
       <p id="shortcutError" class="error-text" role="alert"></p>
       <div class="modal-actions">
         <button id="closeShortcutBtn" type="button" class="button ghost">取消</button>

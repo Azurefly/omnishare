@@ -13,6 +13,28 @@ fn setup_application_menu(app: &AppHandle) -> tauri::Result<()> {
     let app_quit = MenuItem::with_id(app, "app-quit", "Quit OmniShare", true, Some("CmdOrCtrl+Q"))?;
     let submenu =
         Submenu::with_items(app, "OmniShare", true, &[&app_show, &app_update, &app_quit])?;
+    #[cfg(target_os = "macos")]
+    {
+        // AppKit routes the standard editing actions to the focused WebView
+        // or native open panel, including its Go to Folder path field.
+        use tauri::menu::PredefinedMenuItem;
+        let edit = Submenu::with_items(
+            app,
+            "编辑",
+            true,
+            &[
+                &PredefinedMenuItem::undo(app, Some("撤销"))?,
+                &PredefinedMenuItem::redo(app, Some("重做"))?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::cut(app, Some("剪切"))?,
+                &PredefinedMenuItem::copy(app, Some("复制"))?,
+                &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+                &PredefinedMenuItem::select_all(app, Some("全选"))?,
+            ],
+        )?;
+        app.set_menu(Menu::with_items(app, &[&submenu, &edit])?)?;
+    }
+    #[cfg(not(target_os = "macos"))]
     app.set_menu(Menu::with_items(app, &[&submenu])?)?;
     Ok(())
 }

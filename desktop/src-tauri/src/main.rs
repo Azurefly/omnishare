@@ -2,6 +2,7 @@
 
 mod commands;
 mod config;
+mod file_drop;
 mod process;
 mod runtime;
 mod tray;
@@ -114,6 +115,9 @@ fn main() {
                 }
             }
             if window.label() == "main" {
+                if let WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                    file_drop::deliver(window, paths);
+                }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();

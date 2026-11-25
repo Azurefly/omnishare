@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 const root=resolve(import.meta.dirname,'..')
 const [html,js,runtimeBridge,themeJS,themeCSS,manifest,sw,packageText]=await Promise.all(['web/index.html','web/app.js','web/runtime-bridge.js','web/theme.js','web/theme.css','web/manifest.webmanifest','web/service-worker.js','package.json'].map(p=>readFile(resolve(root,p),'utf8')))
@@ -35,3 +36,8 @@ if(!sw.includes('STATIC_ASSETS.has(url.pathname)'))throw new Error('service work
 // These are static wiring contracts, not behaviour tests: the security and
 // recovery behaviour is covered by backend/internal/api tests.
 console.log('Frontend static contract checks passed')
+const scripts = resolve(root, 'scripts')
+const suites = (await readdir(scripts)).filter(name => name.endsWith('.test.mjs')).sort()
+const result = spawnSync(process.execPath, ['--test', ...suites.map(name => resolve(scripts, name))], {stdio:'inherit'})
+if (result.error) throw result.error
+process.exitCode = result.status ?? 1
