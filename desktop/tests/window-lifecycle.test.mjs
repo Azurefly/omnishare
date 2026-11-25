@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const root = resolve(process.env.OMNISHARE_TEST_SOURCE_ROOT || dirname(fileURLToPath(import.meta.url)),
   process.env.OMNISHARE_TEST_SOURCE_ROOT ? '.' : '..');
@@ -14,6 +15,25 @@ const restore = tray.slice(tray.indexOf('pub fn show_main_window('), tray.indexO
 
 test('macOS native Reopen restores the existing main window', () => {
   assert.match(run, /#\[cfg\(target_os = "macos"\)\]\s*if matches!\(event, RunEvent::Reopen \{ \.\. \}\)\s*\{\s*tray::show_main_window\(app\);\s*\}/);
+});
+
+test('watchdog restores incomplete workbenches and keeps initialized editor state', () => {
+  const script = readFileSync(new URL('../src-tauri/src/runtime/recover-workbench.js', import.meta.url), 'utf8');
+  const origin = 'http://127.0.0.1:8182';
+  for (const [path, ready, bridge, loading, expected] of [
+    ['/', false, false, false, 'reload'], ['/', false, false, true, 'reload'],
+    ['/', true, false, false, '/runtime-bridge.js'], ['/', true, true, false, ''],
+    ['/s/shared', false, false, false, '']
+  ]) {
+    let action = '', onLoad;
+    const location = {origin, pathname:path, reload() { action = 'reload' }};
+    const document = {readyState:loading ? 'loading' : 'complete', documentElement:{dataset:{workbenchReady:ready ? '1' : ''}},
+      createElement:() => ({}), head:{appendChild(script) { action = script.src }}};
+    const window = {__omnishareRuntimeBridge:bridge, addEventListener(type, fn) { if (type === 'load') onLoad = fn }};
+    vm.runInNewContext(script, {document, window, location})(origin);
+    if (loading) { assert.equal(action, ''); onLoad() }
+    assert.equal(action, expected);
+  }
 });
 
 test('Dock recovery is not gated on other windows being invisible', () => {

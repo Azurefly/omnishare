@@ -66,6 +66,11 @@ fn start_backend_watchdog(app: AppHandle) {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                 } else {
                     consecutive_failures = 0;
+                    if let Some(window) = app.get_webview_window("main") {
+                        let origin = format!("http://{DEFAULT_BACKEND_HOST}:{}", status.port);
+                        let recover = include_str!("runtime/recover-workbench.js");
+                        let _ = window.eval(format!("{recover}({})", serde_json::json!(origin)));
+                    }
                 }
 
                 let exponent = consecutive_failures.saturating_sub(2).min(5);

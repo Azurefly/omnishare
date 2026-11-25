@@ -2126,8 +2126,10 @@ async function collectDroppedFiles(dataTransfer) {
     }
   }
   for (const {entry, file} of sources) {
-    if (entry) await walk(entry, '')
-    else if (file) out.push(file)
+    // WebKit can supply a readable File but an unusable filesystem entry for
+    // that same item. Only directories require the asynchronous entry reader.
+    if (file && !entry?.isDirectory) out.push(file)
+    else if (entry) await walk(entry, '')
   }
   return out
 }
@@ -3844,6 +3846,7 @@ function bindEvents() {
 async function start() {
   initMarkdownEditors()
   bindEvents()
+  document.documentElement.dataset.workbenchReady = '1'
   ;['notes', 'files', 'pads'].forEach(renderFolderUI)
   window.addEventListener('beforeunload', event => {
     if (state.currentPadDirty) preservePadDraft()

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 
 class Failure(Exception):
@@ -94,6 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--file-inputs', action='store_true', help='Require native Finder drop and Cmd+V acceptance')
     args = parser.parse_args()
     report = {'schema_version': 1, 'success': False, 'scope': 'packaged-macos-window-lifecycle',
               'checks': {}, 'close_button_tested': False, 'dock_pointer_click_tested': False,
@@ -186,6 +188,23 @@ def main():
                     report['checks']['close_button_reopen_three_times'] = True
                 else:
                     report['not_tested'].append('close button: runner has no pre-granted Accessibility permission')
+                if args.file_inputs:
+                    report['stage'] = 'native-file-inputs'
+                    require(trusted, 'Native file inputs require pre-granted Accessibility on this runner')
+                    directory = private/'OmniShare Finder Test'
+                    directory.mkdir()
+                    fixture = directory/'访达拖入 #1.txt'
+                    fixture.write_bytes(b'OmniShare native Finder drop')
+                    command(['/usr/bin/swift', '-suppress-warnings', str(Path(__file__).with_name('macos-file-inputs.swift')),
+                             str(pid), str(fixture)], timeout=140)
+                    base = f'http://127.0.0.1:{port}'
+                    client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    def dropped_shortcut_exists():
+                        with client.open(base+'/api/v1/files', timeout=5) as response:
+                            files = json.load(response)['data']
+                        return any(f.get('source_shortcut') and f.get('file_name') == fixture.name for f in files)
+                    wait_for(dropped_shortcut_exists, 'Native drop did not register the original file')
+                    report['checks'].update(native_cmd_v_path=True, finder_drag_registered_shortcut=True)
                 report['stage'] = 'normal-quit'
                 jxa("ObjC.import('AppKit'); const a=$.NSRunningApplication.runningApplicationWithProcessIdentifier("+str(pid)+"); a.terminate; $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.3)); 'requested';")
                 require(process.wait(timeout=25) == 0, 'Native normal quit did not succeed')

@@ -24,7 +24,7 @@ const uri = pathToFileURL(source).href
 const child = spawn(resolve(binary), ['--no-browser','--listen','127.0.0.1','--port',String(port),
   '--data-dir',join(root,'workspace'),'--shutdown-on-stdin-close'], {stdio:['pipe','ignore','inherit']})
 const exited = once(child, 'exit')
-let browser
+let browser, page
 try {
   await mkdir(join(folder, '子目录'), {recursive:true})
   await writeFile(source, 'original bytes')
@@ -35,10 +35,11 @@ try {
   }
   browser = await ({webkit, chromium})[engine].launch()
   const context = await browser.newContext({serviceWorkers:'block'})
-  const page = await context.newPage()
+  page = await context.newPage()
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
-  await page.goto(origin)
+  await page.goto(origin, {waitUntil:'domcontentloaded'})
+  await page.waitForFunction(() => document.querySelector('#healthBadge')?.textContent.includes('v'))
   await page.locator('#dashUploadFileBtn').click()
   const shortcut = page.locator('#shortcutPath')
   await shortcut.fill(uri)
@@ -117,6 +118,13 @@ try {
   assert.equal((await files()).length, 5)
   assert.deepEqual(errors, [])
   console.log('PASS backup drop, path replacement, explicit confirmation and restore')
+} catch (error) {
+  if (page) console.error(await page.evaluate(() => ({
+    dialog:document.activeElement?.closest('dialog')?.id,
+    feedback:['#toast','#uploadInputError','#shortcutError','#restoreStatus','#transferSummary','#uploadQueue']
+      .map(id => [id, document.querySelector(id)?.textContent.slice(0, 400)])
+  })))
+  throw error
 } finally {
   await browser?.close()
   child.stdin.end()

@@ -1,0 +1,69 @@
+name: macOS Finder and clipboard acceptance
+on:
+  workflow_run:
+    workflows: [Desktop Validation]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Desktop Validation run on main containing the universal DMG
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installed:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: macos-15-intel
+    timeout-minutes: 12
+    env:
+      BUILD_RUN: ${{ inputs.build_run || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify the trusted desktop build before running its application
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" > "$RUNNER_TEMP/build.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          run = json.loads((Path(os.environ['RUNNER_TEMP'])/'build.json').read_text())
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['path'] == '.github/workflows/desktop-release.yml'
+          assert run['event'] == 'workflow_dispatch' and run['head_branch'] == 'main'
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              print('SOURCE_COMMIT=' + run['head_sha'], file=env)
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: omnishare-desktop-macOS-universal
+          path: ${{ runner.temp }}/desktop-build
+          github-token: ${{ github.token }}
+          run-id: ${{ env.BUILD_RUN }}
+      - name: Test Finder drag and Cmd+V in the application installed from the DMG
+        run: |
+          set -euo pipefail
+          node desktop/scripts/ensure-icons.mjs
+          dmg=$(find "$RUNNER_TEMP/desktop-build" -name '*.dmg' -type f -print -quit)
+          test -n "$dmg"
+          mkdir "$RUNNER_TEMP/dmg-mount"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/dmg-mount"
+          ditto "$RUNNER_TEMP/dmg-mount/OmniShare.app" "$RUNNER_TEMP/OmniShare.app"
+          hdiutil detach "$RUNNER_TEMP/dmg-mount"
+          python3 desktop/tests/macos-window-reopen.py --app "$RUNNER_TEMP/OmniShare.app" --file-inputs --report macos-file-inputs.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-native-file-input-evidence
+          path: macos-file-inputs.json
