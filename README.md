@@ -30,7 +30,9 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 
 ## 下载
 
-[候选版 v1.0.1-rc.1](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.1) 提供 Markdown 编辑器改进，适合试用。
+v1.0.1-rc.3 修复了 macOS 从访达拖入文件和粘贴路径的问题。通用 DMG 支持 Intel 和 Apple Silicon。[下载 macOS 安装包](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.3/OmniShare-v1.0.1-rc.3-macos-universal.dmg)
+
+Windows 可选 EXE 或 MSI，Linux 可选 DEB 或 AppImage。各平台安装包和 `SHA256SUMS.txt` 校验文件都在发布页的 **Assets** 中。[v1.0.1-rc.3 候选版](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.3) · [全部版本](https://github.com/Azurefly/omnishare/releases)
 
 ## 从源码运行
 
