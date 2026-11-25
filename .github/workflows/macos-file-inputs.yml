@@ -48,20 +48,27 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: omnishare-desktop-macOS-universal
-          path: ${{ runner.temp }}/desktop-build
+          path: desktop/src-tauri/target
+          github-token: ${{ github.token }}
+          run-id: ${{ env.BUILD_RUN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: omnishare-test-evidence-macOS-universal
+          path: ${{ runner.temp }}/build-evidence
           github-token: ${{ github.token }}
           run-id: ${{ env.BUILD_RUN }}
       - name: Test Finder drag and Cmd+V in the application installed from the DMG
         run: |
           set -euo pipefail
-          node desktop/scripts/ensure-icons.mjs
-          dmg=$(find "$RUNNER_TEMP/desktop-build" -name '*.dmg' -type f -print -quit)
+          dmg=$(find desktop/src-tauri/target -name '*.dmg' -type f -print -quit)
           test -n "$dmg"
+          grep -F "  $dmg" "$RUNNER_TEMP/build-evidence/bundle-sha256.txt" | shasum -a 256 -c
           mkdir "$RUNNER_TEMP/dmg-mount"
           hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/dmg-mount"
           ditto "$RUNNER_TEMP/dmg-mount/OmniShare.app" "$RUNNER_TEMP/OmniShare.app"
           hdiutil detach "$RUNNER_TEMP/dmg-mount"
-          python3 desktop/tests/macos-window-reopen.py --app "$RUNNER_TEMP/OmniShare.app" --file-inputs --report macos-file-inputs.json
+          python3 desktop/tests/macos-window-reopen.py --app "$RUNNER_TEMP/OmniShare.app" --file-inputs \
+            --build-evidence "$RUNNER_TEMP/build-evidence/macos-window-reopen.json" --report macos-file-inputs.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

@@ -96,6 +96,7 @@ def main():
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--file-inputs', action='store_true', help='Require native Finder drop and Cmd+V acceptance')
+    parser.add_argument('--build-evidence', type=Path, help='Verify an installed DMG against the original build runner report')
     args = parser.parse_args()
     report = {'schema_version': 1, 'success': False, 'scope': 'packaged-macos-window-lifecycle',
               'checks': {}, 'close_button_tested': False, 'dock_pointer_click_tested': False,
@@ -114,9 +115,16 @@ def main():
         if not icon.suffix:
             icon = icon.with_suffix('.icns')
         require(icon.is_file(), 'Packaged ICNS is missing')
-        generated = Path(__file__).resolve().parents[1]/'src-tauri/icons/icon.icns'
-        require(digest(icon) == digest(generated), 'Packaged icon differs from approved generated icon')
         report.update(version=info['CFBundleShortVersionString'], executable_sha256=digest(binary), icon_sha256=digest(icon))
+        if args.build_evidence:
+            built = json.loads(args.build_evidence.read_text())
+            require(built.get('success') is True and built.get('checks', {}).get('packaged_icon_matches') is True,
+                    'Original build did not verify its generated icon')
+            for field in ('source_commit', 'version', 'executable_sha256', 'icon_sha256'):
+                require(report[field] == built.get(field), f'Installed package differs from original build: {field}')
+        else:
+            generated = Path(__file__).resolve().parents[1]/'src-tauri/icons/icon.icns'
+            require(report['icon_sha256'] == digest(generated), 'Packaged icon differs from approved generated icon')
         report['checks']['packaged_icon_matches'] = True
         report['stage'] = 'existing-application-check'
         existing = json.loads(jxa("ObjC.import('AppKit'); const a=$.NSRunningApplication.runningApplicationsWithBundleIdentifier(" + json.dumps(info['CFBundleIdentifier']) + "); JSON.stringify(Number(a.count));"))
