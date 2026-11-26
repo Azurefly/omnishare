@@ -730,11 +730,11 @@
     </div>
   </dialog>
   <dialog id="newPadDialog" class="modal" aria-labelledby="newPadDialogTitle">
-    <form id="newPadCreateForm" class="modal-card"><div class="modal-head"><h2 id="newPadDialogTitle">新建协同文档</h2><button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button></div>
+    <form id="newPadCreateForm" class="modal-card"><div class="modal-head"><h2 id="newPadDialogTitle">新建协同文档</h2><button type="button" data-close-dialog class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button></div>
       <label>文档标题<input id="newPadTitle" autocomplete="off" maxlength="200" required></label>
       <label>所属目录<input id="newPadFolder" list="padsFolderOptions" placeholder="留空表示根目录（如：团队/周报）" autocomplete="off"></label>
       <p id="newPadError" class="error-text" role="alert"></p>
-      <div class="modal-actions"><button type="button" id="cancelNewPadBtn" class="button ghost">取消</button><button type="submit" id="createPadSubmitBtn" class="button primary">创建文档</button></div>
+      <div class="modal-actions"><button type="button" id="cancelNewPadBtn" data-close-dialog class="button ghost">取消</button><button type="submit" id="createPadSubmitBtn" class="button primary">创建文档</button></div>
     </form>
   </dialog>
   <dialog id="folderModalDialog" class="modal" aria-labelledby="folderModalTitle">
@@ -775,26 +775,26 @@
   <datalist id="filesFolderOptions"></datalist>
   <datalist id="padsFolderOptions"></datalist>
   <dialog id="bindPeerDialog" class="modal" aria-labelledby="bindPeerTitle">
-    <form id="bindPeerForm" class="modal-card"><div class="modal-head"><h2 id="bindPeerTitle">绑定设备并合并工作区</h2><button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button></div>
+    <form id="bindPeerForm" class="modal-card"><div class="modal-head"><h2 id="bindPeerTitle">绑定设备并合并工作区</h2><button type="button" data-close-dialog class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button></div>
       <label>设备地址<input id="bindPeerURL" placeholder="http://192.168.1.20:8081 或 http://100.x.x.x:8081" autocomplete="off" required></label>
       <label>对方访问密钥（仅对方已开启保护时填写）<input id="bindPeerKey" type="password" autocomplete="off"></label>
       <p class="muted-text">绑定后双方可直接读写彼此内容，无需再次添加。本机免密时，可访问本机的人也可访问合并内容。仅绑定可信设备；对方密钥仅用于本次绑定，不会保存。</p>
       <p id="bindPeerError" class="error-text" role="alert"></p>
-      <div class="modal-actions"><button type="button" id="cancelBindPeerBtn" class="button ghost">取消</button><button type="submit" id="bindPeerSubmitBtn" class="button primary">绑定并合并</button></div>
+      <div class="modal-actions"><button type="button" id="cancelBindPeerBtn" data-close-dialog class="button ghost">取消</button><button type="submit" id="bindPeerSubmitBtn" class="button primary">绑定并合并</button></div>
     </form>
   </dialog>
   <dialog id="deviceAliasDialog" class="modal" aria-labelledby="deviceAliasTitle">
     <form id="deviceAliasForm" class="modal-card">
       <div class="modal-head">
         <h2 id="deviceAliasTitle">设置设备别名</h2>
-        <button value="cancel" formnovalidate class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
+        <button type="button" data-close-dialog class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button>
       </div>
       <p id="deviceAliasSubtitle" class="muted-text"></p>
       <label>设备别名<input id="deviceAliasInput" maxlength="40" placeholder="例如：公司台式机、MacBook Pro" autocomplete="off"></label>
       <p class="muted-text">别名用于区分工作区中的内容来源与分享链接归属；留空将恢复默认名称。</p>
       <p id="deviceAliasError" class="error-text" role="alert"></p>
       <div class="modal-actions">
-        <button type="button" id="cancelDeviceAliasBtn" class="button ghost">取消</button>
+        <button type="button" id="cancelDeviceAliasBtn" data-close-dialog class="button ghost">取消</button>
         <button type="submit" id="saveDeviceAliasBtn" class="button primary">保存别名</button>
       </div>
     </form>

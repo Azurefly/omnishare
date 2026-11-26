@@ -76,6 +76,16 @@ async function exerciseWorkspace() {
  await page.goto(a,{waitUntil:'networkidle'});
  await page.waitForFunction(() => document.querySelector('#nodeSecuritySummary').textContent.includes('仅本机访问'));
  checks.push('a loopback-only node reports local-only access');
+ await page.locator('#bindDeviceBtn').click();
+ await page.locator('#bindPeerURL').fill(b);
+ const bindWrites = [];
+ const captureBind = request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/peers/bind') bindWrites.push(request.url()); };
+ page.on('request', captureBind);
+ await page.locator('#bindPeerDialog').getByRole('button', {name:'关闭', exact:true}).click();
+ await page.locator('#bindPeerDialog').waitFor({state:'hidden'});
+ page.off('request', captureBind);
+ assert.equal(bindWrites.length, 0, 'Closing the binding dialog must not send a binding request');
+ checks.push('closing the binding dialog before confirmation sends no request');
  await page.locator('#bindDeviceBtn').click();await page.locator('#bindPeerURL').fill(b);await page.locator('#bindPeerSubmitBtn').click();
  await page.waitForFunction(()=>!document.querySelector('#bindPeerDialog').open,null,{timeout:25000});
  await page.locator('.tab[data-tab="notes"]').click();
@@ -84,6 +94,18 @@ async function exerciseWorkspace() {
  const devices=(await api(b,'/api/v1/devices')).data;
  assert.ok(devices.some(d=>d.bound&&!d.is_local));checks.push('one-sided binding creates reciprocal device registration and merged notes');
  await checkDiscoveredBinding(page, a, b);
+ await page.locator('.device').filter({has:page.locator('.unbind-device')}).locator('.rename-device').click();
+ await page.locator('#deviceAliasInput').fill('unsaved alias');
+ await page.locator('#deviceAliasDialog').getByRole('button', {name:'关闭', exact:true}).click();
+ await page.locator('#deviceAliasDialog').waitFor({state:'hidden'});
+ assert.ok(!(await api(a, '/api/v1/devices')).data.some(d => d.alias === 'unsaved alias'));
+ await page.locator('.tab[data-tab="pads"]').click();
+ await page.locator('#newPadBtn').click();
+ await page.locator('#newPadTitle').fill('unsaved document');
+ await page.locator('#newPadDialog').getByRole('button', {name:'关闭', exact:true}).click();
+ await page.locator('#newPadDialog').waitFor({state:'hidden'});
+ assert.ok(!(await api(a, '/api/v1/pads?scope=all')).data.some(d => d.title === 'unsaved document'));
+ checks.push('closing alias and new document dialogs preserves data');
  if (bindingOnly) return;
  await page.locator('.tab[data-tab="notes"]').click();
  // Folder workflow in unified workspace: create folder, create note in folder, create empty folder, verify cross-device visibility & filter stability.

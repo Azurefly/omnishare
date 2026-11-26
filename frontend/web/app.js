@@ -3509,15 +3509,15 @@ function restoreBackup() {
 }
 
 function bindEvents() {
+  for (const button of $$('[data-close-dialog]')) {
+    button.addEventListener('click', () => button.closest('dialog').close())
+  }
   $('#newPadCreateForm').addEventListener('submit', e => { e.preventDefault(); void submitNewPad() })
-  $('#cancelNewPadBtn').addEventListener('click', () => $('#newPadDialog').close())
   $('#loadRemotePadBtn').addEventListener('click', () => void loadRemotePadVersion())
   $('#saveDraftCopyBtn').addEventListener('click', () => void savePadDraftCopy())
   $('#bindDeviceBtn').addEventListener('click', () => openBindDialog())
   $('#bindPeerForm').addEventListener('submit', e => { e.preventDefault(); void submitPeerBinding() })
-  $('#cancelBindPeerBtn').addEventListener('click', () => $('#bindPeerDialog').close())
   $('#deviceAliasForm')?.addEventListener('submit', e => { e.preventDefault(); void submitDeviceAlias() })
-  $('#cancelDeviceAliasBtn')?.addEventListener('click', () => $('#deviceAliasDialog')?.close())
   $('#deviceList').addEventListener('click', e => {
     const rename = e.target.closest('.rename-device')
     if (rename) { openDeviceAliasDialog(rename.closest('[data-device-id]').dataset.deviceId); return }
