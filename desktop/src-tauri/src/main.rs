@@ -3,6 +3,7 @@
 mod commands;
 mod config;
 mod file_drop;
+mod file_picker;
 mod process;
 mod runtime;
 mod tray;
@@ -132,6 +133,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             health,
             quit_desktop,
+            file_picker::pick_local_file,
             updates::open_updates,
             updates::updater_info,
             updates::check_update,

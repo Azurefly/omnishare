@@ -1456,13 +1456,20 @@ async function submitFileShortcut(pick) {
   addingShortcut = true
   input.readOnly = true
   const folder = $('#shortcutFolder').value
+  const nativePicker = pick && /Mac/i.test(navigator.platform) && (window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke)
   error.textContent = ''
   let added = 0
   try {
     await withButtonBusy(pick ? $('#pickShortcutBtn') : $('#addShortcutBtn'), pick ? '等待选择文件…' : '正在添加…', async () => {
-      for (const path of pick ? [''] : paths) {
+      let selected = pick ? [''] : paths
+      if (nativePicker) {
+        const path = await nativePicker('pick_local_file')
+        if (!path) return
+        selected = [path]
+      }
+      for (const path of selected) {
         const file = await api('/api/v1/local-files/shortcuts', {
-          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, pick, folder})
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, pick:pick && !nativePicker, folder})
         })
         if (!file) return
         added++
@@ -1473,7 +1480,7 @@ async function submitFileShortcut(pick) {
     $('#shortcutDialog').close()
     toast(`已添加 ${added} 个文件快捷方式`)
   } catch (err) {
-    error.textContent = (added ? `已添加 ${added} 项。剩余文件：` : '') + err.message
+    error.textContent = (added ? `已添加 ${added} 项。剩余文件：` : '') + (err?.message || String(err))
   } finally {
     input.readOnly = false
     addingShortcut = false

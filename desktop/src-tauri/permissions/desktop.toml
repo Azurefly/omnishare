@@ -9,6 +9,11 @@ description = "Open the bundled software update window. No download or install p
 commands.allow = ["open_updates"]
 
 [[permission]]
+identifier = "pick-local-file"
+description = "Let the user choose one file in a native sheet attached to the main workbench."
+commands.allow = ["pick_local_file"]
+
+[[permission]]
 identifier = "quit-desktop-app"
 description = "Allow quitting the desktop application from Settings."
 commands.allow = ["quit_desktop"]

@@ -4,12 +4,23 @@ import {readFile} from 'node:fs/promises'
 const read = path => readFile(new URL('../src-tauri/' + path, import.meta.url), 'utf8')
 const capability = async name => JSON.parse(await read('capabilities/' + name + '.json'))
 
-test('the loopback workbench may only open the native update window or quit via Settings', async () => {
+test('the shared loopback capability is limited to opening updates and quitting via Settings', async () => {
   const entry = await capability('loopback-update-entry')
   assert.equal(entry.local,false)
   assert.deepEqual(entry.windows,['main'])
   assert.deepEqual(entry.remote.urls,['http://127.0.0.1:*'])
   assert.deepEqual(entry.permissions,['open-update-window','quit-desktop-app'])
+})
+test('the native file sheet can only be requested from the macOS main loopback window', async () => {
+  const entry = await capability('macos-file-picker')
+  assert.equal(entry.local,false)
+  assert.deepEqual(entry.platforms,['macOS'])
+  assert.deepEqual(entry.windows,['main'])
+  assert.deepEqual(entry.remote.urls,['http://127.0.0.1:*'])
+  assert.deepEqual(entry.permissions,['pick-local-file'])
+  const permissions = await read('permissions/desktop.toml')
+  const picker = permissions.split('identifier = "pick-local-file"')[1].split('[[permission]]')[0]
+  assert.match(picker,/commands.allow = \["pick_local_file"\]/)
 })
 test('download and install permissions stay in the bundled updater', async () => {
   const entry = await capability('native-updates')
@@ -26,7 +37,7 @@ test('all app commands participate in the ACL and first-run startup remains loca
   const build=await read('build.rs')
   assert.match(build,/AppManifest::new\(\)\.commands/)
   for(const name of ['health','quit_desktop','desktop_settings','desktop_boot','backend_status','backend_start','backend_stop',
-    'open_updates','updater_info','check_update','download_update','install_update']) assert.ok(build.includes('"'+name+'"'))
+    'open_updates','pick_local_file','updater_info','check_update','download_update','install_update']) assert.ok(build.includes('"'+name+'"'))
   const entry=await capability('desktop-bootstrap')
   assert.equal(entry.local,true);assert.equal(entry.remote,undefined)
   assert.deepEqual(entry.windows,['main'])

@@ -85,6 +85,7 @@ function createApp(options = {}) {
     getAttribute(name) { return this.attributes.get(name) ?? null }
     removeAttribute(name) { this.attributes.delete(name) }
     showModal() { this.open = true }
+    close() { this.open = false }
     focus() {}
   }
   const elements = new Map()
@@ -120,16 +121,17 @@ function createApp(options = {}) {
     URL, URLSearchParams, Blob, File, FormData, AbortController,
     location: new URL('https://node.example/'), history: { replaceState() {} },
     document: { querySelector: element, querySelectorAll: () => [], createElement: tag => new Element(tag) },
-    sessionStorage: { getItem: () => null }, window: {}, navigator: {},
+    sessionStorage: { getItem: () => null }, window: options.window || {}, navigator: {platform: options.platform || ''},
     XMLHttpRequest: Request,
-    fetch: async url => {
+    fetch: async (url, init) => {
       fetches.push(url)
+      if (options.fetch) return options.fetch(url, init)
       return Response.json({ code: 0, data: url.includes('/dashboard') ? {} : [] })
     },
     setTimeout: () => 1, clearTimeout() {}, console
   })
   vm.runInContext(source, context, { filename: 'app.js' })
-  const app = vm.runInContext(`({ state, uploadFiles, pumpUploads,
+  const app = vm.runInContext(`({ state, uploadFiles, pumpUploads, submitFileShortcut,
     cancelUpload: typeof cancelUpload === 'function' ? cancelUpload : undefined,
     retryUpload: typeof retryUpload === 'function' ? retryUpload : undefined,
     cancelAllUploads: typeof cancelAllUploads === 'function' ? cancelAllUploads : undefined,
@@ -144,6 +146,61 @@ function createApp(options = {}) {
 
 const file = (name = 'sample.txt', content = 'sample') => new File([content], name, { type: 'text/plain' })
 const nextTurn = () => new Promise(resolve => setImmediate(resolve))
+
+test('macOS waits for its native picker, cancels without a write and registers the chosen path once', async () => {
+  let finish
+  const commands = []
+  const writes = []
+  const {app, element} = createApp({
+    platform: 'MacIntel',
+    window: { __TAURI__: {core: {invoke(command) {
+      commands.push(command)
+      return new Promise(resolve => { finish = resolve })
+    }}} },
+    fetch(url, init) {
+      if (init.method === 'POST') writes.push([url, JSON.parse(init.body)])
+      return Response.json({code: 0, data: url.includes('/shortcuts') ? {id:'chosen'} : []})
+    }
+  })
+  element('#shortcutFolder').value = '资料'
+  const cancelled = app.submitFileShortcut(true)
+  assert.equal(element('#pickShortcutBtn').disabled, true)
+  await app.submitFileShortcut(true)
+  assert.deepEqual(commands, ['pick_local_file'])
+  assert.deepEqual(writes, [])
+  finish(null)
+  await cancelled
+  assert.deepEqual(writes, [])
+  assert.equal(element('#pickShortcutBtn').disabled, false)
+  const chosen = app.submitFileShortcut(true)
+  assert.deepEqual(writes, [])
+  const path = '/Users/test/中文 文件 #2.txt'
+  finish(path)
+  await chosen
+  assert.deepEqual(commands, ['pick_local_file', 'pick_local_file'])
+  assert.deepEqual(writes, [['/api/v1/local-files/shortcuts', {path, pick:false, folder:'资料'}]])
+  assert.equal(element('#shortcutError').textContent, '')
+})
+
+test('a native picker failure is displayed and a standalone browser uses the server picker', async () => {
+  const failure = createApp({
+    platform: 'MacIntel',
+    window: {__TAURI_INTERNALS__: {invoke() { return Promise.reject('当前窗口无法打开文件选择器') }}}
+  })
+  await failure.app.submitFileShortcut(true)
+  assert.equal(failure.element('#shortcutError').textContent, '当前窗口无法打开文件选择器')
+  assert.deepEqual(failure.fetches, [])
+  const writes = []
+  const browser = createApp({
+    platform: 'MacIntel',
+    fetch(url, init) {
+      writes.push([url, JSON.parse(init.body)])
+      return Response.json({code:0, data:null})
+    }
+  })
+  await browser.app.submitFileShortcut(true)
+  assert.deepEqual(writes, [['/api/v1/local-files/shortcuts', {path:'', pick:true, folder:''}]])
+})
 
 test('a failed upload retry waits for the shared three-request scheduler', async () => {
   const { app, element, requests, peak } = createApp()

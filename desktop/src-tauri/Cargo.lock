@@ -2478,6 +2478,10 @@ dependencies = [
 name = "omnishare-desktop"
 version = "1.0.1-rc.4"
 dependencies = [
+ "block2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "reqwest",
  "rustls",
  "semver",
