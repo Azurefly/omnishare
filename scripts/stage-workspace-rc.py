@@ -78,7 +78,13 @@ def stage(root, kind, env):
                 'Packaged macOS window recovery must pass')
         require(lifecycle.get('source_commit') == source, 'macOS lifecycle evidence has a different source')
         evidence['window_lifecycle'] = lifecycle
-        evidence['scope'] = 'macOS integrity, packaged backend HTTP and native window recovery; not full business GUI or Apple trust'
+        binding = read_json(root / 'candidate-evidence/macos-device-binding/results.json')
+        require(binding.get('success') is True and binding.get('platform') == 'darwin'
+                and binding.get('source_commit') == source and binding.get('workflow_run_id') == env['GITHUB_RUN_ID']
+                and 'a discovered device binds reciprocally after its displayed route closes' in binding.get('checks', []),
+                'Packaged macOS device binding must survive loss of its displayed route')
+        evidence['device_binding'] = binding
+        evidence['scope'] = 'macOS integrity, packaged backend HTTP, device binding in Chromium, native window and file input checks'
     write_json(out / ('build-evidence-' + kind + '.json'), evidence)
     print('Staged ' + kind + ' from ' + source + ': ' + str(len(records)) + ' packages')
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,91 @@ import (
 
 	"omnishare/internal/model"
 )
+
+func TestBindDiscoveredDeviceAfterItsPrimaryRouteTimesOut(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "A"), newWorkspaceFixture(t, "B")
+	var unavailable atomic.Bool
+	original := b.s.Handler()
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			<-r.Context().Done()
+			return
+		}
+		original.ServeHTTP(w, r)
+	}))
+	t.Cleanup(first.Close)
+	identity := b.s.nodeIdentity()
+	identity.Addresses = []string{first.URL, b.http.URL}
+	a.s.peers.tailNodes = []peerIdentity{identity}
+	_, listing, _ := wsCall(t, a, http.MethodGet, "/api/v1/devices", nil, "")
+	card := listing["data"].([]interface{})[1].(map[string]interface{})
+	if card["url"] != first.URL || card["online"] != true || card["bound"] == true {
+		t.Fatalf("missing discovered device: %v", card)
+	}
+	unavailable.Store(true)
+	status, packet, _ := wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", map[string]string{
+		"url": card["url"].(string), "node_id": card["id"].(string),
+	}, "")
+	if status != http.StatusOK {
+		t.Fatalf("binding the visible device failed: %d %v", status, packet)
+	}
+	bound, ok := a.s.boundPeer(identity.ID)
+	if !ok || bound.URL != b.http.URL || len(b.s.boundPeers()) != 1 {
+		t.Fatalf("alternate route did not create a reciprocal binding: %v", bound)
+	}
+}
+
+func TestBindDiscoveredDeviceRequiresSelectedIdentityBeforeAccept(t *testing.T) {
+	a, b, other := newWorkspaceFixture(t, "A"), newWorkspaceFixture(t, "B"), newWorkspaceFixture(t, "B")
+	identity := b.s.nodeIdentity()
+	var accepts atomic.Int32
+	handler := other.s.Handler()
+	reassigned := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/peers/accept" || r.Header.Get("X-OmniShare-Key-Base64") != "" {
+			accepts.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(reassigned.Close)
+	request := map[string]string{"url": reassigned.URL, "node_id": identity.ID, "access_key": "fixture-key"}
+	status, _, _ := wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", request, "")
+	if status != http.StatusBadGateway || accepts.Load() != 0 || len(a.s.boundPeers()) != 0 {
+		t.Fatal("a reassigned address was accepted")
+	}
+	identity.Addresses = []string{b.http.URL}
+	a.s.peers.tailNodes = []peerIdentity{identity}
+	status, _, _ = wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", request, "")
+	if status != http.StatusOK || accepts.Load() != 0 || len(b.s.boundPeers()) != 1 || len(other.s.boundPeers()) != 0 {
+		t.Fatal("selected device did not receive the only binding")
+	}
+}
+
+func TestBindUsesIndependentlyDiscoveredReturnRoute(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "A"), newWorkspaceFixture(t, "B")
+	// A's public service port differs from the port accepting the callback.
+	// Only B's own successful discovery supplies the correct return address.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	port := closed.Listener.Addr().(*net.TCPAddr).Port
+	closed.Close()
+	cfg := a.cfg.Get()
+	cfg.Port, cfg.KeepAccessKey = port, true
+	if err := a.cfg.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	aID := a.s.nodeIdentity()
+	request := map[string]string{"url": b.http.URL}
+	status, result, _ := wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", request, "")
+	if status != http.StatusBadGateway || !strings.Contains(fmt.Sprint(result["message"]), fmt.Sprintf("TCP %d", port)) || len(a.s.boundPeers())+len(b.s.boundPeers()) != 0 {
+		t.Fatalf("missing callback diagnosis or unexpected binding: %v", result)
+	}
+	aID.Addresses = []string{a.http.URL}
+	b.s.peers.tailNodes = []peerIdentity{aID}
+	status, result, _ = wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", request, "")
+	bound, ok := b.s.boundPeer(aID.ID)
+	if status != http.StatusOK || !ok || bound.URL != a.http.URL {
+		t.Fatalf("independently proven callback was not used: %v", result)
+	}
+}
 
 func TestWorkspaceRoutesPrioritizeRediscoveryOverOldAdapters(t *testing.T) {
 	a := newWorkspaceFixture(t, "A")

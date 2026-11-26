@@ -4,10 +4,11 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {createServer} from 'node:net';
+import {createConnection, createServer} from 'node:net';
 import {chromium} from '../frontend/node_modules/playwright/index.mjs';
 
 const binary = resolve(process.env.OMNISHARE_BIN || process.argv[2] || 'dist/omnishare-test');
+const bindingOnly = process.argv.includes('--binding-only');
 const output=resolve(process.env.WORKSPACE_EVIDENCE || 'frontend/test-results/workspace');
 await mkdir(output,{recursive:true});
 const root=await mkdtemp(join(tmpdir(),'omnishare-workspace-'));
@@ -18,6 +19,44 @@ async function freePort(){const s=createServer();s.listen(0,'127.0.0.1');await o
 async function api(base,path,method='GET',data){const r=await fetch(base+path,{method,headers:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});const body=await r.json();if(!r.ok||body.code!==0)throw new Error(`${method} ${path}: ${r.status}`);return body;}
 async function start(name){const port=await freePort(),base=`http://127.0.0.1:${port}`;const child=spawn(binary,['--port',String(port),'--name',name,'--data-dir',join(root,name),'--listen','127.0.0.1','--no-browser','--shutdown-on-stdin-close'],{stdio:['pipe','ignore','ignore']});children.push(child);for(let i=0;i<100;i++){try{await api(base,'/api/v1/health');return base;}catch{await delay(100);}}throw new Error('test server failed to start');}
 async function waitText(page,selector,value){await page.waitForFunction(({selector,value})=>document.querySelector(selector)?.value===value,{selector,value},{timeout:12000});}
+
+async function checkDiscoveredBinding(page, a, b) {
+ const remote = (await api(b, '/api/v1/peers/identity')).data;
+ await api(a, '/api/v1/peers/' + remote.id, 'DELETE');
+ const relay = createServer(client => {
+   const upstream = createConnection({host:'127.0.0.1', port:Number(new URL(b).port)});
+   client.on('error', () => upstream.destroy());
+   upstream.on('error', () => client.destroy());
+   client.on('close', () => upstream.destroy());
+   upstream.on('close', () => client.destroy());
+   client.pipe(upstream).pipe(client);
+ });
+ relay.listen(0, '127.0.0.1');
+ await once(relay, 'listening');
+ const primary = 'http://127.0.0.1:' + relay.address().port;
+ try {
+   await api(a, '/api/v1/config', 'PUT', {allow_lan:false, keep_access_key:true, peers:[{name:remote.name, url:primary}]});
+   await page.goto(a, {waitUntil:'networkidle'});
+   const card = page.locator(`[data-device-id="${remote.id}"]`);
+   await card.locator('.bind-device').click();
+   assert.equal(await page.locator('#bindPeerURL').inputValue(), primary + '/');
+   // The signed identity came from B. Now remove only the route displayed when the form opened.
+   const closed = once(relay, 'close');
+   relay.close();
+   await closed;
+   await page.locator('#bindPeerSubmitBtn').click();
+   await page.locator('#bindPeerDialog').waitFor({state:'hidden', timeout:25000});
+   await card.locator('.unbind-device').waitFor();
+   const local = (await api(a, '/api/v1/peers/identity')).data;
+   const peer = (await api(a, '/api/v1/devices')).data.find(d => d.id === remote.id);
+   assert.equal(new URL(peer.url).origin, b);
+   assert.ok(peer.bound && (await api(b, '/api/v1/devices')).data.some(d => d.id === local.id && d.bound));
+   checks.push('a discovered device binds reciprocally after its displayed route closes');
+ } finally {
+   if (relay.listening) relay.close();
+   await api(a, '/api/v1/config', 'PUT', {allow_lan:false, keep_access_key:true, peers:[]});
+ }
+}
 async function assertWritingViewport(page, sourceSelector, saveSelector, minSourceHeight) {
  const {source,save,height}=await page.evaluate(({sourceSelector,saveSelector}) => {
    const rect=selector=>document.querySelector(selector).getBoundingClientRect().toJSON();
@@ -27,7 +66,7 @@ async function assertWritingViewport(page, sourceSelector, saveSelector, minSour
    `Expected a visible writing area of at least ${minSourceHeight}px, got ${JSON.stringify(source)} in ${height}px`);
  assert.ok(save.top>=0 && save.bottom<=height && save.height>0, 'The save action must be visible without scrolling');
 }
-try {
+async function exerciseWorkspace() {
  const a=await start('工作站 A'), b=await start('Mac B');
  await api(a,'/api/v1/notes','POST',{content:'A 本机上的随手记'});
  await api(b,'/api/v1/notes','POST',{content:'另一台设备上的随手记'});
@@ -44,6 +83,9 @@ try {
  assert.equal(new URL(page.url()).origin,a);
  const devices=(await api(b,'/api/v1/devices')).data;
  assert.ok(devices.some(d=>d.bound&&!d.is_local));checks.push('one-sided binding creates reciprocal device registration and merged notes');
+ await checkDiscoveredBinding(page, a, b);
+ if (bindingOnly) return;
+ await page.locator('.tab[data-tab="notes"]').click();
  // Folder workflow in unified workspace: create folder, create note in folder, create empty folder, verify cross-device visibility & filter stability.
  await page.locator('#notesPanel .create-folder-btn').click();
  await page.locator('#folderModalDialog[open]').waitFor({timeout:5000});
@@ -265,8 +307,14 @@ try {
  assert.equal(download.suggestedFilename(),name);
  assert.equal(await readFile(await download.path(),'utf8'),sample);
  checks.push('note and document references share the picker; a real file move removes the source and preserves the note reference');
+}
+
+try {
+ await exerciseWorkspace();
  assert.deepEqual(errors,[]);
- await writeFile(join(output,'results.json'),JSON.stringify({success:true,checks,scope:'two real folder-backed processes and Chromium',native_macos_verified:false},null,2));
+ const report = {success:true, checks, platform:process.platform, scope:'two real folder-backed processes and Chromium',
+   source_commit:process.env.SOURCE_COMMIT, workflow_run_id:process.env.GITHUB_RUN_ID, native_macos_verified:false};
+ await writeFile(join(output,'results.json'),JSON.stringify(report,null,2));
  console.log(JSON.stringify({success:true,checks}));
 } catch(e) {
  if(page)await page.screenshot({path:join(output,'failure.png'),fullPage:true}).catch(()=>{});

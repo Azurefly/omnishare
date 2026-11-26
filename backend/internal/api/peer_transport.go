@@ -16,6 +16,7 @@ import (
 
 var tailRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
 var benchmarkRange = &net.IPNet{IP: net.IPv4(198, 18, 0, 0), Mask: net.CIDRMask(15, 32)}
+var errBindingIdentity = errors.New("selected peer identity changed")
 
 func peerIPAllowed(ip net.IP, loop bool) bool {
 	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || benchmarkRange.Contains(ip) {
@@ -96,6 +97,9 @@ func peerHTTP(ctx context.Context, method, base, path string, body []byte, heade
 	return client.Do(req)
 }
 func peerError(err error) string {
+	if errors.Is(err, errBindingIdentity) {
+		return "此地址的设备身份已变化，请刷新设备列表后重试"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "连接超时，请检查服务端口、防火墙或 Tailscale 访问规则"
 	}
@@ -134,6 +138,90 @@ func uniqueRoutes(p peerBinding) []string {
 	}
 	return out
 }
+
+// Re-prove the selected identity immediately before binding. Only these
+// read-only challenges race; exactly one endpoint receives the accept request.
+func (s *Server) identifyBindingRoute(ctx context.Context, routes []string, expected peerIdentity, loop bool) (peerIdentity, string, error) {
+	type result struct {
+		identity peerIdentity
+		base     string
+		err      error
+	}
+	probe := func(c context.Context, base string, allowLoop bool) result {
+		id, err := s.readIdentity(c, base, allowLoop)
+		if err == nil && expected.ID != "" && (id.ID != expected.ID || (expected.PublicKey != "" && id.PublicKey != expected.PublicKey)) {
+			err = errBindingIdentity
+		}
+		return result{id, base, err}
+	}
+	primary := routes[0]
+	alternatives := []string{}
+	if expected.ID != "" {
+		for _, base := range routes[1:] {
+			if !strings.HasPrefix(primary, "https://") || strings.HasPrefix(base, "https://") {
+				alternatives = append(alternatives, base)
+			}
+		}
+	}
+	if len(alternatives) == 0 {
+		r := probe(ctx, primary, loop)
+		return r.identity, r.base, r.err
+	}
+	c, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan result, 1+len(alternatives))
+	go func() { results <- probe(c, primary, loop) }()
+	timer := time.NewTimer(350 * time.Millisecond)
+	defer timer.Stop()
+	pending := 1 + len(alternatives)
+	var firstErr error
+	select {
+	case r := <-results:
+		if r.err == nil {
+			return r.identity, r.base, nil
+		}
+		firstErr = r.err
+		pending--
+	case <-timer.C:
+	case <-c.Done():
+		return peerIdentity{}, "", c.Err()
+	}
+	u, _ := url.Parse(primary)
+	allowLoop := loop && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback())
+	jobs := make(chan string, len(alternatives))
+	for _, route := range alternatives {
+		jobs <- route
+	}
+	close(jobs)
+	for range min(3, len(alternatives)) {
+		go func() {
+			for route := range jobs {
+				if c.Err() != nil {
+					return
+				}
+				one, done := context.WithTimeout(c, 3*time.Second)
+				r := probe(one, route, allowLoop)
+				done()
+				results <- r
+			}
+		}()
+	}
+	for range pending {
+		select {
+		case r := <-results:
+			if r.err == nil {
+				return r.identity, r.base, nil
+			}
+			if firstErr == nil || r.base == primary {
+				firstErr = r.err
+			}
+		case <-c.Done():
+			return peerIdentity{}, "", c.Err()
+		}
+	}
+	return peerIdentity{}, "", firstErr
+}
+
 func (s *Server) peerRequest(ctx context.Context, p peerBinding, method, path string, body []byte, extra http.Header) (*http.Response, error) {
 	if method == http.MethodGet || method == http.MethodHead {
 		if err := s.peerBackoff(p.Identity.ID); err != nil {

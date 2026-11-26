@@ -226,6 +226,18 @@ jobs:
           hdiutil detach "$PWD/macos-reopen-mount"
           codesign --verify --deep --strict macos-reopen/OmniShare.app
           python3 desktop/tests/macos-window-reopen.py --app macos-reopen/OmniShare.app --file-inputs --report candidate-evidence/macos-window-reopen.json
+      - name: Bind two packaged macOS nodes after their primary route disconnects
+        if: runner.os == 'macOS'
+        timeout-minutes: 7
+        env:
+          WORKSPACE_EVIDENCE: candidate-evidence/macos-device-binding
+        run: |
+          set -euo pipefail
+          npm --prefix frontend ci --ignore-scripts
+          (cd frontend && npx --no-install playwright install chromium)
+          backend=$(find macos-reopen/OmniShare.app/Contents -type f -name omnishare -print -quit)
+          test -x "$backend"
+          node scripts/test-workspace-browser.mjs "$backend" --binding-only
       - name: Retain exact packages for failed native diagnosis
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

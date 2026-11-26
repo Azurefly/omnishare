@@ -3159,7 +3159,8 @@ function renderNodeSecurity() {
     : '局域网免密访问 · 可在设置中开启密钥保护'
 }
 
-function openBindDialog(url='') {
+function openBindDialog(url='', deviceId='') {
+  $('#bindPeerDialog').dataset.deviceId = deviceId
   $('#bindPeerURL').value = url
   $('#bindPeerKey').value = ''
   $('#bindPeerError').textContent = ''
@@ -3172,7 +3173,10 @@ async function submitPeerBinding() {
   state.peerBinding = true; $('#bindPeerSubmitBtn').disabled = true
   $('#bindPeerError').textContent = '正在连接并完成双向绑定…'
   try {
-    await api('/api/v1/peers/bind', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('#bindPeerURL').value.trim(),access_key:$('#bindPeerKey').value})})
+    const binding = {url:$('#bindPeerURL').value.trim(), access_key:$('#bindPeerKey').value}
+    const deviceId = $('#bindPeerDialog').dataset.deviceId
+    if (deviceId) binding.node_id = deviceId
+    await api('/api/v1/peers/bind', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(binding)})
     $('#bindPeerKey').value = ''; $('#bindPeerDialog').close()
     toast('双向绑定成功，两端工作区已合并')
     await Promise.all([loadDevices(),loadAll(),loadFolders('notes'),loadFolders('files'),loadFolders('pads')]); await refreshWorkspace()
@@ -3518,7 +3522,7 @@ function bindEvents() {
     const rename = e.target.closest('.rename-device')
     if (rename) { openDeviceAliasDialog(rename.closest('[data-device-id]').dataset.deviceId); return }
     const bind = e.target.closest('.bind-device')
-    if (bind) { openBindDialog(bind.dataset.url); return }
+    if (bind) { openBindDialog(bind.dataset.url, bind.closest('[data-device-id]').dataset.deviceId); return }
     const unbind = e.target.closest('.unbind-device')
     if (unbind) void unbindDevice(unbind.closest('[data-device-id]').dataset.deviceId)
   })

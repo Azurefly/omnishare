@@ -1,7 +1,7 @@
 {
-  "tag": "v1.0.1-rc.4",
-  "name": "OmniShare v1.0.1-rc.4 · 修复本机文件选择器误报重连",
-  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.4.md",
+  "tag": "v1.0.1-rc.5",
+  "name": "OmniShare v1.0.1-rc.5 · 修复已发现设备的双向绑定",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.5.md",
   "prerelease": true,
   "platforms": [
     "windows",

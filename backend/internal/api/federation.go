@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -369,8 +370,9 @@ func (s *Server) authorizedPeer(r *http.Request) bool {
 func (s *Server) bindPeer(w http.ResponseWriter, r *http.Request) { s.bindPeerMode(w, r, false) }
 func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic bool) {
 	var input struct {
-		URL string `json:"url"`
-		Key string `json:"access_key"`
+		URL    string `json:"url"`
+		Key    string `json:"access_key"`
+		NodeID string `json:"node_id"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		respond(w, 400, 400, err.Error(), nil)
@@ -384,9 +386,24 @@ func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic 
 	ctx, cancel := context.WithTimeout(r.Context(), 18*time.Second)
 	defer cancel()
 	loop := net.ParseIP(clientIP(r)).IsLoopback()
-	remote, err := s.readIdentity(ctx, base, loop)
+	routes := []string{base}
+	expected := peerIdentity{ID: input.NodeID}
+	if expected.ID != "" {
+		s.peers.mu.Lock()
+		previous := s.peers.health[base].identity
+		s.peers.mu.Unlock()
+		if previous.ID == expected.ID {
+			expected = previous
+		}
+		routes = s.peerRoutes(peerBinding{URL: base, Identity: expected})
+	}
+	remote, selected, err := s.identifyBindingRoute(ctx, routes, expected, loop)
 	if err != nil {
-		respond(w, 502, 502, "无法连接设备："+peerError(err), nil)
+		message := "未能读取 " + base + " 的设备身份：" + peerError(err)
+		if len(routes) > 1 {
+			message = "未找到所选设备的可用连接（首选地址 " + base + "）：" + peerError(err)
+		}
+		respond(w, 502, 502, message, nil)
 		return
 	}
 	if automatic {
@@ -409,7 +426,7 @@ func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic 
 	if input.Key != "" {
 		h.Set("X-OmniShare-Key-Base64", base64.StdEncoding.EncodeToString([]byte(input.Key)))
 	}
-	resp, err := peerHTTP(ctx, http.MethodPost, base, "/api/v1/peers/accept", body, h, loop)
+	resp, err := peerHTTP(ctx, http.MethodPost, selected, "/api/v1/peers/accept", body, h, loop)
 	if err != nil {
 		respond(w, 502, 502, "双向绑定失败："+peerError(err), nil)
 		return
@@ -424,11 +441,16 @@ func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic 
 		Message string       `json:"message"`
 		Data    peerIdentity `json:"data"`
 	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&reply) != nil || resp.StatusCode != 200 || reply.Code != 0 || reply.Data.ID != remote.ID {
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&reply)
+	if decodeErr == nil && resp.StatusCode == http.StatusBadGateway && strings.HasPrefix(reply.Message, "反向连接失败") {
+		respond(w, 502, 502, fmt.Sprintf("已联系 %s，但对方无法回连本机的 OmniShare。请确认本机已开启局域网访问，并允许对方访问 TCP %d 端口。", selected, local.Port), nil)
+		return
+	}
+	if decodeErr != nil || resp.StatusCode != 200 || reply.Code != 0 || reply.Data.ID != remote.ID {
 		respond(w, 502, 502, "对方未确认双向绑定；请检查反向访问地址、端口与版本", nil)
 		return
 	}
-	p := peerBinding{Identity: remote, URL: base, BoundAt: time.Now().UTC()}
+	p := peerBinding{Identity: remote, URL: selected, BoundAt: time.Now().UTC()}
 	if err = s.savePeer(p); err != nil {
 		respond(w, 500, 500, "对方已登记，但本机保存绑定失败，请重试", nil)
 		return
@@ -447,7 +469,8 @@ func (s *Server) acceptPeer(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, 400, "invalid signed device identity", nil)
 		return
 	}
-	// The callback uses the actual TCP source, not an arbitrary URL from a peer.
+	// Start with the TCP source. Alternatives must have been observed independently
+	// on this node; addresses supplied in the incoming request are never dialed.
 	ip := net.ParseIP(clientIP(r))
 	if !peerIPAllowed(ip, true) {
 		respond(w, 400, 400, "binding requires a LAN or Tailscale source", nil)
@@ -463,12 +486,14 @@ func (s *Server) acceptPeer(w http.ResponseWriter, r *http.Request) {
 	base := scheme + "://" + net.JoinHostPort(ip.String(), strconv.Itoa(p.Port))
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
-	verified, err := s.readIdentity(ctx, base, ip.IsLoopback())
-	if err != nil || verified.ID != p.ID || verified.PublicKey != p.PublicKey {
+	observed, _ := s.discoveredRoutes(p.ID)
+	routes := limitedPeerRoutes(peerBinding{URL: base, Identity: peerIdentity{Addresses: observed}})
+	verified, selected, err := s.identifyBindingRoute(ctx, routes, p, ip.IsLoopback())
+	if err != nil {
 		respond(w, 502, 502, "反向连接失败；确认发起设备的服务监听与防火墙", nil)
 		return
 	}
-	if err = s.savePeer(peerBinding{Identity: verified, URL: base, BoundAt: time.Now().UTC()}); err != nil {
+	if err = s.savePeer(peerBinding{Identity: verified, URL: selected, BoundAt: time.Now().UTC()}); err != nil {
 		respond(w, 500, 500, "cannot persist binding", nil)
 		return
 	}
@@ -598,28 +623,36 @@ func (s *Server) reconcileConfiguredPeers(ctx context.Context) {
 	}
 }
 
-func (s *Server) peerRoutes(p peerBinding) []string {
-	// Rediscovery can repair DHCP/VPN route changes, but cannot change trust.
-	// Every route must still prove the saved public-key identity before use.
-	addresses := []string{}
+func (s *Server) discoveredRoutes(id string) (observed, advertised []string) {
 	if s.registry != nil {
 		for _, d := range s.registry.List() {
-			if d.ID == p.Identity.ID {
-				addresses = append(addresses, d.URL)
-				addresses = append(addresses, d.Addresses...)
+			if d.ID == id {
+				observed = append(observed, d.URL)
+				observed = append(observed, d.Addresses...)
 			}
 		}
 	}
 	s.peers.tailMu.RLock()
 	for _, d := range s.peers.tailNodes {
-		if d.ID == p.Identity.ID {
-			addresses = append(addresses, d.Addresses...)
+		if d.ID == id && len(d.Addresses) > 0 {
+			// Tailscale discovery prepends the address that answered its signed probe.
+			observed = append(observed, d.Addresses[0])
+			advertised = append(advertised, d.Addresses[1:]...)
 		}
 	}
 	s.peers.tailMu.RUnlock()
+	return observed, advertised
+}
+
+func (s *Server) peerRoutes(p peerBinding) []string {
+	observed, advertised := s.discoveredRoutes(p.Identity.ID)
 	// Prefer recent discovery over an old adapter list, and apply the route
 	// limit afterwards so stale saved addresses cannot crowd out a new VPN.
-	p.Identity.Addresses = append(addresses, p.Identity.Addresses...)
+	p.Identity.Addresses = append(append(observed, advertised...), p.Identity.Addresses...)
+	return limitedPeerRoutes(p)
+}
+
+func limitedPeerRoutes(p peerBinding) []string {
 	routes := uniqueRoutes(p)
 	if len(routes) > 24 {
 		routes = routes[:24]
