@@ -215,9 +215,9 @@ jobs:
         run: |
           backend=$(find macos-stage/OmniShare.app/Contents -type f -name omnishare | head -n 1)
           python3 scripts/test-http-integration.py "$backend"
-      - name: Verify packaged macOS icon and native window recovery
+      - name: Verify packaged macOS window recovery, file picker, Finder drag and paste
         if: runner.os == 'macOS'
-        timeout-minutes: 6
+        timeout-minutes: 7
         run: |
           set -euo pipefail
           mkdir -p macos-reopen-mount macos-reopen
@@ -225,7 +225,7 @@ jobs:
           ditto macos-reopen-mount/OmniShare.app macos-reopen/OmniShare.app
           hdiutil detach "$PWD/macos-reopen-mount"
           codesign --verify --deep --strict macos-reopen/OmniShare.app
-          python3 desktop/tests/macos-window-reopen.py --app macos-reopen/OmniShare.app --report candidate-evidence/macos-window-reopen.json
+          python3 desktop/tests/macos-window-reopen.py --app macos-reopen/OmniShare.app --file-inputs --report candidate-evidence/macos-window-reopen.json
       - name: Retain exact packages for failed native diagnosis
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

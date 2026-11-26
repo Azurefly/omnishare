@@ -36,7 +36,23 @@ func wait<T>(_ label: String, _ read: () -> T?) throws -> T {
         if let value = read() { return value }
         pause(0.15)
     } while Date() < deadline
-    throw fail("Timed out waiting for " + label)
+    let front = NSWorkspace.shared.frontmostApplication
+    var visible: [String] = []
+    if let pid = front?.processIdentifier {
+        let windows = attribute(AXUIElementCreateApplication(pid), kAXWindowsAttribute) as? [AXUIElement] ?? []
+        for window in windows.prefix(3) {
+            visible.append(attribute(window, kAXTitleAttribute) as? String ?? "(untitled)")
+            _ = find(window) { element in
+                if let role = attribute(element, kAXRoleAttribute) as? String,
+                   ["AXButton", "AXSheet", "AXTextField"].contains(role), visible.count < 23 {
+                    let title = attribute(element, kAXTitleAttribute) as? String ?? attribute(element, kAXDescriptionAttribute) as? String ?? ""
+                    visible.append(role + " " + title)
+                }
+                return false
+            }
+        }
+    }
+    throw fail("Timed out waiting for " + label + ". Foreground: " + (front?.localizedName ?? "?") + " " + visible.joined(separator: " | "))
 }
 
 func firstWindow(_ app: AXUIElement) throws -> AXUIElement {
@@ -80,16 +96,94 @@ func mouse(_ type: CGEventType, _ point: CGPoint) throws {
     event.post(tap: .cghidEventTap)
 }
 
-func key(_ code: CGKeyCode, command: Bool = false) throws {
+func key(_ code: CGKeyCode, command: Bool = false, shift: Bool = false) throws {
     for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { throw fail("Keyboard event failed") }
-        event.flags = command ? .maskCommand : []
+        var flags: CGEventFlags = []
+        if command { flags.insert(.maskCommand) }
+        if shift { flags.insert(.maskShift) }
+        event.flags = flags
         event.post(tap: .cghidEventTap)
     }
     pause(0.15)
 }
 
-func probe(pid: pid_t, file: URL) throws {
+func nativeOpenPanel() -> AXUIElement? {
+    guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
+    let root = AXUIElementCreateApplication(front.processIdentifier)
+    let windows = attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    for window in windows {
+        if let panel = find(window, { element in
+            guard let role = attribute(element, kAXRoleAttribute) as? String,
+                  ["AXSheet", "AXWindow", "AXDialog"].contains(role) else { return false }
+            return attribute(element, kAXCancelButtonAttribute) != nil && attribute(element, kAXDefaultButtonAttribute) != nil
+        }) { return panel }
+    }
+    return nil
+}
+
+func api(_ port: UInt16, _ path: String) throws -> [String: Any] {
+    let url = URL(string: "http://127.0.0.1:\(port)/api/v1/" + path)!
+    let json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    guard let result = json, result["code"] as? Int == 0 else { throw fail("Local backend did not answer " + path) }
+    return result
+}
+
+func shortcuts(_ port: UInt16) throws -> [String] {
+    guard let files = try api(port, "files")["data"] as? [[String: Any]] else { throw fail("Unreadable file index") }
+    return files.filter { $0["source_shortcut"] as? Bool == true }.compactMap { $0["file_name"] as? String }
+}
+
+func testPicker(_ target: AXUIElement, file: URL, port: UInt16) throws {
+    let pick = try control(target, id: "pickShortcutBtn", roles: ["AXButton"], labels: ["选择本机文件"])
+    let before = try shortcuts(port)
+    for cancel in [true, false] {
+        guard AXUIElementPerformAction(pick, kAXPressAction as CFString) == .success else { throw fail("Could not click the file picker") }
+        let panel: AXUIElement = try wait("macOS Open panel") { nativeOpenPanel() }
+        pause(10) // Past the former eight-second API deadline while the user is choosing.
+        _ = try api(port, "health")
+        guard attribute(pick, kAXEnabledAttribute) as? Bool == false, nativeOpenPanel() != nil else {
+            throw fail("The picker stopped waiting while the backend was healthy")
+        }
+        if cancel {
+            try key(53) // Escape in the native panel.
+            let _: Bool = try wait("picker button after cancelling") {
+                attribute(pick, kAXEnabledAttribute) as? Bool == true && nativeOpenPanel() == nil ? true : nil
+            }
+            guard try shortcuts(port) == before else { throw fail("Cancellation registered a file") }
+            continue
+        }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(file.path, forType: .string) else { throw fail("Could not copy the fixture path") }
+        try key(5, command: true, shift: true) // Go to Folder in the native open panel.
+        let system = AXUIElementCreateSystemWide()
+        let entry: AXUIElement = try wait("Go to Folder path field") {
+            guard let focused = attribute(system, kAXFocusedUIElementAttribute) else { return nil }
+            let field = focused as! AXUIElement
+            let role = attribute(field, kAXRoleAttribute) as? String ?? ""
+            return ["AXTextField", "AXComboBox"].contains(role) ? field : nil
+        }
+        try key(0, command: true)
+        try key(9, command: true)
+        let _: Bool = try wait("fixture path in macOS Open panel") {
+            (attribute(entry, kAXValueAttribute) as? String)?.contains(file.lastPathComponent) == true ? true : nil
+        }
+        try key(36)
+        let _: Bool = try wait("file confirmation in macOS Open panel") {
+            if (try? shortcuts(port).contains(file.lastPathComponent)) == true { return true }
+            guard let raw = attribute(panel, kAXDefaultButtonAttribute) else { return nil }
+            let button = raw as! AXUIElement
+            guard attribute(button, kAXEnabledAttribute) as? Bool == true else { return nil }
+            return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success ? true : nil
+        }
+        let _: Bool = try wait("exactly one selected file in the backend") {
+            guard let names = try? shortcuts(port) else { return nil }
+            return names.sorted() == (before + [file.lastPathComponent]).sorted() ? true : nil
+        }
+    }
+}
+
+func probe(pid: pid_t, file: URL, picked: URL, port: UInt16) throws {
     guard AXIsProcessTrusted(), let app = NSRunningApplication(processIdentifier: pid),
           let screen = NSScreen.main else { throw fail("Native input requires Accessibility on the disposable macOS runner") }
     let target = try firstWindow(AXUIElementCreateApplication(pid))
@@ -99,6 +193,10 @@ func probe(pid: pid_t, file: URL) throws {
     app.activate(options: [.activateIgnoringOtherApps])
     let add = try control(target, id: "dashUploadFileBtn", roles: ["AXButton"], labels: ["添加文件"])
     guard AXUIElementPerformAction(add, kAXPressAction as CFString) == .success else { throw fail("Cannot open Add File") }
+    try testPicker(target, file: picked, port: port)
+    app.activate(options: [.activateIgnoringOtherApps])
+    let reopen = try control(target, id: "openShortcutBtn", roles: ["AXButton"], labels: ["添加本机文件"])
+    guard AXUIElementPerformAction(reopen, kAXPressAction as CFString) == .success else { throw fail("Cannot reopen Add File") }
     let path = try control(target, id: "shortcutPath", roles: ["AXTextArea", "AXTextField"],
                            labels: ["本机文件路径", "拖入文件或粘贴完整路径，每行一个文件"])
     let point = try center(path)
@@ -149,10 +247,13 @@ func probe(pid: pid_t, file: URL) throws {
 }
 
 do {
-    guard ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true", CommandLine.arguments.count == 3,
-          let pid = Int32(CommandLine.arguments[1]) else { throw fail("Expected a disposable CI application PID and fixture") }
-    try probe(pid: pid, file: URL(fileURLWithPath: CommandLine.arguments[2]))
-    print("PASS native Cmd+V and Finder drag in packaged OmniShare")
+    guard ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true", CommandLine.arguments.count == 5,
+          let pid = Int32(CommandLine.arguments[1]), let port = UInt16(CommandLine.arguments[4]) else {
+        throw fail("Expected a disposable CI application PID, fixtures and loopback port")
+    }
+    try probe(pid: pid, file: URL(fileURLWithPath: CommandLine.arguments[2]),
+              picked: URL(fileURLWithPath: CommandLine.arguments[3]), port: port)
+    print("PASS native file picker, cancellation, Cmd+V and Finder drag in packaged OmniShare")
 } catch {
     FileHandle.standardError.write(Data(("\(error)\n").utf8))
     exit(1)

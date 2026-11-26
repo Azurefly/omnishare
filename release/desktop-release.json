@@ -1,7 +1,7 @@
 {
-  "tag": "v1.0.1-rc.3",
-  "name": "OmniShare v1.0.1-rc.3 · 桌面文件拖放与路径粘贴",
-  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.3.md",
+  "tag": "v1.0.1-rc.4",
+  "name": "OmniShare v1.0.1-rc.4 · 修复本机文件选择器误报重连",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.4.md",
   "prerelease": true,
   "platforms": [
     "windows",
@@ -17,6 +17,6 @@
     "reason": "Candidate DMG uses ad-hoc signing. Apple notarization is pending.",
     "dmg_published": false
   },
-  "release_date": "2026-11-25",
+  "release_date": "2026-11-26",
   "publication_channel": "candidate"
 }

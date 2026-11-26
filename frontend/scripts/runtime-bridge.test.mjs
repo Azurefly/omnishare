@@ -4,16 +4,61 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 const source = await readFile(new URL('../web/runtime-bridge.js', import.meta.url), 'utf8')
-function bridge(fetcher = async () => Response.json({code:0,data:[]})) {
+function bridge(fetcher = async () => Response.json({code:0,data:[]}), timer = setTimeout) {
   const requests = []
-  const window = {setTimeout, fetch:async (...args) => {requests.push(args); return fetcher(...args)}}
-  const context = vm.createContext({window, URL, Request, Response, Headers, AbortController,
+  const events = []
+  const window = {setTimeout:timer, fetch:async (...args) => {requests.push(args); return fetcher(...args)}}
+  const context = vm.createContext({window, URL, Request, Response, Headers, AbortController, CustomEvent:Event,
     location:new URL('http://100.92.203.77:8084/'), console, setTimeout, clearTimeout,
-    document:{readyState:'loading',addEventListener(){},querySelector:()=>null,dispatchEvent(){}}})
+    document:{readyState:'loading',addEventListener(){},querySelector:()=>null,dispatchEvent(e){events.push(e.type)}}})
   vm.runInContext(source, context)
   return {collapse: rows => JSON.parse(JSON.stringify(window.__omnishareRuntimeBridge.collapseDevices(rows))),
-    fetch:window.fetch, requests}
+    fetch:window.fetch, requests, events}
 }
+
+test('native selection, directory walks and shortcut hashing finish without the short API deadline', async () => {
+  for (const [path, body] of [['shortcuts',{pick:true}], ['shortcuts',{path:'/sample'}], ['selection',{paths:['/sample']}]]) {
+    let finish
+    const deadlines = []
+    const {fetch, requests, events} = bridge(() => new Promise(resolve => { finish = resolve }),
+      (_callback, ms) => { deadlines.push(ms); return 1 })
+    const pending = fetch('/api/v1/local-files/' + path, {method:'POST', body:JSON.stringify(body)})
+    assert.deepEqual(deadlines, [], 'waiting for the user or disk must not start an abort timer')
+    const selected = Response.json({code:0,data:{id:'file'}})
+    finish(selected)
+    assert.equal(await pending, selected)
+    assert.equal(requests.length, 1)
+    assert.deepEqual(events, [])
+  }
+})
+
+test('a failed picker exchange checks health without retrying the file operation', async () => {
+  for (const reachable of [true, false]) {
+    const {fetch, requests, events} = bridge(async url => {
+      if (url === '/api/v1/health' && reachable) return Response.json({code:0})
+      throw new TypeError('Failed to fetch')
+    }, () => 1)
+    await assert.rejects(fetch('/api/v1/local-files/shortcuts', {method:'POST'}),
+      reachable ? /未收到操作结果/ : {name:'OmniShareBackendUnavailable'})
+    assert.deepEqual(requests.map(([url]) => url), ['/api/v1/local-files/shortcuts','/api/v1/health'])
+    assert.deepEqual(events, reachable ? [] : ['omnishare:backend-offline'])
+  }
+})
+
+test('caller cancellation in init or Request preserves the abort and leaves connection status alone', async () => {
+  for (const inherited of [false, true]) {
+    const {fetch, requests, events} = bridge((_input, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), {once:true})
+    }))
+    const controller = new AbortController()
+    const input = inherited ? new Request('http://100.92.203.77:8084/api/v1/files', {signal:controller.signal}) : '/api/v1/local-files/shortcuts'
+    const pending = fetch(input, inherited ? {} : {method:'POST', signal:controller.signal})
+    controller.abort()
+    await assert.rejects(pending, {name:'AbortError'})
+    assert.equal(requests.length, 1)
+    assert.deepEqual(events, [])
+  }
+})
 const lan='http://192.168.31.200:8084/'
 const tail='http://100.92.203.77:8084/'
 const ipv6='http://[fd7a:115c:a1e0::2637:cb4e]:8084/'

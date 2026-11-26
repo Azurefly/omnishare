@@ -5,6 +5,7 @@
   const retryDelays = [250, 900]
   const connectionMessages = /Failed to fetch|后端服务暂不可用|核心服务加载失败|连接失败|网络请求失败/i
   let offline = false
+  let healthProbe = null
   let recoveryTimer = 0
   let recoveryAttempt = 0
   let lastConnectionToast = 0
@@ -54,25 +55,25 @@
     document.dispatchEvent(new CustomEvent('omnishare:backend-online'))
   }
 
+  function backendResponds() {
+    if (healthProbe) return healthProbe
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 3000)
+    healthProbe = nativeFetch('/api/v1/health', {cache:'no-store', signal:controller.signal})
+      .then(async response => response.ok && (await response.json())?.code === 0)
+      .catch(() => false)
+      .finally(() => { clearTimeout(timer); healthProbe = null })
+    return healthProbe
+  }
+
   function scheduleRecovery() {
     if (!offline || recoveryTimer) return
     const delay = Math.min(30000, 1500 * (2 ** Math.min(recoveryAttempt, 4)))
     recoveryTimer = window.setTimeout(async () => {
       recoveryTimer = 0
       recoveryAttempt += 1
-      try {
-        const response = await nativeFetch('/api/v1/health', { cache: 'no-store' })
-        if (response.ok) {
-          const payload = await response.json()
-          if (payload?.code === 0) {
-            markOnline()
-            return
-          }
-        }
-      } catch {
-        // The watchdog or external service may still be recovering.
-      }
-      scheduleRecovery()
+      if (await backendResponds()) markOnline()
+      else scheduleRecovery()
     }, delay)
   }
 
@@ -176,34 +177,57 @@
     }
   }
 
+  function requestBudget({method, url}) {
+    // A shortcut waits for the native dialog and hashes the chosen file.
+    // A directory selection walks the disk before returning its entries.
+    if (method === 'POST' && ['/api/v1/local-files/shortcuts', '/api/v1/local-files/selection'].includes(url.pathname)) return 0
+    if (url.pathname === '/api/v1/peers/bind') return 25000
+    if (url.searchParams.get('scope') === 'all') return 18000
+    if (url.pathname === '/api/v1/devices') return 12000
+    return 8000
+  }
+
+  async function fetchAttempt(input, init, budget) {
+    if (!budget || init.signal) return nativeFetch(input, init)
+    const controller = new AbortController()
+    const inherited = input instanceof Request ? input.signal : null
+    const cancel = () => controller.abort(inherited.reason)
+    if (inherited?.aborted) cancel()
+    else inherited?.addEventListener('abort', cancel, {once:true})
+    const timer = window.setTimeout(() => controller.abort(), budget)
+    try {
+      return await nativeFetch(input, {...init, signal:controller.signal})
+    } finally {
+      clearTimeout(timer)
+      inherited?.removeEventListener('abort', cancel)
+    }
+  }
+
   window.fetch = async function guardedFetch(input, init = {}) {
     const info = requestInfo(input, init)
     if (!info.guarded) return nativeFetch(input, init)
 
     const retries = info.method === 'GET' || info.method === 'HEAD' ? retryDelays.length : 0
+    const signal = init.signal || (input instanceof Request ? input.signal : null)
+    const budget = requestBudget(info)
     let lastError
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
-      let timeout = 0
-      let options = init
       try {
-        if (!init.signal) {
-          const controller = new AbortController()
-          const budget = info.url.pathname === '/api/v1/peers/bind' ? 25000 : info.url.searchParams.get('scope') === 'all' ? 18000 : info.url.pathname === '/api/v1/devices' ? 12000 : 8000
-          timeout = window.setTimeout(() => controller.abort(), budget)
-          options = { ...init, signal: controller.signal }
-        }
-        const response = await nativeFetch(input, options)
-        if (timeout) clearTimeout(timeout)
+        const response = await fetchAttempt(input, init, budget)
         markOnline()
         return transformDevicesResponse(response, info)
       } catch (error) {
-        if (timeout) clearTimeout(timeout)
+        if (signal?.aborted) throw error
         lastError = error
         if (attempt < retries) await sleep(retryDelays[attempt])
       }
     }
 
+    if (info.url.pathname !== '/api/v1/health' && await backendResponds()) {
+      markOnline()
+      throw new Error('未收到操作结果，请刷新后确认', {cause:lastError})
+    }
     markOffline()
     const error = new Error('后端服务暂不可用，桌面端正在自动重连')
     error.name = 'OmniShareBackendUnavailable'

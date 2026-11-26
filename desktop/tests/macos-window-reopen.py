@@ -95,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
-    parser.add_argument('--file-inputs', action='store_true', help='Require native Finder drop and Cmd+V acceptance')
+    parser.add_argument('--file-inputs', action='store_true', help='Require native file selection, cancellation, Finder drop and Cmd+V')
     parser.add_argument('--build-evidence', type=Path, help='Verify an installed DMG against the original build runner report')
     args = parser.parse_args()
     report = {'schema_version': 1, 'success': False, 'scope': 'packaged-macos-window-lifecycle',
@@ -203,16 +203,25 @@ def main():
                     directory.mkdir()
                     fixture = directory/'访达拖入 #1.txt'
                     fixture.write_bytes(b'OmniShare native Finder drop')
+                    picked = directory/'选择本机文件 #2.txt'
+                    picked.write_bytes(b'OmniShare native file picker')
                     command(['/usr/bin/swift', '-suppress-warnings', str(Path(__file__).with_name('macos-file-inputs.swift')),
-                             str(pid), str(fixture)], timeout=140)
+                             str(pid), str(fixture), str(picked), str(port)], timeout=200)
                     base = f'http://127.0.0.1:{port}'
                     client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                    def dropped_shortcut_exists():
+                    def registered_files():
                         with client.open(base+'/api/v1/files', timeout=5) as response:
-                            files = json.load(response)['data']
-                        return any(f.get('source_shortcut') and f.get('file_name') == fixture.name for f in files)
-                    wait_for(dropped_shortcut_exists, 'Native drop did not register the original file')
-                    report['checks'].update(native_cmd_v_path=True, finder_drag_registered_shortcut=True)
+                            return json.load(response)['data']
+                    expected = sorted([fixture.name, picked.name])
+                    wait_for(lambda: sorted(f['file_name'] for f in registered_files() if f.get('source_shortcut')) == expected,
+                             'Picker and Finder did not register exactly the two original files')
+                    for item in registered_files():
+                        with client.open(base+'/api/v1/files/'+item['id']+'/download', timeout=5) as response:
+                            require(response.read() == (directory/item['file_name']).read_bytes(), 'Selected file content differs')
+                    alive()
+                    report['checks'].update(native_cmd_v_path=True, finder_drag_registered_shortcut=True,
+                                            native_picker_cancelled_without_write=True, native_picker_accepted_after_delay=True,
+                                            picker_preserved_healthy_backend=True, selected_file_contents_verified=True)
                 report['stage'] = 'normal-quit'
                 jxa("ObjC.import('AppKit'); const a=$.NSRunningApplication.runningApplicationWithProcessIdentifier("+str(pid)+"); a.terminate; $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.3)); 'requested';")
                 require(process.wait(timeout=25) == 0, 'Native normal quit did not succeed')

@@ -1459,7 +1459,7 @@ async function submitFileShortcut(pick) {
   error.textContent = ''
   let added = 0
   try {
-    await withButtonBusy(pick ? $('#pickShortcutBtn') : $('#addShortcutBtn'), '正在添加…', async () => {
+    await withButtonBusy(pick ? $('#pickShortcutBtn') : $('#addShortcutBtn'), pick ? '等待选择文件…' : '正在添加…', async () => {
       for (const path of pick ? [''] : paths) {
         const file = await api('/api/v1/local-files/shortcuts', {
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, pick, folder})
