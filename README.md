@@ -30,9 +30,9 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 
 ## 下载
 
-v1.0.1-rc.4 修复了 macOS 选择本机文件时误报后端重连的问题。现在可以在主窗口的系统选框中浏览文件、取消后重选，也可以从访达拖入文件或粘贴路径。通用 DMG 支持 Apple Silicon 和 Intel。[下载 macOS 安装包](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.4/OmniShare-v1.0.1-rc.4-macos-universal.dmg)
+v1.0.1-rc.5 修复了已发现的设备在首选地址失效后无法绑定的问题。绑定时会验证同一设备的其他可用地址，点关闭或取消会直接退出绑定。Mac 支持在系统选框中选文件、从访达拖入文件和粘贴路径。通用 DMG 适用于 Apple Silicon 和 Intel。[下载 macOS 安装包](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.5/OmniShare-v1.0.1-rc.5-macos-universal.dmg)
 
-Windows 可选 EXE 或 MSI，Linux 可选 DEB 或 AppImage。各平台安装包和 `SHA256SUMS.txt` 校验文件都在发布页的 **Assets** 中。[v1.0.1-rc.4 候选版](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.4) · [全部版本](https://github.com/Azurefly/omnishare/releases)
+Windows 可选 EXE 或 MSI，Linux 可选 DEB 或 AppImage。各平台安装包和 `SHA256SUMS.txt` 校验文件都在发布页的 **Assets** 中。[下载 Windows EXE](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.5/OmniShare-v1.0.1-rc.5-windows-x64-setup.exe) · [v1.0.1-rc.5 候选版](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.5) · [全部版本](https://github.com/Azurefly/omnishare/releases)
 
 ## 从源码运行
 
