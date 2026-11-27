@@ -31,8 +31,6 @@ func TestValidAnnouncementSignatureIdentityAndFreshness(t *testing.T) {
 	for name, mutate := range map[string]func(*announcement){
 		"self":         func(v *announcement) { v.ID = "local" },
 		"tamper":       func(v *announcement) { v.Name = "tampered" },
-		"expired":      func(v *announcement) { v.SentAt = now.Add(-11 * time.Second).Unix() },
-		"future":       func(v *announcement) { v.SentAt = now.Add(11 * time.Second).Unix() },
 		"bad port":     func(v *announcement) { v.Port = 0 },
 		"bad protocol": func(v *announcement) { v.Protocol = "omnishare/1" },
 	} {
@@ -47,6 +45,36 @@ func TestValidAnnouncementSignatureIdentityAndFreshness(t *testing.T) {
 				t.Fatalf("invalid announcement accepted: %s", name)
 			}
 		})
+	}
+}
+
+func TestDiscoveryAcrossDeviceClockOffsets(t *testing.T) {
+	now := time.Now()
+	sender := NewRegistry()
+	source := net.ParseIP("192.168.1.9")
+	for _, offset := range []int{-61, -60, -12, 12, 60, 61} {
+		receiver := NewRegistry()
+		sent := now.Add(time.Duration(offset) * time.Second)
+		packet := sender.announcementPayload("other device", 8081, "http", sent)
+		want := offset >= -60 && offset <= 60
+		if got := receiver.observe(packet, source, now); got != want {
+			t.Fatalf("sender clock offset %d seconds: accepted %v, want %v", offset, got, want)
+		}
+		if got := len(receiver.List()); (got == 1) != want {
+			t.Fatalf("unexpected discovery list size %d at offset %d", got, offset)
+		}
+		later := now.Add(discoveredTTL + time.Second)
+		receiver.expire(later)
+		if len(receiver.List()) != 0 {
+			t.Fatal("offline device still visible")
+		}
+		if want && receiver.observe(packet, source, later) {
+			t.Fatal("the same announcement refreshed an offline device")
+		}
+		receiver.expire(now.Add(2*MaxClockSkew + time.Second))
+		if len(receiver.routes) != 0 {
+			t.Fatal("expired discovery history retained")
+		}
 	}
 }
 

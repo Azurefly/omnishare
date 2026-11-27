@@ -26,11 +26,17 @@ import (
 	"sync"
 	"time"
 
+	"omnishare/internal/discovery"
 	"omnishare/internal/durable"
 )
 
 const peerProtocol = "omnishare/workspace/1"
 const maxBindings = 32
+
+var (
+	errInvalidPeerSignature = errors.New("invalid signed device identity")
+	errPeerClockSkew        = errors.New("两台设备的系统时间相差超过 1 分钟，请在两台设备上启用自动设置日期与时间后重新绑定")
+)
 
 type peerIdentity struct {
 	Protocol  string   `json:"protocol"`
@@ -322,50 +328,55 @@ func peerContentPath(path string) bool {
 	}
 	return path == "/api/v1/peers/self"
 }
-func (s *Server) validPeerSignature(r *http.Request, p peerIdentity) bool {
+func (s *Server) verifyPeerSignature(r *http.Request, p peerIdentity, clock func() time.Time) error {
 	stamp := r.Header.Get("X-OmniShare-Time")
 	when, err := strconv.ParseInt(stamp, 10, 64)
-	if err != nil || time.Now().Unix()-when > 60 || when-time.Now().Unix() > 10 {
-		return false
+	if err != nil {
+		return errInvalidPeerSignature
 	}
 	nonce := r.Header.Get("X-OmniShare-Nonce")
 	if len(nonce) < 20 || len(nonce) > 64 || r.Header.Get("X-OmniShare-Peer") != p.ID {
-		return false
+		return errInvalidPeerSignature
 	}
 	body := []byte{}
 	if r.Body != nil {
 		body, err = io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		if err != nil || len(body) > maxJSONBody {
-			return false
+			return errInvalidPeerSignature
 		}
 	}
 	pub, _ := base64.RawStdEncoding.DecodeString(p.PublicKey)
 	sig, _ := base64.RawStdEncoding.DecodeString(r.Header.Get("X-OmniShare-Signature"))
 	if !ed25519.Verify(pub, signedPeerText(r.Method, r.URL.RequestURI(), s.cfg.Get().NodeID, stamp, nonce, body), sig) {
-		return false
+		return errInvalidPeerSignature
 	}
 	s.peers.mu.Lock()
 	defer s.peers.mu.Unlock()
-	now := time.Now()
+	now := clock()
+	if when < now.Add(-discovery.MaxClockSkew).Unix() || when > now.Add(discovery.MaxClockSkew).Unix() {
+		return errPeerClockSkew
+	}
 	for k, until := range s.peers.nonces {
-		if now.After(until) {
+		if !now.Before(until) {
 			delete(s.peers.nonces, k)
 		}
 	}
 	k := p.ID + ":" + nonce
 	if _, found := s.peers.nonces[k]; found || len(s.peers.nonces) >= 4096 {
-		return false
+		return errInvalidPeerSignature
 	}
-	s.peers.nonces[k] = now.Add(75 * time.Second)
-	return true
+	// A peer whose clock is ahead signs a request that expires later on this receiver.
+	// Timestamps have whole-second precision and the last valid second is inclusive.
+	s.peers.nonces[k] = time.Unix(when, 0).Add(discovery.MaxClockSkew + time.Second)
+	return nil
 }
 func (s *Server) authorizedPeer(r *http.Request) bool {
 	if !peerContentPath(r.URL.Path) || r.URL.Query().Get("scope") == "all" {
 		return false
 	}
 	p, ok := s.boundPeer(r.Header.Get("X-OmniShare-Peer"))
-	return ok && s.validPeerSignature(r, p.Identity)
+	return ok && s.verifyPeerSignature(r, p.Identity, time.Now) == nil
 }
 func (s *Server) bindPeer(w http.ResponseWriter, r *http.Request) { s.bindPeerMode(w, r, false) }
 func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic bool) {
@@ -442,6 +453,10 @@ func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic 
 		Data    peerIdentity `json:"data"`
 	}
 	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&reply)
+	if decodeErr == nil && resp.StatusCode == http.StatusPreconditionFailed && reply.Code == http.StatusPreconditionFailed {
+		respond(w, http.StatusPreconditionFailed, http.StatusPreconditionFailed, errPeerClockSkew.Error(), nil)
+		return
+	}
 	if decodeErr == nil && resp.StatusCode == http.StatusBadGateway && strings.HasPrefix(reply.Message, "反向连接失败") {
 		respond(w, 502, 502, fmt.Sprintf("已联系 %s，但对方无法回连本机的 OmniShare。请确认本机已开启局域网访问，并允许对方访问 TCP %d 端口。", selected, local.Port), nil)
 		return
@@ -465,8 +480,16 @@ func (s *Server) acceptPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	var p peerIdentity
-	if json.Unmarshal(body, &p) != nil || !validIdentity(p) || p.ID == s.cfg.Get().NodeID || !s.validPeerSignature(r, p) {
-		respond(w, 400, 400, "invalid signed device identity", nil)
+	if json.Unmarshal(body, &p) != nil || !validIdentity(p) || p.ID == s.cfg.Get().NodeID {
+		respond(w, 400, 400, errInvalidPeerSignature.Error(), nil)
+		return
+	}
+	if err := s.verifyPeerSignature(r, p, time.Now); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errPeerClockSkew) {
+			status = http.StatusPreconditionFailed
+		}
+		respond(w, status, status, err.Error(), nil)
 		return
 	}
 	// Start with the TCP source. Alternatives must have been observed independently

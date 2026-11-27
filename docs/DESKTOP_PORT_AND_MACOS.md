@@ -37,9 +37,9 @@ or deploy `omnishare-desktop.json` next to the installed executable. A per-user 
 
 ## macOS distribution and validation
 
-`Desktop Validation` checks the Tauri application and its bundled Go backend as Universal binaries containing `arm64` and `x86_64`. Those macOS artifacts are for validation; the public macOS download runs the Go backend and opens a browser, with separate Intel and Apple silicon packages.
+The workspace candidate ships one universal DMG containing the Tauri application and its bundled Go backend. Both executables contain `arm64` and `x86_64` slices. The [candidate workflow](../.github/workflows/workspace-candidate-release.yml) verifies the same DMG on both architectures.
 
-The published `v0.1.1` ZIPs use ad-hoc integrity signatures and are not notarized. They can still be blocked after a browser download. Current installation status and read-only diagnostics are documented in [MACOS.md](MACOS.md).
+Candidate DMGs use ad-hoc integrity signatures and have not been notarized. Gatekeeper may block the first launch after a browser download. Installation steps and read-only diagnostics are documented in [MACOS.md](MACOS.md).
 
 The next formal distribution pipeline requires Developer ID Application signing, Hardened Runtime, secure timestamps, accepted Apple notarization, stapled tickets and Gatekeeper checks. Its target is a DMG that installs by dragging the app to Applications, plus a ZIP fallback. This pipeline change does not mean a new notarized version has already been published.
 

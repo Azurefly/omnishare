@@ -25,6 +25,9 @@ const maxDiscoveredPeers = 1024
 const maxDiscoveredRoutes = 16
 const discoveredTTL = 12 * time.Second
 
+// MaxClockSkew bounds signed discovery announcements and workspace requests.
+const MaxClockSkew = time.Minute
+
 var (
 	_, lanCgnatNet, _     = net.ParseCIDR("100.64.0.0/10")
 	_, lanBenchmarkNet, _ = net.ParseCIDR("198.18.0.0/15")
@@ -45,13 +48,18 @@ type Registry struct {
 	startOnce  sync.Once
 	mu         sync.RWMutex
 	peers      map[string]model.DeviceNode
-	routes     map[string]map[string]time.Time
+	routes     map[string]map[string]discoveredRoute
 	localID    string
 	privateKey ed25519.PrivateKey
 }
 
+type discoveredRoute struct {
+	seen   time.Time
+	sentAt int64
+}
+
 func NewRegistryWithIdentity(id string, privateKey ed25519.PrivateKey) *Registry {
-	return &Registry{peers: map[string]model.DeviceNode{}, routes: map[string]map[string]time.Time{}, localID: id, privateKey: append(ed25519.PrivateKey(nil), privateKey...)}
+	return &Registry{peers: map[string]model.DeviceNode{}, routes: map[string]map[string]discoveredRoute{}, localID: id, privateKey: append(ed25519.PrivateKey(nil), privateKey...)}
 }
 
 // NewRegistry remains useful for tests and creates a process-local signed identity.
@@ -285,28 +293,27 @@ func (r *Registry) observe(payload []byte, source net.IP, now time.Time) bool {
 		NetworkType: "lan", Online: true, LastSeen: now}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.peers[a.ID]; !exists && len(r.peers) >= maxDiscoveredPeers {
-		return false
-	}
 	// A multi-homed node announces once per interface. Keep its live routes
 	// together so the last packet cannot hide another reachable interface.
 	routes := r.routes[a.ID]
 	if routes == nil {
-		routes = map[string]time.Time{}
+		if len(r.routes) >= maxDiscoveredPeers {
+			return false
+		}
+		routes = map[string]discoveredRoute{}
 		r.routes[a.ID] = routes
 	}
-	routes[node.URL] = now
-	for address, seen := range routes {
-		if now.Sub(seen) > discoveredTTL {
-			delete(routes, address)
-			continue
-		}
+	if previous, ok := routes[node.URL]; ok && a.SentAt <= previous.sentAt {
+		return false
+	}
+	routes[node.URL] = discoveredRoute{seen: now, sentAt: a.SentAt}
+	for address := range routes {
 		node.Addresses = append(node.Addresses, address)
 	}
 	sort.Slice(node.Addresses, func(i, j int) bool {
 		left, right := node.Addresses[i], node.Addresses[j]
-		if !routes[left].Equal(routes[right]) {
-			return routes[left].After(routes[right])
+		if !routes[left].seen.Equal(routes[right].seen) {
+			return routes[left].seen.After(routes[right].seen)
 		}
 		return left < right
 	})
@@ -315,6 +322,12 @@ func (r *Registry) observe(payload []byte, source net.IP, now time.Time) bool {
 			delete(routes, address)
 		}
 		node.Addresses = node.Addresses[:maxDiscoveredRoutes]
+	}
+	for i, address := range node.Addresses {
+		if now.Sub(routes[address].seen) > discoveredTTL {
+			node.Addresses = node.Addresses[:i]
+			break
+		}
 	}
 	r.peers[a.ID] = node
 	return true
@@ -330,7 +343,7 @@ func validAnnouncement(a announcement, localID string, now time.Time) bool {
 	if a.Protocol == "omnishare/3" && a.Scheme != "http" && a.Scheme != "https" {
 		return false
 	}
-	if delta := now.Unix() - a.SentAt; delta < -10 || delta > 10 {
+	if a.SentAt < now.Add(-MaxClockSkew).Unix() || a.SentAt > now.Add(MaxClockSkew).Unix() {
 		return false
 	}
 	pub, err := base64.RawStdEncoding.DecodeString(a.PublicKey)
@@ -385,15 +398,30 @@ func (r *Registry) evict(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.mu.Lock()
-			now := time.Now()
-			for id, p := range r.peers {
-				if now.Sub(p.LastSeen) > discoveredTTL {
-					delete(r.peers, id)
-					delete(r.routes, id)
-				}
+			r.expire(time.Now())
+		}
+	}
+}
+
+func (r *Registry) expire(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, p := range r.peers {
+		if now.Sub(p.LastSeen) > discoveredTTL {
+			delete(r.peers, id)
+		}
+	}
+	// Forget offline devices promptly, but remember each route's last signed
+	// announcement until its timestamp can no longer be accepted.
+	oldest := now.Add(-MaxClockSkew).Unix()
+	for id, routes := range r.routes {
+		for address, route := range routes {
+			if route.sentAt < oldest && now.Sub(route.seen) > discoveredTTL {
+				delete(routes, address)
 			}
-			r.mu.Unlock()
+		}
+		if len(routes) == 0 {
+			delete(r.routes, id)
 		}
 	}
 }

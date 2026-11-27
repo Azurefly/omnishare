@@ -12,11 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"omnishare/internal/config"
+	"omnishare/internal/discovery"
 	"omnishare/internal/model"
 	"omnishare/internal/storage"
 )
@@ -159,6 +161,54 @@ func TestWorkspaceSignedRequestsAreScopedAndNotReplayable(t *testing.T) {
 	h.Set("X-OmniShare-Signature", "bad")
 	if send("/api/v1/notes", h) != 401 {
 		t.Fatal("invalid signature accepted in open mode")
+	}
+}
+
+func TestWorkspaceSignedRequestsAcrossDeviceClockOffsets(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "A"), newWorkspaceFixture(t, "B")
+	path := "/api/v1/notes"
+	for _, tc := range []struct {
+		offset time.Duration
+		want   error
+	}{
+		{-61 * time.Second, errPeerClockSkew}, {-60 * time.Second, nil}, {-12 * time.Second, nil},
+		{12 * time.Second, nil}, {60 * time.Second, nil}, {61 * time.Second, errPeerClockSkew},
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header = a.s.signPeerRequest(req.Method, path, b.cfg.Get().NodeID, nil)
+		stamp, err := strconv.ParseInt(req.Header.Get("X-OmniShare-Time"), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sent := time.Unix(stamp, 0)
+		who := a.s.nodeIdentity()
+		receiverClock := func() time.Time { return sent.Add(tc.offset) }
+		if got := b.s.verifyPeerSignature(req, who, receiverClock); got != tc.want {
+			t.Fatalf("receiver clock offset %v: got %v, want %v", tc.offset, got, tc.want)
+		}
+		if tc.want == nil {
+			until := b.s.peers.nonces[who.ID+":"+req.Header.Get("X-OmniShare-Nonce")]
+			if !until.After(sent.Add(discovery.MaxClockSkew)) {
+				t.Fatal("the nonce must be retained until the last valid second has ended")
+			}
+		}
+	}
+}
+
+func TestWorkspaceBindingReportsPeerClockMismatch(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "A"), newWorkspaceFixture(t, "B")
+	receiver := b.s.Handler()
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/peers/accept" {
+			respond(w, http.StatusPreconditionFailed, http.StatusPreconditionFailed, errPeerClockSkew.Error(), nil)
+			return
+		}
+		receiver.ServeHTTP(w, r)
+	}))
+	defer endpoint.Close()
+	status, packet, _ := wsCall(t, a, "POST", "/api/v1/peers/bind", map[string]string{"url": endpoint.URL}, "")
+	if status != http.StatusPreconditionFailed || packet["message"] != errPeerClockSkew.Error() || len(a.s.boundPeers()) != 0 {
+		t.Fatalf("clock mismatch was not reported by the binding endpoint: %d %v", status, packet)
 	}
 }
 func TestWorkspaceAggregationOriginRoutingAndConflict(t *testing.T) {

@@ -12,7 +12,7 @@ The desktop shell is wired as a real Tauri application:
 1. Tauri starts a local desktop WebView.
 2. The runtime resolves the bundled Go backend binary.
 3. The backend is launched without an external browser or console; its existing LAN setting is preserved. The desktop uses the selected loopback port to reach it.
-4. The runtime waits for `127.0.0.1:8081` to become reachable.
+4. The runtime waits for an OmniShare health response on the selected loopback port. If another application occupies the preferred port, the desktop chooses a free one.
 5. The WebView navigates to the existing OmniShare UI.
 6. Closing the main window hides it to the tray.
 7. Quitting from the tray exits the desktop runtime and stops the child backend process.

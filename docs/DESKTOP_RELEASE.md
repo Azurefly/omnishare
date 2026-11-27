@@ -1,8 +1,8 @@
 # OmniShare Desktop Release Guide
 
-This document describes Tauri 2 desktop validation and the shared release workflow. Public macOS packages currently run the Go backend and open the browser UI; they are separate from the Tauri Universal validation artifacts.
+Workspace candidates ship Tauri desktop installers for Windows, Linux and macOS. The universal Mac DMG contains the native application and its bundled Go backend. Portable archives start the Go server and use an external browser.
 
-**Publication status:** v1.0.0 distributes source archives. The steps below describe desktop builds and package acceptance.
+The [workspace candidate workflow](../.github/workflows/workspace-candidate-release.yml) publishes from an exact `main` commit. It installs the same DMG on Intel and Apple Silicon, exercises the native file picker, Finder drag and path paste, and runs a two-device workspace test on each architecture. Each release includes installer checksums, a build manifest and platform evidence. For public downloads see the [project README](../README.md#下载).
 
 ## Architecture
 
@@ -13,7 +13,7 @@ The desktop edition keeps the existing Go backend as the source of truth for sto
 3. Detect and attach to an existing healthy OmniShare backend on that port.
 4. If the configured port is occupied by another service, select and persist an available local port.
 5. Resolve the bundled OmniShare backend binary.
-6. Start an owned backend with `--no-browser --listen 127.0.0.1 --port <selected-port> --shutdown-on-stdin-close` and a private stdin pipe.
+6. Start an owned backend with the selected port, data directory and a private stdin pipe using `--no-browser --shutdown-on-stdin-close`. The backend reads its network settings from that workspace.
 7. Wait until the selected endpoint serves the OmniShare application.
 8. Navigate the WebView to the local OmniShare UI.
 9. Keep the app in the tray when the main window is closed.
@@ -125,7 +125,7 @@ The publication workflow separately downloads this run's Ubuntu 22.04-built DEB 
 
 The published `v0.1.1` macOS ZIPs contain a Go server application sealed with an ad-hoc signature. They have no Developer ID identity or Apple notarization, and can still be blocked after a browser download. Their native packaging and launch tests do not establish first-download Gatekeeper acceptance. See [macOS installation and diagnostics](MACOS.md).
 
-The desktop publication pipeline prepares a Developer ID signed, notarized and stapled DMG, with a ZIP fallback. Native Tauri packages have a separate validation workflow.
+The workspace candidate DMG uses an ad-hoc integrity signature. For the separate Developer ID distribution procedure, the signing pipeline prepares a notarized and stapled DMG with a ZIP fallback.
 
 Configure these five repository Actions secrets before preparing the next release:
 
@@ -157,7 +157,7 @@ Command-line policy checks, including `syspolicy_check distribution` on macOS 14
 
 Run `Publish Release` manually for verified installer releases. Keep `VERSION`, application metadata, `release/desktop-release.json`, and matching release notes consistent before starting the workflow.
 
-Keep the current `0.1.1` version and manifest unchanged while configuring and reviewing the new signing pipeline. Once credentials and validation are ready, prepare a new patch release, such as `0.1.2`, with its own version, manifest and release notes. Do not rerun the old version on a different commit to test the new pipeline. An existing release tag must point to the exact source commit or publication stops; tags and previously published assets are not rewritten to relabel a new build.
+Each published version has its own manifest, release notes and source commit. Use a new version when the source changes. The publisher checks the target of any existing tag before uploading packages.
 
 The workflow builds Windows/Linux packages and all six Go targets. Native macOS jobs produce `OmniShare-v<version>-macos-<arch>.zip` and `.dmg` for each supported architecture. The aggregation job checks all required assets, packaging and runtime evidence, release signing mode, notarization and policy gates before publishing. It also validates the actual Windows and Ubuntu installation reports against this run's installer bytes and their embedded exercise/restart checks. Missing, unsuccessful, mismatched or credential-bearing reports stop publication.
 
