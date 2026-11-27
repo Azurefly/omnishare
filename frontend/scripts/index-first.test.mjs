@@ -90,3 +90,16 @@ test('the service worker caches only static application assets, never peer conte
  for(const path of ['/api/v1/files','/media/file','/peer-media/ticket','/api/v1/files/id/download'])assert.equal(assets.has(path),false)
  assert.match(text,/!STATIC_ASSETS\.has\(url\.pathname\)/)
 })
+
+test('only advertised non-loopback addresses on the local card can be copied for pairing',()=>{
+ const {app,element}=appWith()
+ app.state.devices=[{...local,addresses:[...local.addresses,'http://127.0.0.2:8084','http://[::1]:8084','http://0.0.0.0:8084']},remote]
+ app.renderDevices()
+ const actions=[...element('#deviceList').innerHTML.matchAll(/data-address="([^"]+)"/g)].map(match=>match[1])
+ assert.ok(actions.includes('http://100.92.203.77:8084/'))
+ assert.ok(actions.includes('http://192.168.31.200:8084/'))
+ assert.ok(!actions.some(address=>address.includes('127.0.0.2') || address.includes('[::1]') || address.includes('0.0.0.0') || address.includes('100.64.162.25')))
+ app.state.config={allow_lan:false}
+ app.renderDevices()
+ assert.doesNotMatch(element('#deviceList').innerHTML,/data-address=/)
+})

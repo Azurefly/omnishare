@@ -5,42 +5,62 @@ use std::{
 };
 
 pub fn is_omnishare_backend(host: &str, port: u16) -> bool {
-    let address = match format!("{}:{}", host, port).parse::<SocketAddr>() {
-        Ok(address) => address,
-        Err(_) => return false,
+    let Ok(address) = format!("{host}:{port}").parse::<SocketAddr>() else {
+        return false;
     };
+    let Some((status, body)) = read_endpoint(address, "/api/v1/health") else {
+        return false;
+    };
+    if status == 200 {
+        if is_workbench_page(&body) {
+            return true;
+        }
+        let Ok(reply) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return false;
+        };
+        let data = &reply["data"];
+        if reply["code"].as_i64() != Some(0) || data["status"] != "ok" {
+            return false;
+        }
+        if let Some(protocol) = data["workspace_protocol"].as_str() {
+            return protocol.starts_with("omnishare/workspace/");
+        }
+        if data["version"].as_str().is_none_or(str::is_empty) {
+            return false;
+        }
+    } else if status != 404 {
+        return false;
+    }
+    // A legacy server can identify itself by its workbench. A generic health
+    // response on an occupied port is insufficient to attach the desktop.
+    read_endpoint(address, "/")
+        .is_some_and(|(status, body)| status == 200 && is_workbench_page(&body))
+}
 
-    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(700)) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
+fn is_workbench_page(body: &str) -> bool {
+    body.trim_start().starts_with('<')
+        && (body.contains("<title>OmniShare</title>")
+            || body.contains("OmniShare 私有化跨设备速记、文件与协同工作台"))
+}
+
+fn read_endpoint(address: SocketAddr, path: &str) -> Option<(u16, String)> {
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(700)).ok()?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
-    // Probe the JSON endpoint rather than the full page: the watchdog runs every
-    // few seconds for the whole life of the app, and downloading and parsing
-    // index.html each time is pure waste. The HTML checks stay as a fallback for
-    // builds that predate the health endpoint.
     let request = format!(
-        "GET /api/v1/health HTTP/1.0\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
-        host, port
+        "GET {path} HTTP/1.0\r\nHost: {address}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
     );
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut data = Vec::new();
+    stream.take(64 * 1024).read_to_end(&mut data).ok()?;
+    let response = String::from_utf8_lossy(&data);
+    let (headers, body) = response.split_once("\r\n\r\n")?;
+    let mut fields = headers.lines().next()?.split_ascii_whitespace();
+    if !fields.next()?.starts_with("HTTP/1.") {
+        return None;
     }
-
-    let mut response = String::new();
-    if stream
-        .take(64 * 1024)
-        .read_to_string(&mut response)
-        .is_err()
-    {
-        return false;
-    }
-
-    response.contains("\"status\":\"ok\"")
-        || response.contains("<title>OmniShare</title>")
-        || response.contains("OmniShare 私有化跨设备速记、文件与协同工作台")
+    Some((fields.next()?.parse().ok()?, body.to_owned()))
 }
 
 pub fn wait_backend(host: &str, port: u16, timeout: Duration) -> bool {
@@ -66,46 +86,70 @@ mod tests {
 
     use super::{is_omnishare_backend, wait_backend};
 
-    fn serve_once(body: &'static str) -> (u16, thread::JoinHandle<()>) {
+    fn serve(replies: &[(u16, &'static str)]) -> (u16, thread::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test server");
         let port = listener.local_addr().expect("test server address").port();
+        let replies = replies.to_vec();
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept health probe");
-            let mut request = [0_u8; 2048];
-            let _ = stream.read(&mut request);
-            let response = format!(
-                "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write health response");
+            for (status, body) in replies {
+                let (mut stream, _) = listener.accept().expect("accept health probe");
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request);
+                let response = format!(
+                    "HTTP/1.0 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write health response");
+            }
         });
         (port, handle)
     }
 
     #[test]
     fn recognizes_the_omnishare_page() {
-        let (port, server) = serve_once("<!doctype html><title>OmniShare</title>");
+        let (port, server) = serve(&[(200, "<!doctype html><title>OmniShare</title>")]);
         assert!(is_omnishare_backend("127.0.0.1", port));
         server.join().expect("join test server");
     }
 
     #[test]
     fn rejects_an_unrelated_http_service() {
-        let (port, server) = serve_once("<!doctype html><title>Other Service</title>");
+        let (port, server) = serve(&[(200, r#"{"status":"ok"}"#)]);
         assert!(!is_omnishare_backend("127.0.0.1", port));
         server.join().expect("join test server");
     }
 
     #[test]
     fn recognizes_the_json_health_endpoint() {
-        let (port, server) = serve_once(
-            "{\"code\":0,\"message\":\"ok\",\"data\":{\"status\":\"ok\",\"version\":\"1.3.0\"}}",
-        );
+        let (port, server) = serve(&[(
+            200,
+            r#"{"code":0,"data":{"status":"ok","workspace_protocol":"omnishare/workspace/1"}}"#,
+        )]);
         assert!(is_omnishare_backend("127.0.0.1", port));
         server.join().expect("join test server");
+    }
+
+    #[test]
+    fn checks_the_workbench_for_older_servers() {
+        let legacy = r#"{"code":0,"data":{"status":"ok","version":"1.3.0"}}"#;
+        for (root, expected) in [
+            ("<title>OmniShare</title>", true),
+            ("<title>Other</title>", false),
+        ] {
+            let (port, server) = serve(&[(200, legacy), (200, root)]);
+            assert_eq!(is_omnishare_backend("127.0.0.1", port), expected);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn an_error_response_is_not_a_ready_workbench() {
+        let (port, server) = serve(&[(503, "<title>OmniShare</title>")]);
+        assert!(!is_omnishare_backend("127.0.0.1", port));
+        server.join().unwrap();
     }
 
     #[test]

@@ -226,9 +226,9 @@ jobs:
           hdiutil detach "$PWD/macos-reopen-mount"
           codesign --verify --deep --strict macos-reopen/OmniShare.app
           python3 desktop/tests/macos-window-reopen.py --app macos-reopen/OmniShare.app --file-inputs --report candidate-evidence/macos-window-reopen.json
-      - name: Bind two packaged macOS nodes after their primary route disconnects
+      - name: Verify the full workspace, encrypted restore and offline recovery with two packaged macOS nodes
         if: runner.os == 'macOS'
-        timeout-minutes: 7
+        timeout-minutes: 10
         env:
           WORKSPACE_EVIDENCE: candidate-evidence/macos-device-binding
         run: |
@@ -237,7 +237,7 @@ jobs:
           (cd frontend && npx --no-install playwright install chromium)
           backend=$(find macos-reopen/OmniShare.app/Contents -type f -name omnishare -print -quit)
           test -x "$backend"
-          node scripts/test-workspace-browser.mjs "$backend" --binding-only
+          node scripts/test-workspace-browser.mjs "$backend"
       - name: Retain exact packages for failed native diagnosis
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -259,7 +259,7 @@ jobs:
         run: python scripts/stage-workspace-rc.py '${{ matrix.name }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: workspace-candidate-${{ matrix.name }}
+          name: ${{ matrix.name == 'macOS' && 'intel-built-macOS' || format('workspace-candidate-{0}', matrix.name) }}
           path: rc-assets/*
           if-no-files-found: error
           compression-level: 0
@@ -272,6 +272,71 @@ jobs:
             ubuntu-install-evidence/
           if-no-files-found: warn
 
+
+  macos_arm64:
+    name: Validate the identical universal DMG on Apple Silicon
+    needs: [source, desktop]
+    runs-on: macos-15
+    timeout-minutes: 18
+    env:
+      SOURCE_COMMIT: ${{ needs.source.outputs.sha }}
+      WORKSPACE_EVIDENCE: candidate-evidence/macos-device-binding
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: intel-built-macOS
+          path: rc-assets
+      - name: Match the installer to the build runner's digest before launch
+        shell: python
+        run: |
+          import os, platform, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from workspace_rc import candidate_version, package_names, read_json, require, verify_record, write_json
+          root = Path('rc-assets')
+          version = candidate_version(Path.cwd())
+          report = read_json(root/'build-evidence-macOS.json')
+          require(platform.machine() == 'arm64' and report['version'] == version and
+                  report['source_commit'] == os.environ['SOURCE_COMMIT'] and
+                  report['workflow_run_id'] == os.environ['GITHUB_RUN_ID'], 'Unexpected Mac build or runner')
+          record, = report['files']
+          verify_record(root, record, package_names(version)['macOS']['dmg'])
+          write_json(Path('intel-window-report.json'), report['window_lifecycle'])
+      - name: Install and exercise the native application and workspace on arm64
+        run: |
+          set -euo pipefail
+          mkdir -p macos-mount macos-installed candidate-evidence
+          hdiutil attach "rc-assets/OmniShare-v$(cat VERSION)-macos-universal.dmg" -readonly -nobrowse -mountpoint "$PWD/macos-mount"
+          ditto macos-mount/OmniShare.app macos-installed/OmniShare.app
+          hdiutil detach "$PWD/macos-mount"
+          codesign --verify --deep --strict macos-installed/OmniShare.app
+          python3 desktop/tests/macos-window-reopen.py --app macos-installed/OmniShare.app --file-inputs --build-evidence intel-window-report.json --report candidate-evidence/macos-window-reopen.json
+          npm --prefix frontend ci --ignore-scripts
+          (cd frontend && npx --no-install playwright install chromium webkit)
+          backend=$(find macos-installed/OmniShare.app/Contents -type f -name omnishare -print -quit)
+          test -x "$backend"
+          node scripts/test-file-inputs.mjs "$backend" webkit
+          node scripts/test-workspace-browser.mjs "$backend"
+          python3 scripts/stage-workspace-rc.py macOS-arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: workspace-candidate-macOS
+          path: rc-assets/*
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: candidate-native-evidence-macOS-arm64
+          path: candidate-evidence/
+          if-no-files-found: warn
 
   ubuntu24:
     name: Validate identical Linux packages on Ubuntu 24.04
@@ -335,7 +400,7 @@ jobs:
 
   publish:
     name: Publish verified workspace prerelease
-    needs: [source, verify, desktop, ubuntu24]
+    needs: [source, verify, desktop, ubuntu24, macos_arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write

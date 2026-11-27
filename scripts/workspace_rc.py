@@ -144,6 +144,16 @@ def verify_build_inputs(directory, version, source, run):
                             ('packaged_icon_matches', 'application_hide_reopen_three_times',
                              'same_window_reused', 'backend_pid_preserved', 'normal_quit_stops_backend')),
                     'macOS native window recovery evidence is incomplete')
+            if tuple(map(int, re.findall(r'\d+', version))) >= (1, 0, 1, 6):
+                arm = report.get('apple_silicon', {})
+                native = arm.get('window_lifecycle', {})
+                workspace = arm.get('workspace', {})
+                require(arm.get('architecture') == 'arm64' and arm.get('dmg_sha256') == records[0]['sha256']
+                        and native.get('success') is True and native.get('source_commit') == source
+                        and native.get('executable_sha256') == lifecycle.get('executable_sha256')
+                        and workspace.get('success') is True and workspace.get('source_commit') == source
+                        and str(workspace.get('workflow_run_id')) == str(run),
+                        'Apple Silicon did not validate the same macOS DMG')
         reports[kind] = report
     require(reports['Ubuntu24'].get('tested_files') == reports['Linux']['files'],
             'Ubuntu 24.04 did not test the same Linux release packages')

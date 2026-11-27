@@ -45,6 +45,19 @@ test('a failed picker exchange checks health without retrying the file operation
   }
 })
 
+test('file moves and public delivery uploads are submitted once and use the server transfer deadline', async () => {
+  const deadlines = []
+  const {fetch, requests, events} = bridge(async () => Response.json({code:0,data:{moved:true}}),
+    (_callback, ms) => { deadlines.push(ms); return 1 })
+  for (const path of ['/api/v1/file-transfers', '/api/v1/delivery/items']) {
+    const response = await fetch(path, {method:'POST',body:'{}'})
+    assert.ok((await response.json()).data.moved)
+  }
+  assert.deepEqual(deadlines, [])
+  assert.equal(requests.length, 2)
+  assert.deepEqual(events, [])
+})
+
 test('caller cancellation in init or Request preserves the abort and leaves connection status alone', async () => {
   for (const inherited of [false, true]) {
     const {fetch, requests, events} = bridge((_input, init) => new Promise((_resolve, reject) => {

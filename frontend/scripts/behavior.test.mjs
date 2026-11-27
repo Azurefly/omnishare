@@ -67,7 +67,7 @@ function createApp(options = {}) {
     sessionRemove, keyHeaders, fillSettings, saveSettings, showAuth, updateAccessKeyControls, exportBackup, preservePadDraft, performPadSave,
     restoreBackup, openRestoreDialog, createPad, submitNewPad, refreshCurrentPad, refreshWorkspace, loadRemotePadVersion, savePadDraftCopy, enqueuePadSave, workspacePath, submitPeerBinding, listView, renderNotes, createPoller,
     openDownload, loadDeliveryConfig, loadShares, loadAudit, loadDevices, deletePad, askConfirm,
-    normalizeClientFolder, joinFolderPaths, loadFolders, loadNotes, selectFolder, appendFolderQuery, uploadFiles, renameFile, submitRenameFile, savePad })`, context)
+    normalizeClientFolder, joinFolderPaths, mergeFolderEntries, loadFolders, loadNotes, selectFolder, appendFolderQuery, uploadFiles, renameFile, submitRenameFile, savePad })`, context)
   return { app, element, stored, downloads, blobs, requests, replacedURLs }
 }
 
@@ -356,6 +356,17 @@ test('browsers without a file picker can download a bounded backup', async () =>
   assert.equal(await blobs.get(downloads[0].href).text(), 'zip bytes')
 })
 
+test('encrypted export preserves a Unicode passphrase and declines a plain response from an older server', async () => {
+  const password = ' 中文🔑 café '
+  const {app, downloads, element} = createApp({fetch:async (_url, options) => {
+    assert.equal(Buffer.from(options.headers['X-OmniShare-Backup-Password-Base64'], 'base64').toString('utf8'), password)
+    return new Response('plain zip', {headers:{'Content-Disposition':'attachment; filename="backup.zip"'}})
+  }})
+  await app.exportBackup(password)
+  assert.equal(downloads.length, 0)
+  assert.match(element('#toast').textContent, /未返回加密备份/)
+})
+
 test('an unknown-length backup still enforces the buffered download limit', async () => {
   let signal
   let reads = 0
@@ -386,7 +397,7 @@ test('restoring twice sends one request, preserves the password, and unlocks on 
   app.openRestoreDialog()
   app.restoreBackup()
   assert.equal(requests.length, 1)
-  assert.equal(requests[0].headers['X-OmniShare-Backup-Password'], ' password with spaces ')
+  assert.equal(Buffer.from(requests[0].headers['X-OmniShare-Backup-Password-Base64'], 'base64').toString('utf8'), ' password with spaces ')
   assert.equal(app.state.restoreInFlight, true)
   assert.equal(element('#restoreSubmitBtn').disabled, true)
   requests[0].onerror()
@@ -687,6 +698,49 @@ test('manual refresh actions show completion toasts and restore button labels', 
   assert.equal(element('#toast').textContent, '设备列表已刷新')
   assert.equal(element('#refreshDevicesBtn').disabled, false)
   assert.equal(element('#refreshDevicesBtn').textContent, '重新探测')
+})
+
+test('manual device refresh takes precedence over a pending poll and repeated clicks share one refresh', async () => {
+  const pending = new Map()
+  const {app} = createApp({fetch:url => new Promise(resolve => {
+    assert.ok(!pending.has(url), 'duplicate request')
+    pending.set(url, resolve)
+  })})
+  const poll = app.loadDevices()
+  const click = app.loadDevices(false, true)
+  const secondClick = app.loadDevices(false, true)
+  assert.deepEqual([...pending.keys()], ['/api/v1/devices', '/api/v1/devices?refresh=1'])
+  pending.get('/api/v1/devices?refresh=1')(Response.json({code:0,data:[{id:'fresh'}]}))
+  await Promise.all([click, secondClick])
+  pending.get('/api/v1/devices')(Response.json({code:0,data:[{id:'stale'}]}))
+  await poll
+  assert.equal(app.state.devices[0].id, 'fresh')
+})
+
+test('folder totals keep node counts, empty ancestors and siblings with a common prefix distinct', () => {
+  const {app} = createApp()
+  const rows = app.mergeFolderEntries('notes', [
+    {path:'项目/甲',source_node_id:'a',item_count:3}, {path:'项目/甲',source_node_id:'b',item_count:2},
+    {path:'项目/甲方',source_node_id:'b',item_count:4}, {path:'项目/空/子',item_count:0}
+  ])
+  const folder = path => rows.find(row=>row.path===path)
+  assert.equal(folder('项目').total, 9)
+  assert.equal(folder('项目/甲').total, 5)
+  assert.equal(folder('项目/甲').hasChildren, false)
+  assert.equal(folder('项目/空').total, 0)
+  assert.equal(folder('项目/空').hasChildren, true)
+})
+
+test('a delayed folder refresh cannot replace newer folder results', async () => {
+  const replies = []
+  const {app} = createApp({fetch:() => new Promise(resolve => replies.push(resolve))})
+  const older = app.loadFolders('files')
+  const newer = app.loadFolders('files')
+  replies[1](Response.json({code:0,data:[{path:'新目录',item_count:1}]}))
+  await newer
+  replies[0](Response.json({code:0,data:[]}))
+  await older
+  assert.equal(app.state.folders.files.list[0].path, '新目录')
 })
 
 test('deletePad deletes remote peer pad via in-app confirm dialog without native window.confirm', async () => {

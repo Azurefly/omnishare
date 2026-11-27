@@ -822,6 +822,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .device-connections > summary > span { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .device-address { margin-top: 6px; }
 .device-address > span { color: var(--muted); font-size: 10px; }
+.device-address .copy-device-address { margin-left: 8px; padding: 1px 5px; font-size: 11px; }
 .device-address .device-url { margin: 2px 0 0; padding: 0; font: 11px/1.45 var(--font-mono); overflow-wrap: anywhere; }
 .device-list > .empty { min-height: 80px; padding: 16px 10px; box-shadow: none; }
 .device-list > .empty p { font-size: 11px; }

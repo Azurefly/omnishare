@@ -66,12 +66,77 @@ async function assertWritingViewport(page, sourceSelector, saveSelector, minSour
    `Expected a visible writing area of at least ${minSourceHeight}px, got ${JSON.stringify(source)} in ${height}px`);
  assert.ok(save.top>=0 && save.bottom<=height && save.height>0, 'The save action must be visible without scrolling');
 }
+
+async function checkBackupAndRecovery(base) {
+ const context = await browser.newContext();
+ try {
+   // Exercise the actual download fallback used by browsers without a save picker.
+   await context.addInitScript(() => Object.defineProperty(window, 'showSaveFilePicker', {value:undefined}));
+   const client = await context.newPage();
+   client.on('pageerror', error => errors.push(String(error)));
+   await client.goto(base + '/icon.svg');
+   await client.evaluate(() => caches.open('other-application-assets').then(() => true));
+   await client.goto(base);
+   await client.waitForFunction(() => !!navigator.serviceWorker.controller);
+   assert.ok(await client.evaluate(() => caches.has('other-application-assets')), 'Activation removed an unrelated cache');
+   await client.locator('#settingsBtn').click();
+   await client.locator('#backupBtn').click();
+   await client.locator('#backupFormat').selectOption('osb');
+   const passphrase = '  中文备份 🔑 café  ';
+   await client.locator('#backupPassword').fill(passphrase);
+   let backupRequests = 0;
+   client.on('request', req => { if (new URL(req.url()).pathname === '/api/v1/backup') backupRequests++; });
+   await client.locator('#backupDialog').getByRole('button', {name:'取消', exact:true}).click();
+   assert.equal(backupRequests, 0);
+   await client.locator('#backupBtn').click();
+   await client.locator('#backupFormat').selectOption('osb');
+   assert.equal(await client.locator('#backupPassword').inputValue(), '');
+   await client.locator('#backupPassword').fill(passphrase);
+   const downloading = client.waitForEvent('download');
+   await client.locator('#backupForm').getByRole('button', {name:'导出备份', exact:true}).click();
+   const downloaded = await downloading;
+   assert.match(downloaded.suggestedFilename(), /\.osb$/);
+   const data = await readFile(await downloaded.path());
+   assert.equal(data.subarray(0, 16).toString(), 'OMNISHARE-ENC-BK');
+   assert.equal(backupRequests, 1);
+   const originalNotes = (await api(base, '/api/v1/notes')).data.map(n => n.id).sort();
+   const extra = (await api(base, '/api/v1/notes', 'POST', {content:'备份后的临时数据'})).data;
+   await client.locator('#restoreBtn').click();
+   await client.locator('#restoreFile').setInputFiles({name:'回归.osb',mimeType:'application/octet-stream',buffer:data});
+   await client.locator('#restorePassword').fill(passphrase.trim());
+   await client.locator('#restoreConfirm').check();
+   await client.locator('#restoreSubmitBtn').click();
+   await client.locator('#restoreStatus').filter({hasText:'口令不正确'}).waitFor();
+   assert.ok((await api(base, '/api/v1/notes')).data.some(n => n.id === extra.id));
+   await client.locator('#restorePassword').fill(passphrase);
+   await client.locator('#restoreSubmitBtn').click();
+   await client.locator('#restoreDialog').waitFor({state:'hidden'});
+   assert.deepEqual((await api(base, '/api/v1/notes')).data.map(n => n.id).sort(), originalNotes);
+   checks.push('an encrypted backup downloaded in Chromium restores with the exact Unicode passphrase');
+
+   await context.setOffline(true);
+   await client.reload({waitUntil:'domcontentloaded'});
+   await client.locator('[data-workbench-ready="1"]').waitFor();
+   await client.waitForFunction(() => window.__omnishareRuntimeBridge?.isOffline());
+   await client.locator('.tab[data-tab="notes"]').click();
+   await client.locator('#openCreateNoteBtn').click();
+   await client.locator('#noteContent').fill('恢复连接期间继续编辑');
+   await context.setOffline(false);
+   await client.waitForFunction(() => window.__omnishareRuntimeBridge?.isOffline() === false);
+   assert.equal(await client.locator('#noteContent').inputValue(), '恢复连接期间继续编辑');
+   assert.ok((await client.locator('#createNoteDialog').isVisible()));
+   checks.push('the cached workbench reopens offline and preserves the open editor when the backend returns');
+ } finally {
+   await context.close();
+ }
+}
+
 async function exerciseWorkspace() {
  const a=await start('工作站 A'), b=await start('Mac B');
  await api(a,'/api/v1/notes','POST',{content:'A 本机上的随手记'});
  await api(b,'/api/v1/notes','POST',{content:'另一台设备上的随手记'});
  browser=await chromium.launch({...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})});
- const context=await browser.newContext({viewport:{width:1440,height:1000}});
+ const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
  page=await context.newPage(); page.on('pageerror',e=>errors.push(String(e)));
  await page.goto(a,{waitUntil:'networkidle'});
  await page.waitForFunction(() => document.querySelector('#nodeSecuritySummary').textContent.includes('仅本机访问'));
@@ -119,13 +184,13 @@ async function exerciseWorkspace() {
  const noteSource=page.locator('#noteContent');
  const noteEditor=page.locator('#createNoteMarkdownEditor');
  await noteSource.fill('目录归档随手记验证');
- await noteSource.press('Control+a');
+ await noteSource.press('ControlOrMeta+a');
  await noteEditor.getByRole('button',{name:'加粗',exact:true}).click();
  assert.equal(await noteSource.inputValue(),'**目录归档随手记验证**');
- await noteSource.press('Control+z');
+ await noteSource.press('ControlOrMeta+z');
  assert.equal(await noteSource.inputValue(),'目录归档随手记验证');
- await noteSource.press('Control+a');
- await noteSource.press('Control+b');
+ await noteSource.press('ControlOrMeta+a');
+ await noteSource.press('ControlOrMeta+b');
  await noteEditor.getByRole('button',{name:'分栏',exact:true}).click();
  await noteEditor.locator('.markdown-preview strong').getByText('目录归档随手记验证').waitFor();
  await noteSource.dispatchEvent('keydown',{key:'Enter',ctrlKey:true,isComposing:true});
@@ -171,7 +236,7 @@ async function exerciseWorkspace() {
  await editEditor.getByRole('button',{name:'预览',exact:true}).click();
  await editEditor.locator('.markdown-task').getByText('上线准备').waitFor();
  assert.ok(await editSource.isHidden());
- await page.keyboard.press('Control+s');
+ await page.keyboard.press('ControlOrMeta+s');
  await page.locator('#editNoteDialog').waitFor({state:'hidden'});
  assert.ok((await api(a,'/api/v1/notes?scope=local')).data.some(n=>n.content.endsWith('- [ ] 上线准备')));
  checks.push('shared note editor formats, previews, supports undo and saves Markdown without intercepting IME');
@@ -190,7 +255,7 @@ async function exerciseWorkspace() {
  assert.equal(await page.locator('#padFolderOptionsMenu[open]').count(),0);
  await page.locator('#padContent').fill('从 A 编辑，保存到 B');
  await padEditor.locator('.markdown-preview').getByText('从 A 编辑，保存到 B').waitFor();
- await page.locator('#padContent').press('Control+s');
+ await page.locator('#padContent').press('ControlOrMeta+s');
  await page.waitForFunction(()=>document.querySelector('#saveState').textContent.includes('已保存'));
  let current=(await api(b,`/api/v1/pads/${bpad.id}`)).data;assert.equal(current.content,'从 A 编辑，保存到 B');assert.equal(current.folder,'测试/协作');checks.push('editing a remote document in A writes to B without page navigation');
  await api(b,`/api/v1/pads/${bpad.id}`,'PUT',{title:current.title,content:'B 的最新更新',version:current.version});
@@ -314,8 +379,20 @@ async function exerciseWorkspace() {
  await page.locator('#backToPadsListBtn').click();
  await page.locator('.tab[data-tab="files"]').click();
  const remoteFile=page.locator('.file-card').filter({hasText:name});
+ let moveRequests = 0;
+ await page.route('**/api/v1/file-transfers', async route => {
+   moveRequests++;
+   // The peer really moves and verifies the file. Hold the response longer
+   // than the former UI deadline to exercise a slow acknowledgement.
+   const result = await route.fetch();
+   await delay(9500);
+   await route.fulfill({response:result});
+ });
  await remoteFile.getByRole('button',{name:'转移到本机'}).click();
  await page.locator('#confirmSubmitBtn').click();
+ await page.locator('#toast').filter({hasText:'文件已转移到本机'}).waitFor({timeout:20000});
+ assert.equal(moveRequests, 1);
+ checks.push('a file move with a delayed acknowledgement completes in the UI without resubmission');
  await page.waitForFunction(name => [...document.querySelectorAll('.file-card')].some(card =>
    card.textContent.includes(name) && !card.querySelector('.transfer-file')),name);
  assert.deepEqual((await api(b,'/api/v1/files?scope=local')).data,[]);
@@ -329,6 +406,7 @@ async function exerciseWorkspace() {
  assert.equal(download.suggestedFilename(),name);
  assert.equal(await readFile(await download.path(),'utf8'),sample);
  checks.push('note and document references share the picker; a real file move removes the source and preserves the note reference');
+ await checkBackupAndRecovery(a);
 }
 
 try {

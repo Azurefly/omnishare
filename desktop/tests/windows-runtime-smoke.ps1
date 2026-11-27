@@ -326,8 +326,13 @@ try {
                 try {
                     $stream = $client.GetStream()
                     $buffer = New-Object byte[] 2048
-                    $null = $stream.Read($buffer, 0, $buffer.Length)
-                    $body = '<html><title>Occupied By Test</title></html>'
+                    $count = $stream.Read($buffer, 0, $buffer.Length)
+                    $request = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $count)
+                    $body = if ($request.StartsWith('GET /api/v1/health ')) {
+                        '{"status":"ok"}'
+                    } else {
+                        '<html><title>Occupied By Test</title></html>'
+                    }
                     $response = "HTTP/1.0 200 OK`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n$body"
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes($response)
                     $stream.Write($bytes, 0, $bytes.Length)

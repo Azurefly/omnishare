@@ -408,9 +408,9 @@
           </div>
         </section>
         <section class="settings-section peer-section" aria-labelledby="settingsPeers">
-          <div class="settings-section-head"><span class="section-number">04</span><div><h3 id="settingsPeers">设备绑定节点</h3><p>添加 Tailscale 或跨网段的节点地址。每个节点需要独立验证。</p></div></div>
+          <div class="settings-section-head"><span class="section-number">04</span><div><h3 id="settingsPeers">手动发现地址</h3><p>用于自动发现未找到的设备。保存地址后，在「设备与网络」点击「绑定并合并」。</p></div></div>
           <div id="peerRows" class="peer-rows"></div>
-          <button id="addPeerBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>添加节点</span></button>
+          <button id="addPeerBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg><span>添加地址</span></button>
         </section>
       </div>
       <div class="modal-actions">
@@ -434,6 +434,26 @@
       <p id="clipboardPreviewStatus" class="clipboard-status" role="status" aria-live="polite"></p>
       <div class="modal-actions"><button id="clipboardCancelBtn" type="button" class="button ghost" autofocus>取消</button><button id="clipboardConfirmBtn" type="button" class="button primary" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg><span>确认发送</span></button></div>
     </div>
+  </dialog>
+
+  <dialog id="backupDialog" class="modal" aria-labelledby="backupTitle">
+    <form id="backupForm" class="modal-card">
+      <div class="modal-head">
+        <h2 id="backupTitle">导出本机备份</h2>
+        <button type="button" data-close-dialog class="icon-button" aria-label="关闭">×</button>
+      </div>
+      <label>备份格式
+        <select id="backupFormat"><option value="zip">ZIP · 未加密</option><option value="osb">OSB · 口令加密</option></select>
+      </label>
+      <label id="backupPasswordField" hidden>备份口令
+        <input id="backupPassword" type="password" autocomplete="new-password" disabled>
+        <small>恢复时需要相同的口令，首尾空格也会保留。</small>
+      </label>
+      <div class="modal-actions">
+        <button type="button" data-close-dialog class="button ghost">取消</button>
+        <button type="submit" class="button primary">导出备份</button>
+      </div>
+    </form>
   </dialog>
 
   <!-- 从备份恢复对话框 -->
@@ -776,7 +796,7 @@
   <datalist id="padsFolderOptions"></datalist>
   <dialog id="bindPeerDialog" class="modal" aria-labelledby="bindPeerTitle">
     <form id="bindPeerForm" class="modal-card"><div class="modal-head"><h2 id="bindPeerTitle">绑定设备并合并工作区</h2><button type="button" data-close-dialog class="icon-button" aria-label="关闭"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg></button></div>
-      <label>设备地址<input id="bindPeerURL" placeholder="http://192.168.1.20:8081 或 http://100.x.x.x:8081" autocomplete="off" required></label>
+      <label>对方设备地址<input id="bindPeerURL" placeholder="http://192.168.1.20:8081" autocomplete="off" required><small>从对方 OmniShare 的「当前设备 → 连接详情」复制，保留地址中的端口。</small></label>
       <label>对方访问密钥（仅对方已开启保护时填写）<input id="bindPeerKey" type="password" autocomplete="off"></label>
       <p class="muted-text">绑定后双方可直接读写彼此内容，无需再次添加。本机免密时，可访问本机的人也可访问合并内容。仅绑定可信设备；对方密钥仅用于本次绑定，不会保存。</p>
       <p id="bindPeerError" class="error-text" role="alert"></p>

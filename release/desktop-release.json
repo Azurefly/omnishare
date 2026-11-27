@@ -1,7 +1,7 @@
 {
-  "tag": "v1.0.1-rc.5",
-  "name": "OmniShare v1.0.1-rc.5 · 修复已发现设备的双向绑定",
-  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.5.md",
+  "tag": "v1.0.1-rc.6",
+  "name": "OmniShare v1.0.1-rc.6 · 跨设备传输、备份恢复与桌面稳定性",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.6.md",
   "prerelease": true,
   "platforms": [
     "windows",
@@ -17,6 +17,6 @@
     "reason": "Candidate DMG uses ad-hoc signing. Apple notarization is pending.",
     "dmg_published": false
   },
-  "release_date": "2026-11-26",
+  "release_date": "2026-11-27",
   "publication_channel": "candidate"
 }

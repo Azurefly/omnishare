@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"omnishare/internal/buildinfo"
 	"omnishare/internal/config"
@@ -1769,8 +1770,28 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 	s.workspaceDevices(w, r)
 }
 
+func readBackupPassword(h http.Header) (string, error) {
+	const name = "X-OmniShare-Backup-Password"
+	raw, encoded := h.Values(name), h.Values(name+"-Base64")
+	if len(encoded) == 0 && len(raw) <= 1 {
+		return h.Get(name), nil
+	}
+	if len(encoded) == 1 && len(raw) == 0 {
+		b, err := base64.StdEncoding.Strict().DecodeString(encoded[0])
+		if err == nil && len(b) > 0 && utf8.Valid(b) {
+			return string(b), nil
+		}
+	}
+	return "", errors.New("备份口令编码无效，请重新输入")
+}
+
 func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 	allowLongTransfer(w)
+	password, err := readBackupPassword(r.Header)
+	if err != nil {
+		respond(w, 400, 400, err.Error(), nil)
+		return
+	}
 	tmp, err := os.CreateTemp(s.dataDir, "omnishare-backup-*.zip")
 	if err != nil {
 		respond(w, 500, 500, err.Error(), nil)
@@ -1794,7 +1815,6 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request) {
 	// A password turns the archive into a real AES-256-GCM encrypted package.
 	// Both paths stream from the temporary ZIP, so a multi-gigabyte backup never
 	// has to fit in memory.
-	password := r.Header.Get("X-OmniShare-Backup-Password")
 	stamp := time.Now().Format("20060102-150405")
 	if password == "" {
 		info, _ := f.Stat()
@@ -1938,6 +1958,11 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, 400, "restore requires X-OmniShare-Confirm: RESTORE-BACKUP", nil)
 		return
 	}
+	password, err := readBackupPassword(r.Header)
+	if err != nil {
+		respond(w, 400, 400, err.Error(), nil)
+		return
+	}
 	// Restore accepts a backup no larger than the export allows; the old
 	// MaxUploadMB-derived cap silently rejected archives the server had just
 	// produced.
@@ -2013,9 +2038,8 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, 400, "could not inspect backup", nil)
 		return
 	} else if encrypted {
-		password := r.Header.Get("X-OmniShare-Backup-Password")
 		if password == "" {
-			respond(w, 400, 400, "this backup is encrypted; a password is required", nil)
+			respond(w, 400, 400, "这是加密备份，请输入导出时使用的备份口令", nil)
 			return
 		}
 		decrypted, err := os.CreateTemp(s.dataDir, "restore-decrypted-*.zip")
@@ -2032,10 +2056,24 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		header, decErr := DecryptBackup(src, decrypted, password)
+		// Older WebViews sent a ByteString header and HTTP trimmed its outer
+		// whitespace. Only retry that representation for an old archive when
+		// the first record failed authentication and no bytes were written.
+		if errors.Is(decErr, errFirstBackupRecord) && !header.ExactPassword && r.Header.Get("X-OmniShare-Backup-Password-Base64") != "" {
+			if old := legacyBrowserPassword(password); old != "" && old != password {
+				if _, err := src.Seek(0, io.SeekStart); err == nil {
+					header, decErr = DecryptBackup(src, decrypted, old)
+				}
+			}
+		}
 		_ = src.Close()
 		closeErr := decrypted.Close()
-		if decErr != nil || closeErr != nil {
-			respond(w, 400, 400, "backup password is wrong or the package is corrupted", nil)
+		if closeErr != nil {
+			respond(w, 500, 500, "无法写入解密后的备份文件", nil)
+			return
+		}
+		if decErr != nil {
+			respond(w, 400, 400, "备份口令不正确，或备份文件已损坏", nil)
 			return
 		}
 		expected = &header.Manifest

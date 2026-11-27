@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -92,7 +93,7 @@ func TestEncryptedBackupRoundTrip(t *testing.T) {
 		t.Fatalf("encrypted restore failed: %d %s", resp.Code, resp.Body.String())
 	}
 	// Missing password is a clear 400, not a corrupt archive.
-	if resp := postRestorePassword(t, h, body, ""); resp.Code != 400 || !strings.Contains(resp.Body.String(), "password") {
+	if resp := postRestorePassword(t, h, body, ""); resp.Code != 400 || !strings.Contains(resp.Body.String(), "口令") {
 		t.Fatalf("missing password should be rejected with 400, got %d %s", resp.Code, resp.Body.String())
 	}
 	// Wrong password must fail authentication.
@@ -108,6 +109,43 @@ func TestEncryptedBackupRoundTrip(t *testing.T) {
 	// Plain ZIP restores are still accepted for older backups (no password header).
 	if resp := postRestore(t, h, decrypted.Bytes()); resp.Code != 200 {
 		t.Fatalf("plain zip restore failed: %d %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestBrowserBackupPasswordPreservesExactBytesAndLegacyArchives(t *testing.T) {
+	_, h, _ := newTestServer(t)
+	usingPassword := func(value string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Set("X-OmniShare-Backup-Password-Base64", base64.StdEncoding.EncodeToString([]byte(value)))
+			h.ServeHTTP(w, r)
+		})
+	}
+	const password = "  备份 café 🔑  "
+	w := downloadBackup(t, usingPassword(password), "")
+	if w.Code != 200 || !bytes.HasPrefix(w.Body.Bytes(), backupMagic) {
+		t.Fatal("expected an encrypted archive for a Unicode passphrase")
+	}
+	if resp := postRestorePassword(t, usingPassword(strings.TrimSpace(password)), w.Body.Bytes(), ""); resp.Code != 400 {
+		t.Fatal("a modified passphrase opened a new backup")
+	}
+	if resp := postRestorePassword(t, usingPassword(password), w.Body.Bytes(), ""); resp.Code != 200 {
+		t.Fatalf("exact passphrase could not restore the archive: %d", resp.Code)
+	}
+	// Old browser requests carried Latin-1 bytes and lost outer whitespace.
+	old := downloadBackup(t, h, "caf\xe9")
+	if resp := postRestorePassword(t, usingPassword(" café "), old.Body.Bytes(), ""); resp.Code != 200 {
+		t.Fatalf("unable to restore a legacy browser backup: %d", resp.Code)
+	}
+	for _, encoded := range []string{"", "!", "/w=="} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/backup", nil)
+		req.Host, req.RemoteAddr = "127.0.0.1:8081", "127.0.0.1:1234"
+		req.Header.Set("X-OmniShare-Backup-Password-Base64", encoded)
+		applyTestAuth(req)
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, req)
+		if response.Code != 400 || response.Header().Get("Content-Disposition") != "" {
+			t.Fatal("malformed encoded password must not produce a plain backup")
+		}
 	}
 }
 

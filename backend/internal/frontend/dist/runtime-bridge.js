@@ -180,7 +180,11 @@
   function requestBudget({method, url}) {
     // A shortcut waits for the native dialog and hashes the chosen file.
     // A directory selection walks the disk before returning its entries.
-    if (method === 'POST' && ['/api/v1/local-files/shortcuts', '/api/v1/local-files/selection'].includes(url.pathname)) return 0
+    // A cross-device move also waits for the full download and integrity check.
+    // Its handler owns the transfer deadline and only cleans up the source afterwards.
+    if (method === 'POST' && ['/api/v1/local-files/shortcuts', '/api/v1/local-files/selection', '/api/v1/file-transfers', '/api/v1/delivery/items'].includes(url.pathname)) return 0
+    if (url.pathname === '/api/v1/delivery/prepare') return 30000
+    if (url.pathname === '/api/v1/delivery/items' || url.pathname.startsWith('/api/v1/delivery/items/')) return 18000
     if (url.pathname === '/api/v1/peers/bind') return 25000
     if (url.searchParams.get('scope') === 'all') return 18000
     if (url.pathname === '/api/v1/devices') return 12000
@@ -440,7 +444,7 @@
         normalizingToast = false
         return
       }
-      if (!toast.classList.contains('show') || !connectionMessages.test(toast.textContent || '')) return
+      if (!offline || !toast.classList.contains('show') || !connectionMessages.test(toast.textContent || '')) return
       const now = Date.now()
       if (now - lastConnectionToast < 60000) {
         toast.classList.remove('show')

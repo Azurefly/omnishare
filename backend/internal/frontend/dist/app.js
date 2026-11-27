@@ -37,12 +37,12 @@ const state = {
   accessKey: sessionGet('omnishare.accessKey') || '', authEpoch: 0,
   deferredInstall: null, editingNote: null,
   uploadQueue: [], activeUploads: 0, uploadSequence: 0, uploadPumping: false, uploadNotice: '',
-  requestSeq: {notes:0, files:0, pads:0, devices:0, folders:0}, devicesLoading: false, healthLoading: false, padSaveChain: Promise.resolve(),
+  requestSeq: {notes:0, files:0, pads:0, devices:0}, healthLoading: false, padSaveChain: Promise.resolve(),
   noteTotal: 0, fileTotal: 0, restoreInFlight: false, workspaceBusy: false, padRefreshSeq: 0, padRefreshBusy: false, padSaveEpoch: 0, padSelectSeq: 0, workspaceStatus: null, tailscaleStatus: "", padCreating: false, draftCopyBusy: false, peerBinding: false,
   folders: {
-    notes: { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false },
-    files: { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false },
-    pads:  { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false }
+    notes: { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false, requestSeq:0 },
+    files: { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false, requestSeq:0 },
+    pads:  { list: [], serverItems: [], fallbackCounts: new Map(), selected: '', recursive: true, collapsed: new Set(), loaded: false, requestSeq:0 }
   },
   workspaceTick: 0, folderModal: null, deleteFolderTarget: null, renamingFile: null, movingItem: null,
   noteFormats: new Map(), editingDeviceAlias: null, shareDialogSession: 0
@@ -77,14 +77,19 @@ const toast = (message, error=false, duration=2800) => {
 
 async function withButtonBusy(btn, busyText, fn) {
   if (!btn) return fn()
+  const children = btn.childNodes ? [...btn.childNodes] : null
   const prevText = btn.textContent
+  const wasDisabled = btn.disabled
   btn.disabled = true
   if (busyText) btn.textContent = busyText
   try {
     return await fn()
   } finally {
-    btn.disabled = false
-    btn.textContent = prevText
+    btn.disabled = wasDisabled
+    if (busyText) {
+      if (children) btn.replaceChildren(...children)
+      else btn.textContent = prevText
+    }
   }
 }
 
@@ -133,16 +138,17 @@ function askConfirm(message, { title='确认操作', confirmText='确认', cance
   })
 }
 
-function keyHeaders(key) {
+function secretHeaders(name, key) {
   // Keep ordinary printable ASCII compatible with existing clients. Encode
   // every other value, including leading/trailing spaces, without trimming.
   if (!key) return {}
-  if (/^[\x21-\x7e]+$/.test(key)) return {'X-OmniShare-Key': key}
+  if (/^[\x21-\x7e]+$/.test(key)) return {[name]: key}
   const bytes = new TextEncoder().encode(key)
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
-  return {'X-OmniShare-Key-Base64': btoa(binary)}
+  return {[`${name}-Base64`]: btoa(binary)}
 }
+const keyHeaders = key => secretHeaders('X-OmniShare-Key', key)
 const authHeaders = () => state.config?.access_key_enabled === false ? {} : keyHeaders(state.accessKey)
 const headers = (extra={}) => ({ ...authHeaders(), ...extra })
 
@@ -721,8 +727,12 @@ async function verifyAuth() {
 async function loadAll() {
   const auth = captureAuthContext()
   const core = await Promise.allSettled([loadHealth(true), loadConfig(true), loadDashboard(true), loadNotes(true), loadDevices(true)])
-  if (core.some(result => result.status === 'rejected')) {
-    if (isCurrentAuthContext(auth)) toast('核心服务加载失败，请检查网络连接或访问密钥', true)
+  const sections = ['本机服务', '设置', '工作台统计', '随手记', '设备列表']
+  const failed = core.findIndex(result => result.status === 'rejected')
+  if (failed !== -1) {
+    if (isCurrentAuthContext(auth) && !$('#authDialog').open) {
+      toast(`${sections[failed]}加载失败：${core[failed].reason.message}`, true)
+    }
     return false
   }
   if (state.folders[state.activeTab]) void loadFolders(state.activeTab)
@@ -809,7 +819,7 @@ async function loadConfig(strict=false) {
     $('#dataDirText').textContent = '本机私有存储（路径未通过 API 暴露）'
     $('#uploadLimit').textContent = `单文件上限 ${formatBytes(state.config.max_upload_mb * 1024 * 1024)}`
     renderNodeSecurity()
-    fillSettings()
+    if (!$('#settingsDialog').open) fillSettings()
     renderStats()
   } catch (err) {
     reportLoadError(err, strict)
@@ -949,6 +959,7 @@ function hasActiveItemFilter(kind) {
   return false
 }
 
+const folderCollator = new Intl.Collator('zh-CN')
 function mergeFolderEntries(kind, serverItems = []) {
   const byPath = new Map()
   const serverNodePaths = new Set()
@@ -958,7 +969,13 @@ function mergeFolderEntries(kind, serverItems = []) {
     const parts = clean.split('/')
     for (let i = 1; i <= parts.length; i++) {
       const prefix = parts.slice(0, i).join('/')
-      if (!byPath.has(prefix)) byPath.set(prefix, { path: prefix, direct: 0, total: 0 })
+      let node = byPath.get(prefix)
+      if (!node) {
+        node = { path: prefix, direct: 0, total: 0, hasChildren: false }
+        byPath.set(prefix, node)
+      }
+      if (countDelta > 0) node.total += countDelta
+      if (i < parts.length) node.hasChildren = true
     }
     if (countDelta > 0) byPath.get(clean).direct += countDelta
   }
@@ -1004,15 +1021,7 @@ function mergeFolderEntries(kind, serverItems = []) {
     addPath(entry.path, entry.count)
   }
 
-  for (const node of byPath.values()) {
-    node.total = node.direct
-    for (const other of byPath.values()) {
-      if (other.path !== node.path && other.path.startsWith(node.path + '/')) {
-        node.total += other.direct
-      }
-    }
-  }
-  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
+  return [...byPath.values()].sort((a, b) => folderCollator.compare(a.path, b.path))
 }
 
 function syncFoldersFromState(kind) {
@@ -1025,13 +1034,13 @@ function syncFoldersFromState(kind) {
 async function loadFolders(kind) {
   const f = state.folders[kind]
   if (!f) return
+  const seq = ++f.requestSeq
   try {
     const items = await apiCollection(`/api/v1/folders?kind=${encodeURIComponent(kind)}`)
+    if (seq !== f.requestSeq) return
     f.serverItems = items
     f.loaded = true
-  } catch {
-    f.serverItems = f.serverItems || []
-  }
+  } catch { if (seq !== f.requestSeq) return }
   syncFoldersFromState(kind)
 }
 
@@ -1051,8 +1060,7 @@ function renderFolderUI(kind) {
       }
     }
     if (hiddenByParent) continue
-    const hasChildren = entries.some(other => other.path.startsWith(entry.path + '/'))
-    visible.push({ ...entry, depth: parts.length - 1, name: parts[parts.length - 1], hasChildren })
+    visible.push({ ...entry, depth: parts.length - 1, name: parts[parts.length - 1] })
   }
   const treeRows = [
     `<div class="folder-node-row${f.selected === '' ? ' active' : ''}"><span class="folder-toggle spacer"></span><button type="button" class="folder-select" data-folder=""><span class="folder-label">${uiIcon('inbox')}<span class="folder-name">全部${FOLDER_LABELS[kind]}</span></span></button></div>`,
@@ -3110,9 +3118,11 @@ function renderAudit() {
   `
 }
 
-async function loadDevices(strict=false, refresh=false) {
-  if (state.devicesLoading) return
-  state.devicesLoading = true
+let deviceRequest = null
+let explicitDeviceRefresh = false
+function loadDevices(strict=false, refresh=false) {
+  if (deviceRequest && (!refresh || explicitDeviceRefresh)) return deviceRequest
+  explicitDeviceRefresh = refresh
   const seq = ++state.requestSeq.devices
   const run = async () => {
     // Routes that just failed are backed off server-side; an explicit refresh
@@ -3123,13 +3133,10 @@ async function loadDevices(strict=false, refresh=false) {
     renderDevices()
     if (refresh) toast('设备列表已刷新')
   }
-  try {
-    await (refresh ? withButtonBusy($('#refreshDevicesBtn'), '刷新中…', run) : run())
-  } catch (err) {
-    if (seq === state.requestSeq.devices) reportLoadError(err, strict)
-  } finally {
-    state.devicesLoading = false
-  }
+  deviceRequest = (refresh ? withButtonBusy($('#refreshDevicesBtn'), '刷新中…', run) : run())
+    .catch(err => { if (seq === state.requestSeq.devices) reportLoadError(err, strict) })
+    .finally(() => { if (seq === state.requestSeq.devices) deviceRequest = null })
+  return deviceRequest
 }
 
 function safeDeviceURL(value) {
@@ -3179,7 +3186,8 @@ async function submitPeerBinding() {
     await api('/api/v1/peers/bind', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(binding)})
     $('#bindPeerKey').value = ''; $('#bindPeerDialog').close()
     toast('双向绑定成功，两端工作区已合并')
-    await Promise.all([loadDevices(),loadAll(),loadFolders('notes'),loadFolders('files'),loadFolders('pads')]); await refreshWorkspace()
+    await loadAll()
+    if (state.activeTab !== 'dashboard') await refreshWorkspace()
   } catch (err) { $('#bindPeerError').textContent = err.message }
   finally { state.peerBinding = false; $('#bindPeerSubmitBtn').disabled = false }
 }
@@ -3201,7 +3209,7 @@ function deviceAddresses(device) {
 function deviceRouteLabel(address) {
   try {
     const host = new URL(address).hostname.replace(/^\[|\]$/g, '').toLowerCase()
-    if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return '本机'
+    if (isLoopbackHost(host)) return '本机'
     const octets = host.split('.').map(Number)
     if ((octets.length === 4 && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) || host.startsWith('fd7a:115c:a1e0:')) return 'Tailscale'
     return '局域网'
@@ -3250,7 +3258,8 @@ async function submitDeviceAlias() {
       })
       $('#deviceAliasDialog').close()
       toast(alias ? `已将设备别名设为“${alias}”` : '已恢复设备默认名称')
-      await Promise.all([loadDevices(), loadConfig(), loadAll()])
+      await loadAll()
+      if (state.activeTab !== 'dashboard') await refreshWorkspace()
     })
   } catch (err) {
     $('#deviceAliasError').textContent = err.message
@@ -3272,13 +3281,19 @@ function renderDevices() {
     const primary = (d.is_local && addresses.includes(browserAddress) ? browserAddress : safeDeviceURL(d.url)) || addresses[0] || ''
     const shortAddress = primary ? new URL(primary).host : '暂无可用地址'
     const displayName = deviceDisplayName(d)
-    const note = d.connection_error || (d.is_local ? '本机内容与绑定设备的索引统一展示' : d.bound ? '只展示索引；使用文件时按需读取' : '发现设备不会授予访问权限；绑定后只合并索引')
+    const shareable = d.is_local && state.config?.allow_lan !== false ? addresses.filter(address => {
+      const host = new URL(address).hostname
+      return !isLoopbackHost(host) && host !== '0.0.0.0' && host !== '[::]'
+    }) : []
+    const localHint = shareable.length ? '在连接详情中复制同一局域网或 Tailscale 地址，填入对方的添加设备窗口。'
+      : '当前没有可供其他设备访问的地址。请检查设置中的局域网访问和监听地址。'
+    const note = d.connection_error || (d.is_local ? localHint : d.bound ? '只展示索引；使用文件时按需读取' : '发现设备不会授予访问权限；绑定后只合并索引')
     return `<div class="device device-compact" data-device-id="${escapeHTML(d.id)}">
       <div class="device-heading"><h3 title="${escapeHTML(displayName)}">${escapeHTML(displayName)}</h3>${(d.is_local || d.bound) ? '<button type="button" class="text-button rename-device" title="设置设备别名">改名</button>' : ''}<span class="device-state ${d.online?'':'offline'}">${d.is_local?'本机':d.online?'在线':escapeHTML(d.status||'不可达')}</span></div>
       <div class="device-primary"><span class="device-route">${primary ? deviceRouteLabel(primary) : '未连接'}</span><code class="device-primary-url" title="${escapeHTML(primary)}">${escapeHTML(shortAddress)}</code></div>
       <p class="device-note">${escapeHTML(note)}</p>
       <details class="device-connections" data-connections-for="${escapeHTML(d.id)}"><summary>连接详情<span>${addresses.length} 个地址</span></summary>
-        <div class="device-addresses">${addresses.map(address => `<div class="device-address"><span>${deviceRouteLabel(address)}${address===primary ? (d.online?' · 当前连接':' · 上次连接'):' · 备用'}</span><code class="device-url">${escapeHTML(address)}</code></div>`).join('')}</div>
+        <div class="device-addresses">${addresses.map(address => `<div class="device-address"><span>${deviceRouteLabel(address)}${address===primary ? (d.online?' · 当前连接':' · 上次连接'):' · 备用'}</span>${shareable.includes(address) ? `<button type="button" class="text-button copy-device-address" data-address="${escapeHTML(address)}" aria-label="复制 ${escapeHTML(address)}">复制地址</button>` : ''}<code class="device-url">${escapeHTML(address)}</code></div>`).join('')}</div>
       </details>
       ${d.is_local?'':d.bound?'<button class="button ghost small unbind-device">解除绑定</button>':`<button class="button primary small bind-device" data-url="${escapeHTML(primary)}">绑定并合并</button>`}
     </div>`
@@ -3321,11 +3336,17 @@ function switchTab(tab) {
   if (state.folders[tab]) void loadFolders(tab)
 }
 
-async function exportBackup() {
-  // Backups can take minutes. Passing our own signal keeps the request out of
-  // the runtime bridge's 6 s abort watchdog; it only ends on network failure.
-  const password = window.prompt('设置备份口令（留空则导出未加密 ZIP；加密包只能用同一口令恢复）', '')
-  if (password === null) return
+function updateBackupFormat() {
+  const encrypted = $('#backupFormat').value === 'osb'
+  const input = $('#backupPassword')
+  $('#backupPasswordField').hidden = !encrypted
+  input.disabled = !encrypted
+  input.required = encrypted
+  if (encrypted) input.focus()
+  else input.value = ''
+}
+
+async function exportBackup(password = '') {
   const controller = new AbortController()
   const suggested = `omnishare-backup-${new Date().toISOString().slice(0, 10)}${password ? '.osb' : '.zip'}`
   await withButtonBusy($('#backupBtn'), '导出中…', async () => {
@@ -3336,7 +3357,7 @@ async function exportBackup() {
       const handle = window.showSaveFilePicker
         ? await window.showSaveFilePicker({ suggestedName: suggested }) : null
       toast('正在生成备份，请稍候…')
-      const extra = password ? { 'X-OmniShare-Backup-Password': password } : {}
+      const extra = secretHeaders('X-OmniShare-Backup-Password', password)
       const res = await fetch('/api/v1/backup', {signal: controller.signal, headers: headers(extra)})
       if (!res.ok) {
         let message = `HTTP ${res.status}`
@@ -3348,6 +3369,9 @@ async function exportBackup() {
         throw new Error(message)
       }
       const disposition = res.headers.get('content-disposition') || ''
+      if (password && !/\.osb"?(?:;|$)/i.test(disposition)) {
+        throw new Error('服务未返回加密备份，请更新本机 OmniShare 后重试')
+      }
       const total = Number(res.headers.get('content-length') || 0)
 
       // Prefer the File System Access API so a 16 GB backup is written chunk by
@@ -3447,10 +3471,10 @@ function restoreBackup() {
     return
   }
   const auth = captureAuthContext()
-  const restoreHeaders = { 'X-OmniShare-Confirm': 'RESTORE-BACKUP' }
-  Object.assign(restoreHeaders, authHeaders())
-  const restorePassword = $('#restorePassword').value
-  if (restorePassword) restoreHeaders['X-OmniShare-Backup-Password'] = restorePassword
+  const restoreHeaders = headers({
+    'X-OmniShare-Confirm': 'RESTORE-BACKUP',
+    ...secretHeaders('X-OmniShare-Backup-Password', $('#restorePassword').value)
+  })
   const form = new FormData()
   if (file) form.append('backup', file)
   else form.append('local_path', localPath)
@@ -3488,6 +3512,7 @@ function restoreBackup() {
     if (xhr.status >= 200 && xhr.status < 300 && payload?.code === 0) {
       status.textContent = '恢复完成，正在刷新数据…'
       toast('备份已恢复，建议重启程序')
+      $('#restorePassword').value = ''
       $('#restoreDialog').close()
       loadAll()
       return
@@ -3518,7 +3543,15 @@ function bindEvents() {
   $('#bindDeviceBtn').addEventListener('click', () => openBindDialog())
   $('#bindPeerForm').addEventListener('submit', e => { e.preventDefault(); void submitPeerBinding() })
   $('#deviceAliasForm')?.addEventListener('submit', e => { e.preventDefault(); void submitDeviceAlias() })
-  $('#deviceList').addEventListener('click', e => {
+  $('#deviceList').addEventListener('click', async e => {
+    const copy = e.target.closest('.copy-device-address')
+    if (copy) {
+      try {
+        if (await copyText(copy.dataset.address) === false) throw new Error()
+        toast('已复制本机连接地址')
+      } catch { toast('无法写入剪贴板，请选中地址复制', true) }
+      return
+    }
     const rename = e.target.closest('.rename-device')
     if (rename) { openDeviceAliasDialog(rename.closest('[data-device-id]').dataset.deviceId); return }
     const bind = e.target.closest('.bind-device')
@@ -3805,12 +3838,28 @@ function bindEvents() {
   $('#cfgAllowLAN').addEventListener('change', () => {
     $('#cfgListenAddress').value = $('#cfgAllowLAN').checked ? '0.0.0.0' : '127.0.0.1'
   })
-  $('#settingsBtn').addEventListener('click', () => {
+  $('#settingsBtn').addEventListener('click', async () => {
+    if (!state.config) {
+      try { await loadConfig(true) } catch { return }
+    }
+    if (!state.config || $('#settingsDialog').open) return
     fillSettings()
     $('#settingsDialog').showModal()
     $('#cfgNodeName')?.focus({ preventScroll: true })
   })
-  $('#backupBtn').addEventListener('click', exportBackup)
+  $('#backupBtn').addEventListener('click', () => {
+    $('#backupFormat').value = 'zip'
+    updateBackupFormat()
+    $('#backupDialog').showModal()
+  })
+  $('#backupFormat').addEventListener('change', updateBackupFormat)
+  $('#backupDialog').addEventListener('close', () => { $('#backupPassword').value = '' })
+  $('#backupForm').addEventListener('submit', event => {
+    event.preventDefault()
+    const password = $('#backupFormat').value === 'osb' ? $('#backupPassword').value : ''
+    $('#backupDialog').close()
+    void exportBackup(password)
+  })
   $('#loadMoreNotes').addEventListener('click', () => loadNotes(false, true))
   $('#loadMoreFiles').addEventListener('click', () => loadFiles(false, true))
   $('#restoreBtn').addEventListener('click', openRestoreDialog)
@@ -3857,11 +3906,14 @@ function bindEvents() {
 async function start() {
   initMarkdownEditors()
   bindEvents()
+  document.addEventListener('omnishare:backend-online', () => {
+    if (!$('#authDialog').open && !state.restoreInFlight) void Promise.all([loadAll(), loadDeliveryConfig()])
+  })
   document.documentElement.dataset.workbenchReady = '1'
   ;['notes', 'files', 'pads'].forEach(renderFolderUI)
   window.addEventListener('beforeunload', event => {
     if (state.currentPadDirty) preservePadDraft()
-    if (state.currentPadDirty || clipboardSending || hasPendingUploads() ||
+    if (state.currentPadDirty || clipboardSending || hasPendingUploads() || transferringFiles.size ||
         hasUnsavedNote($('#createNoteDialog')) || hasUnsavedNote($('#editNoteDialog'))) {
       event.preventDefault()
       event.returnValue = ''

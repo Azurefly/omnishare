@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"omnishare/internal/model"
 )
@@ -30,6 +32,7 @@ import (
 // for existing backups, but only new v3 packages authenticate all metadata and
 // the end of the stream.
 var backupMagic = []byte("OMNISHARE-ENC-BK")
+var errFirstBackupRecord = errors.New("backup password is wrong or the first record was tampered with")
 
 const (
 	backupFormatVersion       = 3
@@ -52,6 +55,7 @@ type BackupHeader struct {
 	ChunkSize     int                  `json:"chunk_size"`
 	CreatedAt     time.Time            `json:"created_at"`
 	AppVersion    string               `json:"app_version"`
+	ExactPassword bool                 `json:"exact_password,omitempty"`
 	Manifest      model.BackupManifest `json:"manifest"`
 }
 
@@ -129,6 +133,7 @@ func NewBackupEncryptWriter(w io.Writer, password string, manifest model.BackupM
 		ChunkSize:     backupChunkSize,
 		CreatedAt:     time.Now().UTC(),
 		AppVersion:    Version,
+		ExactPassword: utf8.ValidString(password),
 		Manifest:      manifest,
 	}
 	headerJSON, err := json.Marshal(header)
@@ -352,6 +357,9 @@ func DecryptBackup(src io.Reader, dst io.Writer, password string) (BackupHeader,
 		}
 		plain, err := aead.Open(nil, chunkNonce(prefix, index), sealed, aad)
 		if err != nil {
+			if index == 0 {
+				return header, errFirstBackupRecord
+			}
 			return header, errors.New("backup password is wrong or the package was tampered with")
 		}
 		index++
@@ -359,4 +367,15 @@ func DecryptBackup(src io.Reader, dst io.Writer, password string) (BackupHeader,
 			return header, err
 		}
 	}
+}
+
+func legacyBrowserPassword(password string) string {
+	var out []byte
+	for _, r := range strings.Trim(password, " \t") {
+		if r > 255 {
+			return ""
+		}
+		out = append(out, byte(r))
+	}
+	return string(out)
 }
