@@ -38,8 +38,9 @@ try {
   page = await context.newPage()
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
-  await page.goto(origin, {waitUntil:'domcontentloaded'})
-  await page.waitForFunction(() => document.querySelector('#healthBadge')?.textContent.includes('v'))
+  await page.goto(origin, {waitUntil:'commit',timeout:60000})
+  await page.waitForFunction(() => document.documentElement.dataset.workbenchReady === '1' &&
+    document.querySelector('#healthBadge')?.textContent.includes('v'), null, {timeout:60000})
   await page.locator('#dashUploadFileBtn').click()
   const shortcut = page.locator('#shortcutPath')
   await shortcut.fill(uri)

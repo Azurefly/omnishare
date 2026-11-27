@@ -3156,6 +3156,7 @@ function safeDeviceURL(value) {
 function renderNodeSecurity() {
   const summary = $('#nodeSecuritySummary')
   if (!summary || !state.config) return
+  renderDiscoveryStatus()
   const protectedAccess = state.config.access_key_enabled ?? state.config.has_access_key
   if (state.config.allow_lan === false) {
     summary.textContent = protectedAccess ? '仅本机访问 · 访问密钥已启用' : '仅本机访问 · 未启用访问密钥'
@@ -3164,6 +3165,16 @@ function renderNodeSecurity() {
   summary.textContent = protectedAccess
     ? '访问密钥已启用 · 绑定设备通过身份签名协作'
     : '局域网免密访问 · 可在设置中开启密钥保护'
+}
+
+function renderDiscoveryStatus() {
+  const status = $('#tailscaleStatus')
+  if (!status) return
+  if (state.config?.allow_lan === false) {
+    status.textContent = '仅本机访问，自动发现已关闭'
+  } else {
+    status.textContent = state.tailscaleStatus || '正在检测局域网与 Tailscale 连接…'
+  }
 }
 
 function openBindDialog(url='', deviceId='') {
@@ -3304,7 +3315,7 @@ function renderDevices() {
     list.innerHTML = markup; list._deviceMarkup = markup
     for (const details of list.querySelectorAll?.('.device-connections') || []) details.open = expanded.has(details.dataset.connectionsFor)
   }
-  const status = $('#tailscaleStatus'); if (status) status.textContent = state.tailscaleStatus || '局域网自动发现已启用；Tailscale 状态正在检测'
+  renderDiscoveryStatus()
 }
 
 const TAB_CONFIG = {

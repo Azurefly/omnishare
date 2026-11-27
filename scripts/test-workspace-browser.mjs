@@ -140,6 +140,7 @@ async function exerciseWorkspace() {
  page=await context.newPage(); page.on('pageerror',e=>errors.push(String(e)));
  await page.goto(a,{waitUntil:'networkidle'});
  await page.waitForFunction(() => document.querySelector('#nodeSecuritySummary').textContent.includes('仅本机访问'));
+ await page.locator('#tailscaleStatus').filter({hasText:'自动发现已关闭'}).waitFor();
  checks.push('a loopback-only node reports local-only access');
  await page.locator('#bindDeviceBtn').click();
  await page.locator('#bindPeerURL').fill(b);
