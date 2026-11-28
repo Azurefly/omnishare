@@ -388,7 +388,7 @@ func peerContentPath(path string) bool {
 			return true
 		}
 	}
-	return path == "/api/v1/peers/self"
+	return path == "/api/v1/peers/self" || path == "/api/v1/ai-quota/shared"
 }
 func (s *Server) verifyPeerSignature(r *http.Request, p peerIdentity, clock func() time.Time) error {
 	stamp := r.Header.Get("X-OmniShare-Time")

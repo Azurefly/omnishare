@@ -10,6 +10,7 @@
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css" />
   <link rel="stylesheet" href="/theme.css" />
+  <link rel="stylesheet" href="/quota.css" />
   <title>OmniShare</title>
 </head>
 <body>
@@ -165,6 +166,10 @@
                 <button class="button ghost small dashboard-link" data-target-tab="shares" aria-label="进入公开交付"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg><span class="visually-hidden">进入模块</span></button>
               </article>
             </div>
+            <section id="quotaCard" class="card quota-card" aria-labelledby="quotaCardTitle" hidden>
+              <div><h3 id="quotaCardTitle">AI 额度</h3><p id="quotaSummary" class="muted">查看账号余额、订阅余量和重置时间</p></div>
+              <button id="quotaOpen" type="button" class="button ghost small">查看额度</button>
+            </section>
           </section>
 
           <section id="notesPanel" class="panel-view">
@@ -360,6 +365,28 @@
     </div>
   </div>
 
+  <dialog id="quotaDialog" class="modal" aria-labelledby="quotaTitle">
+    <div class="modal-card quota-dialog">
+      <div class="modal-head"><h2 id="quotaTitle">AI 额度</h2><button id="quotaClose" type="button" class="button ghost small">关闭</button></div>
+      <div class="quota-toolbar">
+        <label>来源设备 <select id="quotaDevice" aria-label="额度来源设备"></select></label>
+        <button id="quotaConnect" type="button" class="button primary small">连接账号</button>
+      </div>
+      <form id="quotaForm" class="quota-form" hidden>
+        <label>额度来源<select id="quotaProvider" required></select></label>
+        <p id="quotaHint" class="muted"></p>
+        <label>账号别名<input id="quotaAlias" maxlength="60" autocomplete="off" placeholder="例如：工作账号" /></label>
+        <label id="quotaSiteField" hidden>站点地址<input id="quotaSite" type="url" autocomplete="off" placeholder="https://your-gateway.example" /></label>
+        <label id="quotaResourceField" hidden><span id="quotaResourceLabel"></span><input id="quotaResource" autocomplete="off" spellcheck="false" /></label>
+        <label id="quotaKeyField">服务密钥<input id="quotaKey" type="password" autocomplete="off" spellcheck="false" /></label>
+        <label id="quotaSessionField" class="quota-check"><input id="quotaSession" type="checkbox" /> 仅本次会话使用密钥</label>
+        <p id="quotaStorage" class="muted"></p>
+        <div class="quota-actions"><button id="quotaSubmit" class="button primary small" type="submit">验证并连接</button><button id="quotaCancel" class="button ghost small" type="button">取消</button></div>
+      </form>
+      <p id="quotaStatus" class="muted" role="status" aria-live="polite"></p>
+      <div id="quotaAccounts" class="quota-accounts"></div>
+    </div>
+  </dialog>
   <!-- 系统设置对话框 -->
   <dialog id="settingsDialog" class="modal settings-modal" aria-labelledby="settingsTitle">
     <form method="dialog" class="modal-card" id="settingsForm">
@@ -903,6 +930,7 @@
     <div class="markdown-status"><span data-md-count></span><span data-md-status role="status"></span></div>
   </template>
   <script src="/runtime-bridge.js"></script>
+  <script src="/quota.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

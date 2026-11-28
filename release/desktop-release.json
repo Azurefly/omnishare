@@ -1,7 +1,7 @@
 {
-  "tag": "v1.0.1-rc.7",
-  "name": "OmniShare v1.0.1-rc.7 · 双向绑定、文件清理与液态玻璃界面",
-  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.7.md",
+  "tag": "v1.0.1-rc.8",
+  "name": "OmniShare v1.0.1-rc.8 · 多供应商 AI 额度与跨设备查看",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.8.md",
   "prerelease": true,
   "platforms": [
     "windows",

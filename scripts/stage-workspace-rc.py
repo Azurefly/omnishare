@@ -22,6 +22,7 @@ def macos_checks(root, source, run):
     browser = read_json(root / 'candidate-evidence/macos-device-binding/results.json')
     required = {
         'a failed return shows the actual address and reason and leaves both devices unbound',
+        'AI quota connects directly, preserves zero balances and shares only explicitly selected readings',
         'two addresses for one signed device merge with its alias and one reciprocal registration',
         'local cleanup distinguishes references from stored copies and preserves the external original and remote records',
         'a discovered device binds reciprocally after its displayed route closes',

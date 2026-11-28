@@ -29,6 +29,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"omnishare/internal/aiquota"
 	"omnishare/internal/buildinfo"
 	"omnishare/internal/config"
 	"omnishare/internal/discovery"
@@ -102,6 +103,7 @@ type Server struct {
 	localMu    sync.Mutex
 	localCache atomic.Pointer[localNetworkSnapshot]
 	peers      *peerState
+	quota      *aiquota.Manager
 }
 
 // localNetworkSnapshot is an immutable view of this host's addresses. Both
@@ -185,6 +187,7 @@ func New(store storage.Backend, cfg *config.Manager, registries ...*discovery.Re
 		denied: map[string]*deniedBucket{}, deniedWindow: time.Minute,
 	}
 	server.initPeers()
+	server.quota = aiquota.Open(server.dataDir, cfg.Get().NodeID)
 	server.finishInitialization() // Remove an obsolete token file; never generate or read it.
 	return server
 }
@@ -202,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/auth/verify", s.verifyAuth)
 	mux.HandleFunc("GET /api/v1/dashboard", s.protected(s.dashboard))
+	s.registerQuota(mux)
 	mux.HandleFunc("GET /api/v1/config", s.protected(s.getConfig))
 	mux.HandleFunc("PUT /api/v1/config", s.protected(s.updateConfig))
 	mux.HandleFunc("GET /api/v1/notes", s.protected(s.listNotes))

@@ -774,6 +774,7 @@ async function loadHealth(strict=false) {
 async function loadDashboard(strict=false) {
   try {
     state.stats = await api('/api/v1/dashboard')
+    void window.OmniQuota?.summary()
     renderStats()
   } catch (err) {
     reportLoadError(err, strict)
@@ -3653,6 +3654,7 @@ function restoreBackup() {
 }
 
 function bindEvents() {
+  window.OmniQuota?.bind({api, askConfirm, withButtonBusy})
   for (const button of $$('[data-close-dialog]')) {
     button.addEventListener('click', () => button.closest('dialog').close())
   }

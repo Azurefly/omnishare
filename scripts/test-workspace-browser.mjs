@@ -6,6 +6,7 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {createConnection, createServer} from 'node:net';
 import {chromium} from '../frontend/node_modules/playwright/index.mjs';
+import {checkQuotaWorkspace} from './test-quota-workspace.mjs';
 
 const binary = resolve(process.env.OMNISHARE_BIN || process.argv[2] || 'dist/omnishare-test');
 const bindingOnly = process.argv.includes('--binding-only');
@@ -275,6 +276,8 @@ async function exerciseWorkspace() {
  assert.ok(!(await api(a, '/api/v1/pads?scope=all')).data.some(d => d.title === 'unsaved document'));
  checks.push('closing alias and new document dialogs preserves data');
  if (bindingOnly) return;
+ await checkQuotaWorkspace(page,a,b,api,output);
+ checks.push('AI quota connects directly, preserves zero balances and shares only explicitly selected readings');
  await page.locator('.tab[data-tab="notes"]').click();
  // Folder workflow in unified workspace: create folder, create note in folder, create empty folder, verify cross-device visibility & filter stability.
  await page.locator('#notesPanel .create-folder-btn').click();
