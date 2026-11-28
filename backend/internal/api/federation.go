@@ -35,8 +35,9 @@ const peerProtocol = "omnishare/workspace/1"
 const maxBindings = 32
 
 var (
-	errInvalidPeerSignature = errors.New("invalid signed device identity")
-	errPeerClockSkew        = errors.New("两台设备的系统时间相差超过 1 分钟，请在两台设备上启用自动设置日期与时间后重新绑定")
+	errInvalidPeerSignature   = errors.New("invalid signed device identity")
+	errPeerRefreshUnsupported = errors.New("peer has no address refresh endpoint")
+	errPeerClockSkew          = errors.New("两台设备的系统时间相差超过 1 分钟，请在两台设备上启用自动设置日期与时间后重新绑定")
 )
 
 type peerIdentity struct {
@@ -474,6 +475,15 @@ func (s *Server) postPeerAcceptance(ctx context.Context, base, path, target, key
 	}
 	defer resp.Body.Close()
 	var reply peerAcceptReply
+	if path == "/api/v1/peers/self" {
+		// Older releases serve the workbench HTML for an unknown API route.
+		// Retry their normal pairing protocol, which still verifies the return path.
+		mediaType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed ||
+			(resp.StatusCode == http.StatusOK && strings.EqualFold(strings.TrimSpace(mediaType), "text/html")) {
+			return resp.StatusCode, reply, errPeerRefreshUnsupported
+		}
+	}
 	if resp.StatusCode != http.StatusUnauthorized {
 		err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&reply)
 	}
@@ -543,7 +553,7 @@ func (s *Server) bindPeerMode(w http.ResponseWriter, r *http.Request, automatic 
 	if known {
 		status, reply, err = s.postPeerAcceptance(ctx, selected, "/api/v1/peers/self", remote.ID, "", loop, local)
 	}
-	if !known || status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+	if !known || errors.Is(err, errPeerRefreshUnsupported) {
 		status, reply, err = s.postPeerAcceptance(ctx, selected, "/api/v1/peers/accept", remote.ID, input.Key, loop, local)
 	}
 	if err != nil {

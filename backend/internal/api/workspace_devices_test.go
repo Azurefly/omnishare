@@ -230,6 +230,34 @@ func TestKnownDeviceAddsAnotherRouteWithoutRebindingOrLosingAlias(t *testing.T) 
 	}
 }
 
+func TestKnownAddressOnLegacyWorkbenchFallsBackToReciprocalPairing(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "Mac"), newWorkspaceFixture(t, "PC")
+	wsBind(t, a, b, "")
+	id := b.cfg.Get().NodeID
+	if err := a.s.setPeerAlias(id, "旧版设备"); err != nil {
+		t.Fatal(err)
+	}
+	var accepts atomic.Int32
+	next := b.s.Handler()
+	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/api/v1/peers/self" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, "<!doctype html><title>OmniShare</title>")
+			return
+		}
+		if r.URL.Path == "/api/v1/peers/accept" {
+			accepts.Add(1)
+		}
+		next.ServeHTTP(w, r)
+	}))
+	defer legacy.Close()
+	status, reply, _ := wsCall(t, a, "POST", "/api/v1/peers/bind", map[string]string{"url": legacy.URL}, "")
+	saved, _ := a.s.boundPeer(id)
+	if status != 200 || accepts.Load() != 1 || saved.URL != legacy.URL || saved.Alias != "旧版设备" {
+		t.Fatalf("legacy alternate address failed: %d %v", status, reply)
+	}
+}
+
 func TestAddingKnownAddressRequiresFreshReturnConnection(t *testing.T) {
 	a, b := newWorkspaceFixture(t, "Mac"), newWorkspaceFixture(t, "PC")
 	wsBind(t, a, b, "")
