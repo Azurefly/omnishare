@@ -23,6 +23,7 @@ type QuickNote struct {
 }
 
 type FileAsset struct {
+	StorageKind     string     `json:"storage_kind,omitempty"`
 	SourceShortcut  bool       `json:"source_shortcut,omitempty"`
 	SourceFileError string     `json:"source_file_error,omitempty"`
 	ID              string     `json:"id"`
@@ -173,12 +174,13 @@ type ShareLink struct {
 }
 
 type TrashItem struct {
-	ObjectType string    `json:"object_type"`
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Size       int64     `json:"size,omitempty"`
-	DeletedAt  time.Time `json:"deleted_at"`
-	CreatedAt  time.Time `json:"created_at"`
+	StorageKind string    `json:"storage_kind,omitempty"`
+	ObjectType  string    `json:"object_type"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Size        int64     `json:"size,omitempty"`
+	DeletedAt   time.Time `json:"deleted_at"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type DashboardStats struct {

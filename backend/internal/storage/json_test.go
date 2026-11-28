@@ -139,6 +139,64 @@ func TestFileValidationLogicalDedupReferencesAndTrash(t *testing.T) {
 	}
 }
 
+func TestCleanupCountsOnlyStoredContentUntilTheLastReferenceIsPurged(t *testing.T) {
+	for _, engine := range []string{"folder", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			var s Backend
+			var err error
+			if engine == "sqlite" {
+				s, err = NewSQLite(t.TempDir())
+			} else {
+				s, err = New(t.TempDir())
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			now := time.Now()
+			paths := []string{`uploads\shortcuts\id\link.json`, "uploads/blobs/aa/file", "uploads/blobs/aa/file", ""}
+			var ids []string
+			for i, storagePath := range paths {
+				f := model.FileAsset{ID: NewID("f"), FileName: "测试", FileSize: 123, StoragePath: storagePath, CreatedAt: now}
+				if i == 0 {
+					f.FileSize = 1 << 30
+				}
+				if err := s.CreateFile(f); err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, f.ID)
+			}
+			if s.Stats().StorageUsed != 123 {
+				t.Fatal("shortcut or shared content was overcounted")
+			}
+			if _, err := s.DeleteFiles(ids); err != nil {
+				t.Fatal(err)
+			}
+			kinds := map[string]int{}
+			for _, item := range s.ListTrash("file") {
+				kinds[item.StorageKind]++
+			}
+			if kinds["shortcut"] != 1 || kinds["copy"] != 2 || kinds["record"] != 1 {
+				t.Fatalf("trash lost storage kinds: %v", kinds)
+			}
+			if s.Stats().StorageUsed != 123 {
+				t.Fatal("soft deletion reported released space")
+			}
+			for _, id := range ids[:2] {
+				if _, err := s.PurgeTrash("file", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if s.Stats().StorageUsed != 123 {
+				t.Fatal("the remaining blob was omitted")
+			}
+			if _, err := s.PurgeTrash("file", ids[2]); err != nil || s.Stats().StorageUsed != 0 {
+				t.Fatalf("last purge did not release stored bytes: %v", err)
+			}
+		})
+	}
+}
+
 func TestPadConflictShareLifecycleAndAuditChain(t *testing.T) {
 	s, _ := New(t.TempDir())
 	now := time.Now()

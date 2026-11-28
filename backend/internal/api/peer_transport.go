@@ -9,14 +9,76 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
 var tailRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
 var benchmarkRange = &net.IPNet{IP: net.IPv4(198, 18, 0, 0), Mask: net.CIDRMask(15, 32)}
 var errBindingIdentity = errors.New("selected peer identity changed")
+
+type returnAttempt struct {
+	URL    string `json:"url"`
+	Reason string `json:"reason"`
+}
+
+type bindingRouteError struct {
+	cause    error
+	attempts []returnAttempt
+}
+
+func (e *bindingRouteError) Error() string { return e.cause.Error() }
+func (e *bindingRouteError) Unwrap() error { return e.cause }
+
+func returnFailure(err error) string {
+	var networkError net.Error
+	var dnsError *net.DNSError
+	var certificateError *tls.CertificateVerificationError
+	switch {
+	case errors.Is(err, errBindingIdentity), errors.Is(err, errInvalidPeerSignature):
+		return "identity"
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout():
+		return "timeout"
+	case errors.Is(err, syscall.ECONNREFUSED), runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10061)): // WSAECONNREFUSED
+		return "refused"
+	case errors.As(err, &dnsError):
+		return "dns"
+	case errors.As(err, &certificateError):
+		return "certificate"
+	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH),
+		runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(10051)) || errors.Is(err, syscall.Errno(10065))):
+		return "unreachable"
+	case strings.Contains(err.Error(), "not a compatible"):
+		return "incompatible"
+	default:
+		return "unavailable"
+	}
+}
+
+func formatReturnAttempts(attempts []returnAttempt) string {
+	reasons := map[string]string{
+		"timeout": "连接超时", "refused": "端口拒绝连接", "identity": "设备身份校验失败",
+		"unreachable": "网络或主机不可达", "dns": "地址解析失败", "certificate": "HTTPS 证书校验失败",
+		"incompatible": "该端口未返回兼容的 OmniShare 身份",
+	}
+	var lines []string
+	for _, a := range attempts[:min(len(attempts), 24)] {
+		base, err := normalizePeerURL(a.URL)
+		if err != nil {
+			continue
+		}
+		reason := reasons[a.Reason]
+		if reason == "" {
+			reason = "未能完成 OmniShare 握手"
+		}
+		lines = append(lines, base+"　"+reason)
+	}
+	return strings.Join(lines, "\n")
+}
 
 func peerIPAllowed(ip net.IP, loop bool) bool {
 	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || benchmarkRange.Contains(ip) {
@@ -126,14 +188,18 @@ func peerError(err error) string {
 	return "无法连接 OmniShare 服务"
 }
 func uniqueRoutes(p peerBinding) []string {
-	routes := []string{p.URL}
-	routes = append(routes, p.Identity.Addresses...)
+	return mergePeerURLs([]string{p.URL}, p.VerifiedURLs, p.Identity.Addresses)
+}
+
+func mergePeerURLs(groups ...[]string) []string {
 	seen := map[string]bool{}
 	out := []string{}
-	for _, raw := range routes {
-		if base, err := normalizePeerURL(raw); err == nil && !seen[base] {
-			seen[base] = true
-			out = append(out, base)
+	for _, routes := range groups {
+		for _, raw := range routes {
+			if base, err := normalizePeerURL(raw); err == nil && !seen[base] {
+				seen[base] = true
+				out = append(out, base)
+			}
 		}
 	}
 	return out
@@ -147,11 +213,34 @@ func (s *Server) identifyBindingRoute(ctx context.Context, routes []string, expe
 		base     string
 		err      error
 	}
+	// Record only started probes. A deadline can leave queued routes untested.
+	var mu sync.Mutex
+	attempted := make(map[string]error)
+	failure := func(cause error) error {
+		mu.Lock()
+		defer mu.Unlock()
+		e := &bindingRouteError{cause: cause}
+		for _, base := range routes {
+			if err, started := attempted[base]; started {
+				if err == nil {
+					err = cause
+				}
+				e.attempts = append(e.attempts, returnAttempt{URL: base, Reason: returnFailure(err)})
+			}
+		}
+		return e
+	}
 	probe := func(c context.Context, base string, allowLoop bool) result {
+		mu.Lock()
+		attempted[base] = nil
+		mu.Unlock()
 		id, err := s.readIdentity(c, base, allowLoop)
 		if err == nil && expected.ID != "" && (id.ID != expected.ID || (expected.PublicKey != "" && id.PublicKey != expected.PublicKey)) {
 			err = errBindingIdentity
 		}
+		mu.Lock()
+		attempted[base] = err
+		mu.Unlock()
 		return result{id, base, err}
 	}
 	primary := routes[0]
@@ -165,6 +254,9 @@ func (s *Server) identifyBindingRoute(ctx context.Context, routes []string, expe
 	}
 	if len(alternatives) == 0 {
 		r := probe(ctx, primary, loop)
+		if r.err != nil {
+			r.err = failure(r.err)
+		}
 		return r.identity, r.base, r.err
 	}
 	c, cancel := context.WithCancel(ctx)
@@ -184,7 +276,7 @@ func (s *Server) identifyBindingRoute(ctx context.Context, routes []string, expe
 		pending--
 	case <-timer.C:
 	case <-c.Done():
-		return peerIdentity{}, "", c.Err()
+		return peerIdentity{}, "", failure(c.Err())
 	}
 	u, _ := url.Parse(primary)
 	allowLoop := loop && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback())
@@ -212,14 +304,14 @@ func (s *Server) identifyBindingRoute(ctx context.Context, routes []string, expe
 			if r.err == nil {
 				return r.identity, r.base, nil
 			}
-			if firstErr == nil || r.base == primary {
+			if errors.Is(r.err, errBindingIdentity) || (r.base == primary && !errors.Is(firstErr, errBindingIdentity)) || firstErr == nil {
 				firstErr = r.err
 			}
 		case <-c.Done():
-			return peerIdentity{}, "", c.Err()
+			return peerIdentity{}, "", failure(c.Err())
 		}
 	}
-	return peerIdentity{}, "", firstErr
+	return peerIdentity{}, "", failure(firstErr)
 }
 
 func (s *Server) peerRequest(ctx context.Context, p peerBinding, method, path string, body []byte, extra http.Header) (*http.Response, error) {

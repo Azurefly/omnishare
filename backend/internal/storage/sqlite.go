@@ -2754,21 +2754,22 @@ func (s *SQLiteStore) ListTrash(kind string) []model.TrashItem {
 		}
 	}
 	if kind == "" || kind == "file" {
-		rows, err := s.readDB.Query("SELECT id, file_name, file_size, deleted_at, created_at FROM file_assets WHERE deleted_at IS NOT NULL")
+		rows, err := s.readDB.Query("SELECT id, file_name, file_size, storage_path, deleted_at, created_at FROM file_assets WHERE deleted_at IS NOT NULL")
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
-				var id, name, createdStr string
+				var id, name, path, createdStr string
 				var size int64
 				var delStr *string
-				if err := rows.Scan(&id, &name, &size, &delStr, &createdStr); err == nil && delStr != nil {
+				if err := rows.Scan(&id, &name, &size, &path, &delStr, &createdStr); err == nil && delStr != nil {
 					out = append(out, model.TrashItem{
-						ObjectType: "file",
-						ID:         id,
-						Name:       name,
-						Size:       size,
-						DeletedAt:  *parseTime(delStr),
-						CreatedAt:  mustParseTime(createdStr),
+						ObjectType:  "file",
+						StorageKind: FileStorageKind(path),
+						ID:          id,
+						Name:        name,
+						Size:        size,
+						DeletedAt:   *parseTime(delStr),
+						CreatedAt:   mustParseTime(createdStr),
 					})
 				}
 			}
@@ -3081,6 +3082,9 @@ func (s *SQLiteStore) Stats() model.DashboardStats {
 			var isVideo int
 			var expStr, delStr *string
 			if err := fRows.Scan(&size, &path, &isVideo, &expStr, &delStr); err == nil {
+				if FileStorageKind(path) == "copy" {
+					blobSizes[strings.ReplaceAll(path, `\`, "/")] = size
+				}
 				if delStr != nil {
 					trashFiles++
 					continue
@@ -3089,7 +3093,6 @@ func (s *SQLiteStore) Stats() model.DashboardStats {
 					continue
 				}
 				activeFiles++
-				blobSizes[path] = size
 				if isVideo != 0 {
 					videos++
 				}

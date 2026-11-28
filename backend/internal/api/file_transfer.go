@@ -295,6 +295,7 @@ func (s *Server) receiveTransferredFile(ctx context.Context, peer peerBinding, i
 		asset.StreamURL = "/api/v1/files/" + targetID + "/stream"
 	}
 	asset.StoragePath = s.managedFilePath(asset)
+	asset.StorageKind = storage.FileStorageKind(asset.StoragePath)
 	asset.SourceShortcut = false
 	asset.SourceFileError = ""
 	asset.DeletedAt = nil

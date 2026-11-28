@@ -101,6 +101,7 @@ func (s *Server) workspaceDevices(w http.ResponseWriter, r *http.Request) {
 		candidates = candidates[:64]
 	}
 	results := make([]model.DeviceNode, len(candidates))
+	failures := make([]error, len(candidates))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
 	ctx, cancel := context.WithTimeout(r.Context(), 7*time.Second)
@@ -134,7 +135,8 @@ func (s *Server) workspaceDevices(w http.ResponseWriter, r *http.Request) {
 					node.ConnectionError = peerError(err)
 					continue
 				}
-				if c.bound && (id.ID != c.p.Identity.ID || id.PublicKey != c.p.Identity.PublicKey) {
+				if (strings.HasPrefix(c.p.Identity.ID, "node-") && id.ID != c.p.Identity.ID) ||
+					(c.p.Identity.PublicKey != "" && id.PublicKey != c.p.Identity.PublicKey) {
 					node.ConnectionError = "设备身份变化，请重新绑定"
 					continue
 				}
@@ -146,21 +148,34 @@ func (s *Server) workspaceDevices(w http.ResponseWriter, r *http.Request) {
 				node.URL = base
 				node.NetworkType = deviceNetwork(base)
 				node.Addresses = uniqueRoutes(peerBinding{URL: base, Identity: peerIdentity{Addresses: append(append([]string{}, routes...), id.Addresses...)}})
+				if bound, ok, saveErr := s.rememberBoundRoute(id, base, false); ok {
+					node.Bound, node.Alias = true, bound.Alias
+					node.Addresses = mergePeerURLs(node.Addresses, verifiedPeerURLs(bound))
+					if saveErr != nil {
+						node.ConnectionError = "已连接，此设备的新地址暂未保存"
+					}
+				}
 				node.LatencyMS = time.Since(start).Milliseconds()
-				s.recordPeer(ctx, id.ID, nil)
 				break
 			}
-			if !node.Online && c.p.Identity.ID != "" && lastErr != nil {
-				s.recordPeer(ctx, c.p.Identity.ID, lastErr)
-			}
+			failures[i] = lastErr
 			results[i] = node
 		}(i, c)
 	}
 	wg.Wait()
+	for i, d := range results {
+		if !d.Online && d.ID != "" && failures[i] != nil {
+			s.recordPeer(ctx, d.ID, failures[i])
+		}
+	}
 	// Binding wins over discoveries and old manually configured URL aliases.
 	for _, d := range results {
 		if d.ID == local.ID || (!d.Bound && !d.Online) {
 			continue
+		}
+		if d.Online {
+			// A working route wins even if another probe for this identity finished later.
+			s.recordPeer(ctx, d.ID, nil)
 		}
 		duplicate := -1
 		for i, old := range devices {
@@ -178,6 +193,11 @@ func (s *Server) workspaceDevices(w http.ResponseWriter, r *http.Request) {
 				preferred = d
 			}
 			preferred.Bound = previous.Bound || d.Bound
+			if previous.Bound {
+				preferred.Alias = previous.Alias
+			} else if d.Bound {
+				preferred.Alias = d.Alias
+			}
 			routes := append(uniqueRoutes(peerBinding{URL: previous.URL, Identity: peerIdentity{Addresses: previous.Addresses}}), uniqueRoutes(peerBinding{URL: d.URL, Identity: peerIdentity{Addresses: d.Addresses}})...)
 			preferred.Addresses = uniqueRoutes(peerBinding{URL: preferred.URL, Identity: peerIdentity{Addresses: routes}})
 			devices[duplicate] = preferred

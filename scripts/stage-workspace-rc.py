@@ -21,6 +21,9 @@ def macos_checks(root, source, run):
             'Packaged macOS window and native file checks must pass')
     browser = read_json(root / 'candidate-evidence/macos-device-binding/results.json')
     required = {
+        'a failed return shows the actual address and reason and leaves both devices unbound',
+        'two addresses for one signed device merge with its alias and one reciprocal registration',
+        'local cleanup distinguishes references from stored copies and preserves the external original and remote records',
         'a discovered device binds reciprocally after its displayed route closes',
         'a file move with a delayed acknowledgement completes in the UI without resubmission',
         'an encrypted backup downloaded in Chromium restores with the exact Unicode passphrase',

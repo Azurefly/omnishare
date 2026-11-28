@@ -165,7 +165,7 @@ function isCurrentAuthContext(context) {
 function workspacePath(path, method='GET') {
   const u = new URL(path, location.origin)
   if (u.origin === location.origin && /^\/api\/v1\/(dashboard|notes|files|pads|folders|shares|trash|audit)$/.test(u.pathname) &&
-      (method === 'GET' || (method === 'DELETE' && u.pathname === '/api/v1/trash'))) u.searchParams.set('scope', 'all')
+      !u.searchParams.has('scope') && (method === 'GET' || (method === 'DELETE' && u.pathname === '/api/v1/trash'))) u.searchParams.set('scope', 'all')
   return u.pathname + u.search
 }
 
@@ -788,7 +788,7 @@ function renderStats() {
     ['视频', state.stats.videos_count || 0],
     ['安全分享', state.stats.active_shares || 0],
     ['回收站', state.stats.trash_count || 0],
-    ['已用存储', formatBytes(state.stats.storage_used || 0)]
+    ['文件库副本', formatBytes(state.stats.storage_used || 0)]
   ]
   const stats = $('#stats')
   const markup = items.map(([label, value]) => `
@@ -816,7 +816,6 @@ async function loadConfig(strict=false) {
       state.accessKey = ''
       sessionRemove('omnishare.accessKey')
     }
-    $('#dataDirText').textContent = '本机私有存储（路径未通过 API 暴露）'
     $('#uploadLimit').textContent = `单文件上限 ${formatBytes(state.config.max_upload_mb * 1024 * 1024)}`
     renderNodeSecurity()
     if (!$('#settingsDialog').open) fillSettings()
@@ -1794,12 +1793,22 @@ function fileIcon(f) {
   return `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`
 }
 
+function fileStorageKind(file) {
+  if (file.source_shortcut) return 'shortcut'
+  return file.storage_kind || (file.storage_path ? 'copy' : 'unknown')
+}
+
+function storageLabel(kind) {
+  return {shortcut:'文件快捷方式',copy:'文件库副本',record:'仅文件记录'}[kind] || '存储类型未知'
+}
+
 function fileAvailability(file) {
-  if (file.source_file_error) return escapeHTML(file.source_file_error)
-  if (file.source_shortcut && file.source_online !== false) return '文件快捷方式'
-  const remote = typeof file.id === 'string' && /^node-[0-9a-f]{20}~/.test(file.id)
-  if (!remote) return '本机文件'
-  return file.source_online === false ? '远端索引 · 来源离线' : '远端索引 · 按需读取'
+  const kind = fileStorageKind(file)
+  const remote = workspaceFileRef.test(file.id)
+  const parts = remote ? ['远端索引', file.source_online === false ? '来源离线' : '按需读取'] : []
+  parts.push(storageLabel(kind))
+  if (file.source_file_error) parts.push(file.source_file_error)
+  return parts.join(' · ')
 }
 
 function renderFiles() {
@@ -1813,7 +1822,7 @@ function renderFiles() {
         <div class="file-icon${fileKindClass(f)}">${fileIcon(f)}</div>
         <div class="file-description">
           <div class="file-meta-row">
-            ${sourceLabel(f)}<span class="file-availability">${fileAvailability(f)}</span>
+            ${sourceLabel(f)}<span class="file-availability" data-storage-kind="${escapeHTML(fileStorageKind(f))}">${escapeHTML(fileAvailability(f))}</span>
             ${f.folder ? `<button type="button" class="folder-chip" data-open-folder="${escapeHTML(f.folder)}" data-folder-kind="files">${uiIcon('folder-filled', 'folder-filled')}<span>${escapeHTML(f.folder)}</span></button>` : ''}
           </div>
           <h3 title="${escapeHTML(f.file_name)}">${escapeHTML(f.file_name)}</h3>
@@ -1834,7 +1843,7 @@ function renderFiles() {
     <div class="empty">
       <div class="empty-icon">${uiIcon('folder')}</div>
       <h3>没有匹配的文件</h3>
-      <p>点击右上角“上传本机文件”或直接拖放文件到此页面；仅在需要时按需传输</p>
+      <p>选择「导入副本」可把文件保存到当前设备的文件库。</p>
     </div>
   `
   renderDeliveryControls()
@@ -1950,10 +1959,95 @@ async function transferFile(file, button) {
   }
 }
 
-async function deleteFile(id) {
-  if (!await askConfirm('将该文件移入回收站？磁盘实体会暂时保留。', { title: '删除文件', confirmText: '移入回收站', danger: true })) return
+function fileRemovalText(kind, purge=false) {
+  if (kind === 'shortcut') return '清理的是快捷方式记录，外部原文件保留在原位置。'
+  if (kind === 'copy') return purge ? '永久移除这份副本，最后一个引用移除后释放文件内容占用的空间。' : '副本暂存在回收站，永久删除后才会释放对应的存储空间。'
+  if (kind === 'record') return '将清理这条文件记录。'
+  return '来源设备未提供存储类型，请在来源设备核对。'
+}
+
+const cleanupPageSize = 40
+const cleanupView = {offset:0, items:[], request:0, busy:false}
+
+function updateCleanupSelection() {
+  const boxes = [...$('#cleanupFiles').querySelectorAll('input:checked')]
+  const total = cleanupView.items.length
+  const toggle = $('#cleanupSelectPage')
+  toggle.checked = total > 0 && boxes.length === total
+  toggle.indeterminate = boxes.length > 0 && boxes.length < total
+  toggle.disabled = !total || cleanupView.busy
+  $('#cleanupSubmit').disabled = !boxes.length || cleanupView.busy
+  $('#cleanupSubmit').textContent = boxes.length ? `移入回收站（${boxes.length}）` : '移入回收站'
+  return boxes.map(box => box.value)
+}
+
+async function loadCleanupPage(offset=0) {
+  const request = ++cleanupView.request
+  const kind = $('#cleanupKind').value
+  const help = {
+    shortcut:'快捷方式引用设备上的原文件。移除记录后，原文件仍可在访达或资源管理器中找到。',
+    unavailable:'源文件可能被移动、修改，或位于暂时断开的磁盘上。请选择需要移除的记录。',
+    copy:'这些文件的内容已存入当前设备的文件库。移入回收站后可以恢复。',
+  }
+  $('#cleanupHelp').textContent = help[kind] || '每项均标明存储方式。只会处理当前设备上勾选的项目。'
+  cleanupView.offset = offset
+  cleanupView.items = []
+  $('#cleanupFiles').replaceChildren()
+  $('#cleanupError').textContent = ''
+  $('#cleanupPageInfo').textContent = '正在读取当前设备…'
+  $('#cleanupPrev').disabled = $('#cleanupNext').disabled = true
+  updateCleanupSelection()
   try {
-    await api(`/api/v1/files/${encodeURIComponent(id)}`, {method:'DELETE'})
+    const page = await apiPage(`/api/v1/files?scope=local&storage=${encodeURIComponent(kind)}&offset=${offset}&limit=${cleanupPageSize}`)
+    if (request !== cleanupView.request || !$('#fileCleanupDialog').open) return
+    if (offset > 0 && !page.items.length) return loadCleanupPage(Math.max(0, offset - cleanupPageSize))
+    cleanupView.items = page.items
+    $('#cleanupFiles').innerHTML = page.items.map(f => `<label class="cleanup-file">
+      <input type="checkbox" value="${escapeHTML(f.id)}" /><span><strong>${escapeHTML(f.file_name)}</strong>
+      <small>${escapeHTML(fileAvailability(f))}${f.folder ? ' · '+escapeHTML(f.folder) : ''}</small></span>
+      <span class="cleanup-size">${formatBytes(f.file_size)}</span></label>`).join('')
+    $('#cleanupPageInfo').textContent = page.total ? `第 ${offset+1}–${offset+page.items.length} 项，共 ${page.total} 项` : '当前分类没有文件'
+    $('#cleanupPrev').disabled = offset === 0
+    $('#cleanupNext').disabled = offset + page.items.length >= page.total
+    updateCleanupSelection()
+  } catch (err) {
+    if (request !== cleanupView.request) return
+    $('#cleanupPageInfo').textContent = ''
+    $('#cleanupError').textContent = err.message
+  }
+}
+
+async function cleanSelectedFiles() {
+  if (cleanupView.busy) return
+  const ids = updateCleanupSelection()
+  if (!ids.length) return
+  const selected = cleanupView.items.filter(f => ids.includes(f.id))
+  const counts = new Map()
+  for (const file of selected) {
+    const label = storageLabel(fileStorageKind(file))
+    counts.set(label, (counts.get(label) || 0) + 1)
+  }
+  const summary = [...counts].map(([label,n])=>`${label} ${n} 项`).join('、')
+  cleanupView.busy = true
+  updateCleanupSelection()
+  try {
+    if (!await askConfirm(`将当前设备的${summary}移入回收站？外部原文件会保留，库内副本可在回收站恢复。`, {title:'清理所选文件',confirmText:'移入回收站',danger:true})) return
+    const result = await api('/api/v1/files/bulk-delete', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})})
+    toast(`已将 ${result.deleted} 项移入当前设备的回收站`)
+    await Promise.all([loadCleanupPage(cleanupView.offset),loadFiles(),loadFolders('files'),loadDashboard()])
+  } catch (err) {
+    $('#cleanupError').textContent = err.message
+  } finally {
+    cleanupView.busy = false
+    updateCleanupSelection()
+  }
+}
+
+async function deleteFile(file) {
+  const owner = file.source_node_name || '当前设备'
+  if (!await askConfirm(`将「${file.file_name}」移到「${owner}」的回收站？${fileRemovalText(fileStorageKind(file))}`, { title: '删除文件', confirmText: '移入回收站', danger: true })) return
+  try {
+    await api(`/api/v1/files/${encodeURIComponent(file.id)}`, {method:'DELETE'})
     toast('文件已移入回收站')
     await Promise.all([loadFiles(), loadFolders('files'), loadDashboard()])
   } catch (err) {
@@ -3035,11 +3129,11 @@ function renderTrash() {
     <article class="card trash-card" data-trash-type="${escapeHTML(item.object_type)}" data-trash-id="${escapeHTML(item.id)}">
       <div>
         <div class="note-meta">
-          <span class="tag">${labels[item.object_type] || escapeHTML(item.object_type)}</span>
+          <span class="tag">${item.object_type === 'file' ? storageLabel(fileStorageKind(item)) : labels[item.object_type] || escapeHTML(item.object_type)}</span>
           <span>删除于 ${formatDate(item.deleted_at)}</span>
         </div>
         ${sourceLabel(item)}<h3>${escapeHTML(item.name)}</h3>
-        ${item.size ? `<p class="muted-text">${formatBytes(item.size)}</p>` : ''}
+        ${item.size ? `<p class="muted-text">${fileStorageKind(item) === 'shortcut' ? '源文件大小 ' : ''}${formatBytes(item.size)}</p>` : ''}
       </div>
       <div class="file-actions">
         <button class="button ghost small restore-trash">${uiIcon('restore')}<span>恢复</span></button>
@@ -3066,7 +3160,9 @@ async function restoreTrash(type, id) {
 }
 
 async function purgeTrash(type, id) {
-  if (!await askConfirm('永久删除后将无法恢复，是否确认删除？', { title: '永久删除', confirmText: '永久删除', danger: true })) return
+  const item = state.trash.find(row => row.object_type === type && row.id === id)
+  const impact = type === 'file' && item ? fileRemovalText(fileStorageKind(item),true) : '永久删除后无法恢复。'
+  if (!await askConfirm(`永久删除「${item?.name || '所选记录'}」？${impact}`, { title: '永久删除', confirmText: '永久删除', danger: true })) return
   try {
     await api(`/api/v1/trash/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, {method:'DELETE'})
     toast('已彻底永久删除')
@@ -3078,7 +3174,7 @@ async function purgeTrash(type, id) {
 
 async function emptyTrash() {
   if (!state.trash.length) return
-  if (!await askConfirm('确定要清空整个回收站吗？所有暂存文件与记录将永久不可恢复！', { title: '清空回收站', confirmText: '确认清空', danger: true })) return
+  if (!await askConfirm('清空当前设备及在线绑定设备的整个回收站？所有类型都会清理，包括当前筛选未显示的项目。文件库副本会永久移除，快捷方式的外部原文件会保留。', { title: '清空回收站', confirmText: '确认清空', danger: true })) return
   try {
     await api('/api/v1/trash', {method:'DELETE'})
     toast(state.workspaceStatus?.partial ? '在线设备回收站已处理；离线设备未清空' : '所有已绑定设备的回收站已清空', !!state.workspaceStatus?.partial)
@@ -3188,18 +3284,28 @@ function openBindDialog(url='', deviceId='') {
 
 async function submitPeerBinding() {
   if (state.peerBinding) return
+  const dialog = $('#bindPeerDialog')
+  const url = $('#bindPeerURL').value.trim()
   state.peerBinding = true; $('#bindPeerSubmitBtn').disabled = true
   $('#bindPeerError').textContent = '正在连接并完成双向绑定…'
   try {
-    const binding = {url:$('#bindPeerURL').value.trim(), access_key:$('#bindPeerKey').value}
-    const deviceId = $('#bindPeerDialog').dataset.deviceId
+    const binding = {url, access_key:$('#bindPeerKey').value}
+    const deviceId = dialog.dataset.deviceId
     if (deviceId) binding.node_id = deviceId
-    await api('/api/v1/peers/bind', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(binding)})
+    const result = await api('/api/v1/peers/bind', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(binding)})
     $('#bindPeerKey').value = ''; $('#bindPeerDialog').close()
-    toast('双向绑定成功，两端工作区已合并')
+    if (result?.already_bound) {
+      toast(result.alias ? `连接地址已合并到「${result.alias}」` : '连接地址已合并到原有设备')
+    } else if (result?.return_url && deviceRouteLabel(result.return_url) !== deviceRouteLabel(result.url)) {
+      toast(`双向绑定成功，本机通过${deviceRouteLabel(result.url)}连接，对方通过${deviceRouteLabel(result.return_url)}回连`)
+    } else {
+      toast('双向绑定成功，两端工作区已合并')
+    }
     await loadAll()
     if (state.activeTab !== 'dashboard') await refreshWorkspace()
-  } catch (err) { $('#bindPeerError').textContent = err.message }
+  } catch (err) {
+    $('#bindPeerError').textContent = err.message
+  }
   finally { state.peerBinding = false; $('#bindPeerSubmitBtn').disabled = false }
 }
 
@@ -3234,15 +3340,17 @@ function displayDevices(devices) {
     if (!key) continue
     const previous = merged.get(key)
     if (!previous) { merged.set(key, {...device, addresses:deviceAddresses(device)}); continue }
-    const priority = d => (d.is_local ? 4 : 0) + (d.bound ? 2 : 0) + (d.online ? 1 : 0)
+    const priority = d => (d.is_local ? 4 : 0) + (d.online ? 2 : 0) + (d.bound ? 1 : 0)
     const preferred = priority(device) > priority(previous) ? device : previous
-    merged.set(key, {...preferred, addresses:[...new Set([...deviceAddresses(preferred), ...deviceAddresses(previous), ...deviceAddresses(device)])]})
+    const saved = previous.bound ? previous : device.bound ? device : preferred
+    merged.set(key, {...preferred, bound:!!(previous.bound || device.bound), alias:saved.alias,
+      addresses:[...new Set([...deviceAddresses(preferred), ...deviceAddresses(previous), ...deviceAddresses(device)])]})
   }
   return [...merged.values()]
 }
 
 function openDeviceAliasDialog(deviceId) {
-  const device = state.devices.find(d => d.id === deviceId)
+  const device = displayDevices(state.devices).find(d => d.id === deviceId)
   if (!device) return
   state.editingDeviceAlias = deviceId
   const current = (device.alias || (device.is_local && device.hostname !== 'OmniShare' ? device.hostname : '') || '').trim()
@@ -3708,6 +3816,20 @@ function bindEvents() {
 
   $('#fileSearch').addEventListener('input', debounce(() => loadFiles()))
   $('#fileType').addEventListener('change', () => loadFiles())
+  $('#openCleanupBtn').addEventListener('click', () => {
+    $('#cleanupKind').value = 'shortcut'
+    $('#fileCleanupDialog').showModal()
+    void loadCleanupPage()
+  })
+  $('#cleanupKind').addEventListener('change', () => void loadCleanupPage())
+  $('#cleanupPrev').addEventListener('click', () => void loadCleanupPage(Math.max(0, cleanupView.offset - cleanupPageSize)))
+  $('#cleanupNext').addEventListener('click', () => void loadCleanupPage(cleanupView.offset + cleanupPageSize))
+  $('#cleanupFiles').addEventListener('change', updateCleanupSelection)
+  $('#cleanupSelectPage').addEventListener('change', e => {
+    for (const box of $('#cleanupFiles').querySelectorAll('input')) box.checked = e.target.checked
+    updateCleanupSelection()
+  })
+  $('#cleanupSubmit').addEventListener('click', () => void cleanSelectedFiles())
   $('#filesList').addEventListener('click', e => {
     const chip = e.target.closest('.folder-chip')
     if (chip) { selectFolder('files', chip.dataset.openFolder); return }
@@ -3723,7 +3845,7 @@ function bindEvents() {
     if (e.target.closest('.share-file')) openShare('file', f.id, f.file_name)
     if (e.target.closest('.move-file')) openMoveItemModal('files', f)
     if (e.target.closest('.rename-file')) renameFile(f)
-    if (e.target.closest('.delete-file')) deleteFile(f.id)
+    if (e.target.closest('.delete-file')) void deleteFile(f)
   })
 
   $('#newPadBtn').addEventListener('click', createPad)

@@ -14,7 +14,7 @@ const apiSource = await readFile(new URL('../../backend/internal/api/api.go', im
 const csp = apiSource.match(/Set\("Content-Security-Policy", "([^"]+)"/)[1]
 const stamp = '2026-11-07T08:30:00Z'
 const notes = [{id:'n-demo', content:'今天的灵感，随时接着写。\n把文本、代码和文件留在自己的设备上。', tags:['灵感','工作'], updated_at:stamp, pinned:true}]
-const files = [{id:'f-demo', file_name:'产品设计讨论记录.md', file_size:12680, mime_type:'text/markdown', download_count:2}]
+const files = [{id:'f-demo', file_name:'产品设计讨论记录.md', file_size:12680, mime_type:'text/markdown', download_count:2, storage_kind:'copy'}]
 const writes = []
 let failDevices = false
 let expectedDeviceConsoleErrors = 0
@@ -204,6 +204,22 @@ try {
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark')
     await screenshot('dashboard-dark-desktop')
     await page.locator('#themeToggle').click()
+  })
+  await check('glass navigation respects reduced transparency and keyboard focus in both themes', async () => {
+    const cdp = await context.newCDPSession(page)
+    try {
+      for (const theme of ['light','dark']) {
+        assert.equal(await page.locator('html').getAttribute('data-theme'),theme)
+        assert.match(await page.locator('.topbar').evaluate(el=>getComputedStyle(el).backdropFilter),/blur/)
+        await cdp.send('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-transparency',value:'reduce'}]})
+        assert.equal(await page.locator('.topbar').evaluate(el=>getComputedStyle(el).backdropFilter),'none')
+        await page.locator('#themeToggle').focus()
+        await page.keyboard.press('Tab')
+        assert.equal(await page.locator('#settingsBtn').evaluate(el=>el.matches(':focus-visible')),true)
+        await cdp.send('Emulation.setEmulatedMedia',{features:[]})
+        await page.locator('#themeToggle').click()
+      }
+    } finally { await cdp.detach() }
   })
   await check('settings retain labels, controls and keyboard dismissal', async () => {
     await page.locator('#settingsBtn').click()

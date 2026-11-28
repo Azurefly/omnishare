@@ -20,9 +20,7 @@ async function api(base,path,method='GET',data){const r=await fetch(base+path,{m
 async function start(name){const port=await freePort(),base=`http://127.0.0.1:${port}`;const child=spawn(binary,['--port',String(port),'--name',name,'--data-dir',join(root,name),'--listen','127.0.0.1','--no-browser','--shutdown-on-stdin-close'],{stdio:['pipe','ignore','ignore']});children.push(child);for(let i=0;i<100;i++){try{await api(base,'/api/v1/health');return base;}catch{await delay(100);}}throw new Error('test server failed to start');}
 async function waitText(page,selector,value){await page.waitForFunction(({selector,value})=>document.querySelector(selector)?.value===value,{selector,value},{timeout:12000});}
 
-async function checkDiscoveredBinding(page, a, b) {
- const remote = (await api(b, '/api/v1/peers/identity')).data;
- await api(a, '/api/v1/peers/' + remote.id, 'DELETE');
+async function secondAddress(b) {
  const relay = createServer(client => {
    const upstream = createConnection({host:'127.0.0.1', port:Number(new URL(b).port)});
    client.on('error', () => upstream.destroy());
@@ -33,7 +31,31 @@ async function checkDiscoveredBinding(page, a, b) {
  });
  relay.listen(0, '127.0.0.1');
  await once(relay, 'listening');
- const primary = 'http://127.0.0.1:' + relay.address().port;
+ return {relay, url:'http://127.0.0.1:' + relay.address().port};
+}
+
+async function checkFailedReturn(page, a, b) {
+ const port = await freePort();
+ await api(a, '/api/v1/config', 'PUT', {port, allow_lan:false, keep_access_key:true});
+ try {
+   await page.locator('#bindDeviceBtn').click();
+   await page.locator('#bindPeerURL').fill(b);
+   await page.locator('#bindPeerSubmitBtn').click();
+   const diagnosis = page.locator('#bindPeerError');
+   await diagnosis.filter({hasText:'端口拒绝连接'}).waitFor({timeout:20000});
+   assert.ok((await diagnosis.innerText()).includes('http://127.0.0.1:' + port));
+   for (const base of [a,b]) assert.ok(!(await api(base, '/api/v1/devices')).data.some(d=>d.bound && !d.is_local));
+   await page.locator('#cancelBindPeerBtn').click();
+   checks.push('a failed return shows the actual address and reason and leaves both devices unbound');
+ } finally {
+   await api(a, '/api/v1/config', 'PUT', {port:Number(new URL(a).port), allow_lan:false, keep_access_key:true});
+ }
+}
+
+async function checkDiscoveredBinding(page, a, b) {
+ const remote = (await api(b, '/api/v1/peers/identity')).data;
+ await api(a, '/api/v1/peers/' + remote.id, 'DELETE');
+ const {relay, url:primary} = await secondAddress(b);
  try {
    await api(a, '/api/v1/config', 'PUT', {allow_lan:false, keep_access_key:true, peers:[{name:remote.name, url:primary}]});
    await page.goto(a, {waitUntil:'networkidle'});
@@ -56,6 +78,84 @@ async function checkDiscoveredBinding(page, a, b) {
    if (relay.listening) relay.close();
    await api(a, '/api/v1/config', 'PUT', {allow_lan:false, keep_access_key:true, peers:[]});
  }
+}
+
+async function checkBoundRouteAlias(page, a, b) {
+ const remote = (await api(b, '/api/v1/peers/identity')).data;
+ const card = page.locator(`[data-device-id="${remote.id}"]`);
+ const {relay, url} = await secondAddress(b);
+ try {
+   await card.locator('.rename-device').click();
+   await page.locator('#deviceAliasInput').fill('工作台式机');
+   await page.locator('#saveDeviceAliasBtn').click();
+   await card.filter({hasText:'工作台式机'}).waitFor();
+   await page.locator('#bindDeviceBtn').click();
+   await page.locator('#bindPeerURL').fill(url);
+   await page.locator('#bindPeerSubmitBtn').click();
+   await page.locator('#toast').filter({hasText:'连接地址已合并到「工作台式机」'}).waitFor({timeout:18000});
+   const matches = (await api(a,'/api/v1/devices')).data.filter(d => d.id === remote.id);
+   assert.equal(matches.length,1);
+   assert.equal(matches[0].alias,'工作台式机');
+   assert.ok(matches[0].bound && [b,url].every(addr => matches[0].addresses.some(route=>new URL(route).origin === addr)));
+   assert.equal((await api(b,'/api/v1/devices')).data.filter(d=>d.bound && !d.is_local).length,1);
+   await card.locator('.rename-device').click();
+   assert.equal(await page.locator('#deviceAliasInput').inputValue(),'工作台式机');
+   await page.locator('#deviceAliasInput').fill('');
+   await page.locator('#saveDeviceAliasBtn').click();
+   await page.locator('#deviceAliasDialog').waitFor({state:'hidden'});
+   checks.push('two addresses for one signed device merge with its alias and one reciprocal registration');
+ } finally { relay.close(); }
+}
+
+async function checkFileCleanup(page, a, b) {
+ const original = join(root, '清理用原文件.txt');
+ const contents = '清理快捷方式后仍可读取的原文件';
+ await writeFile(original,contents);
+ const link = (await api(a,'/api/v1/local-files/shortcuts','POST',{path:original})).data;
+ const upload = new FormData();
+ upload.append('file',new Blob([contents]),'清理用副本.txt');
+ const response = await fetch(a+'/api/v1/files/upload',{method:'POST',body:upload});
+ assert.equal(response.status,201);
+ const copy = (await response.json()).data;
+ const remote = (await api(b,'/api/v1/local-files/shortcuts','POST',{path:original})).data;
+ const copyPath = join(root,'工作站 A',copy.storage_path);
+ assert.equal(copy.storage_kind,'copy');
+ await page.locator('.tab[data-tab="files"]').click();
+ await page.locator('#openCleanupBtn').click();
+ const dialog = page.locator('#fileCleanupDialog');
+ const linkRow = dialog.locator('.cleanup-file').filter({hasText:link.file_name});
+ await linkRow.waitFor();
+ assert.equal(await linkRow.count(),1);
+ assert.equal(await dialog.locator('input[value="'+remote.id+'"]').count(),0);
+ assert.equal(await dialog.locator('input[value="'+copy.id+'"]').count(),0);
+ await linkRow.getByRole('checkbox').check();
+ await page.locator('#cleanupSubmit').click();
+ await page.locator('#confirmDialogMessage').filter({hasText:'文件快捷方式 1 项'}).waitFor();
+ await page.locator('#confirmCancelBtn').click();
+ assert.ok((await api(a,'/api/v1/files?scope=local')).data.some(f=>f.id===link.id));
+ await page.locator('#cleanupSubmit').click();
+ await page.locator('#confirmSubmitBtn').click();
+ await linkRow.waitFor({state:'detached'});
+ await page.locator('#cleanupKind').selectOption('copy');
+ await dialog.locator('input[value="'+copy.id+'"]').check();
+ await page.locator('#cleanupSubmit').click();
+ await page.locator('#confirmDialogMessage').filter({hasText:'文件库副本 1 项'}).waitFor();
+ await page.locator('#confirmSubmitBtn').click();
+ await dialog.locator('input[value="'+copy.id+'"]').waitFor({state:'detached'});
+ await dialog.getByRole('button',{name:'关闭'}).click();
+ assert.equal(await readFile(copyPath,'utf8'),contents);
+ await page.locator('.tab[data-tab="trash"]').click();
+ for (const [asset,kind] of [[link,'文件快捷方式'],[copy,'文件库副本']]) {
+   const row = page.locator(`[data-trash-id="${asset.id}"]`);
+   await row.locator('.tag').filter({hasText:kind}).waitFor();
+   await row.locator('.purge-trash').click();
+   await page.locator('#confirmSubmitBtn').click();
+   await row.waitFor({state:'detached'});
+ }
+ assert.equal(await readFile(original,'utf8'),contents);
+ await assert.rejects(readFile(copyPath),{code:'ENOENT'});
+ assert.ok((await api(b,'/api/v1/files')).data.some(f=>f.id===remote.id));
+ checks.push('local cleanup distinguishes references from stored copies and preserves the external original and remote records');
 }
 async function assertWritingViewport(page, sourceSelector, saveSelector, minSourceHeight) {
  const {source,save,height}=await page.evaluate(({sourceSelector,saveSelector}) => {
@@ -152,6 +252,7 @@ async function exerciseWorkspace() {
  page.off('request', captureBind);
  assert.equal(bindWrites.length, 0, 'Closing the binding dialog must not send a binding request');
  checks.push('closing the binding dialog before confirmation sends no request');
+ await checkFailedReturn(page, a, b);
  await page.locator('#bindDeviceBtn').click();await page.locator('#bindPeerURL').fill(b);await page.locator('#bindPeerSubmitBtn').click();
  await page.waitForFunction(()=>!document.querySelector('#bindPeerDialog').open,null,{timeout:25000});
  await page.locator('.tab[data-tab="notes"]').click();
@@ -160,6 +261,7 @@ async function exerciseWorkspace() {
  const devices=(await api(b,'/api/v1/devices')).data;
  assert.ok(devices.some(d=>d.bound&&!d.is_local));checks.push('one-sided binding creates reciprocal device registration and merged notes');
  await checkDiscoveredBinding(page, a, b);
+ await checkBoundRouteAlias(page, a, b);
  await page.locator('.device').filter({has:page.locator('.unbind-device')}).locator('.rename-device').click();
  await page.locator('#deviceAliasInput').fill('unsaved alias');
  await page.locator('#deviceAliasDialog').getByRole('button', {name:'关闭', exact:true}).click();
@@ -408,6 +510,7 @@ async function exerciseWorkspace() {
  assert.equal(await readFile(await download.path(),'utf8'),sample);
  checks.push('note and document references share the picker; a real file move removes the source and preserves the note reference');
  await checkBackupAndRecovery(a);
+ await checkFileCleanup(page,a,b);
 }
 
 try {

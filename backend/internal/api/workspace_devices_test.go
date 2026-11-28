@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,12 +93,23 @@ func TestBindUsesIndependentlyDiscoveredReturnRoute(t *testing.T) {
 	if status != http.StatusBadGateway || !strings.Contains(fmt.Sprint(result["message"]), fmt.Sprintf("TCP %d", port)) || len(a.s.boundPeers())+len(b.s.boundPeers()) != 0 {
 		t.Fatalf("missing callback diagnosis or unexpected binding: %v", result)
 	}
+	if message := fmt.Sprint(result["message"]); !strings.Contains(message, closed.URL) || !strings.Contains(message, "端口拒绝连接") {
+		t.Fatalf("callback address or its own refusal was lost: %v", result)
+	}
 	aID.Addresses = []string{a.http.URL}
 	b.s.peers.tailNodes = []peerIdentity{aID}
 	status, result, _ = wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", request, "")
 	bound, ok := b.s.boundPeer(aID.ID)
 	if status != http.StatusOK || !ok || bound.URL != a.http.URL {
 		t.Fatalf("independently proven callback was not used: %v", result)
+	}
+	b.s.peers.tailNodes = nil
+	if err := a.s.removePeer(b.cfg.Get().NodeID); err != nil {
+		t.Fatal(err)
+	}
+	status, result, _ = wsCall(t, a, http.MethodPost, "/api/v1/peers/bind", request, "")
+	if status != http.StatusOK || result["data"].(map[string]any)["return_url"] != a.http.URL {
+		t.Fatalf("the receiver forgot its previously verified return path: %v", result)
 	}
 }
 
@@ -181,6 +193,130 @@ func TestWorkspaceDevicesMergeRoutesBeforeAndAfterIdentityResolution(t *testing.
 	}
 	if addresses[b.http.URL+"/"] {
 		t.Fatal("equivalent routes were not canonicalized")
+	}
+}
+
+func TestKnownDeviceAddsAnotherRouteWithoutRebindingOrLosingAlias(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "Mac"), newWorkspaceFixture(t, "PC")
+	wsBind(t, a, b, "")
+	first, _ := a.s.boundPeer(b.cfg.Get().NodeID)
+	if err := a.s.setPeerAlias(first.Identity.ID, "工作电脑"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := b.cfg.Get()
+	enabled := true
+	cfg.AccessKeyEnabled, cfg.AccessKey = &enabled, "fixture-key"
+	if err := b.cfg.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	var accepts atomic.Int32
+	handler := b.s.Handler()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/peers/accept" {
+			accepts.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer second.Close()
+	status, reply, _ := wsCall(t, a, "POST", "/api/v1/peers/bind", map[string]string{"url": second.URL}, "")
+	if status != 200 || reply["data"].(map[string]any)["already_bound"] != true || accepts.Load() != 0 {
+		t.Fatalf("new endpoint required another pairing: %d %v", status, reply)
+	}
+	restarted := New(a.s.store, a.cfg)
+	peers := restarted.boundPeers()
+	if len(peers) != 1 || peers[0].Alias != "工作电脑" || !peers[0].BoundAt.Equal(first.BoundAt) || peers[0].URL != second.URL ||
+		!slices.Contains(verifiedPeerURLs(peers[0]), b.http.URL) {
+		t.Fatalf("original binding, alias or routes were lost after restart: %+v", peers)
+	}
+}
+
+func TestAddingKnownAddressRequiresFreshReturnConnection(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "Mac"), newWorkspaceFixture(t, "PC")
+	wsBind(t, a, b, "")
+	localUI := httptest.NewServer(a.s.Handler())
+	defer localUI.Close()
+	newRoute := httptest.NewServer(b.s.Handler())
+	defer newRoute.Close()
+	a.http.Close()
+	caller := &workspaceFixture{s: a.s, cfg: a.cfg, http: localUI}
+	status, reply, _ := wsCall(t, caller, "POST", "/api/v1/peers/bind", map[string]string{"url": newRoute.URL}, "")
+	saved, _ := a.s.boundPeer(b.cfg.Get().NodeID)
+	if status != 502 || !strings.Contains(fmt.Sprint(reply["message"]), a.http.URL) || slices.Contains(verifiedPeerURLs(saved), newRoute.URL) {
+		t.Fatalf("stale mutual registration was accepted without a fresh callback: %d %v", status, reply)
+	}
+}
+
+func TestManualDiscoveryRestoresOfflineBoundDeviceWithItsAlias(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "Mac"), newWorkspaceFixture(t, "PC")
+	wsBind(t, a, b, "")
+	id := b.cfg.Get().NodeID
+	if err := a.s.setPeerAlias(id, "家中电脑"); err != nil {
+		t.Fatal(err)
+	}
+	second := httptest.NewServer(b.s.Handler())
+	defer second.Close()
+	b.http.Close()
+	cfg := a.cfg.Get()
+	cfg.Peers, cfg.KeepAccessKey = []model.PeerConfig{{Name: "新地址", URL: second.URL}}, true
+	if err := a.cfg.Update(cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, reply, _ := wsCall(t, a, "GET", "/api/v1/devices?refresh=1", nil, "")
+	devices := reply["data"].([]any)
+	if len(devices) != 2 {
+		t.Fatalf("unexpected device count: %d", len(devices))
+	}
+	card := devices[1].(map[string]any)
+	if card["id"] != id || card["online"] != true || card["bound"] != true || card["alias"] != "家中电脑" || card["url"] != second.URL {
+		t.Fatalf("reachable route lost its existing identity or alias: %v", card)
+	}
+	saved, _ := New(a.s.store, a.cfg).boundPeer(id)
+	if !slices.Contains(verifiedPeerURLs(saved), second.URL) || a.s.peerBackoff(id) != nil {
+		t.Fatal("alternate route was shown but could not be used")
+	}
+}
+
+func TestRebindKeepsAliasWithoutRestoringRevokedAccess(t *testing.T) {
+	a, b := newWorkspaceFixture(t, "Mac"), newWorkspaceFixture(t, "PC")
+	wsBind(t, a, b, "")
+	id := b.cfg.Get().NodeID
+	if err := a.s.setPeerAlias(id, "工作电脑"); err != nil {
+		t.Fatal(err)
+	}
+	wsCall(t, a, "DELETE", "/api/v1/peers/"+id, nil, "")
+	restarted := New(a.s.store, a.cfg)
+	if _, ok := restarted.boundPeer(id); ok || !restarted.peers.revoked[id] || restarted.peers.revokedAliases[id] != "工作电脑" {
+		t.Fatal("revoking trust did not preserve the local name independently")
+	}
+	second := httptest.NewServer(b.s.Handler())
+	defer second.Close()
+	status, _, _ := wsCall(t, a, "POST", "/api/v1/peers/bind", map[string]string{"url": second.URL}, "")
+	saved, ok := a.s.boundPeer(id)
+	if status != 200 || !ok || saved.Alias != "工作电脑" {
+		t.Fatal("explicit pairing at a new address did not restore the local alias")
+	}
+}
+
+func TestTailCallbackUsesOnlyCorroboratedPrivateAddresses(t *testing.T) {
+	a := newWorkspaceFixture(t, "PC")
+	_, subnet, _ := net.ParseCIDR("192.168.31.0/24")
+	a.s.localCache.Store(&localNetworkSnapshot{addrs: map[string]struct{}{"192.168.31.200": {}}, lanSubnets: []*net.IPNet{subnet}, until: time.Now().Add(time.Minute)})
+	const tail = "100.64.162.25"
+	const lan = "http://192.168.31.99:8081"
+	const v6 = "http://[fd7a:115c:a1e0::25]:8081"
+	caller := peerIdentity{Port: 8081, Addresses: []string{lan, v6, "http://192.168.31.200:8081", "http://10.0.0.1:8081", "http://192.168.31.99:41641"}}
+	status := tailStatus{Peer: map[string]*tailPeer{"mac": {Online: true, CurAddr: "192.168.31.99:41641", TailscaleIPs: []string{tail, "fd7a:115c:a1e0::25"}}}}
+	a.s.cacheTailReturnIPs(status, time.Now())
+	got := a.s.tailReturnRoutes(context.Background(), net.ParseIP(tail), caller, "http")
+	if !slices.Equal(got, []string{v6, lan}) {
+		t.Fatalf("unexpected return paths: %v", got)
+	}
+	for _, endpoint := range []string{"203.0.113.2:41641", "10.0.0.1:41641", "192.168.31.200:41641", ""} {
+		status.Peer["mac"].CurAddr = endpoint
+		a.s.cacheTailReturnIPs(status, time.Now())
+		if got := a.s.tailReturnRoutes(context.Background(), net.ParseIP(tail), caller, "http"); !slices.Equal(got, []string{v6}) {
+			t.Fatalf("unexpected LAN path for %q: %v", endpoint, got)
+		}
 	}
 }
 

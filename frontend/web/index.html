@@ -110,7 +110,7 @@
             <div class="card-title">
               <div>
                 <h2>存储概览</h2>
-                <p id="dataDirText">本机私有存储（路径未通过 API 暴露）</p>
+                <p id="dataDirText" title="私有数据目录的绝对路径未通过 API 暴露">工作区文件库副本，含回收站</p>
               </div>
             </div>
             <p id="storageBar" class="storage-capacity-note">未设置总容量配额</p>
@@ -219,8 +219,8 @@
                     </select>
                   </div>
                   <div class="inline-actions">
-                    <span class="file-index-notice" title="绑定只同步文件名称、大小和来源，点击下载或播放时按需读取原文件">索引 · 按需读取</span>
-                    <button id="openShortcutBtn" type="button" class="button primary small" hidden>添加本机文件</button>
+                    <button id="openCleanupBtn" type="button" class="button ghost small">清理当前设备</button>
+                    <button id="openShortcutBtn" type="button" class="button primary small" hidden>添加快捷方式</button>
                     <button id="openUploadFileBtn" type="button" class="button ghost small"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><use href="#icon-upload"></use></svg><span>导入副本</span></button>
                   </div>
                 </div>
@@ -818,6 +818,24 @@
         <button type="submit" id="saveDeviceAliasBtn" class="button primary">保存别名</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="fileCleanupDialog" class="modal" aria-labelledby="fileCleanupTitle">
+    <div class="modal-card">
+      <div class="modal-head"><h2 id="fileCleanupTitle">清理当前设备</h2><button type="button" data-close-dialog class="button ghost small">关闭</button></div>
+      <label>查看<select id="cleanupKind">
+        <option value="shortcut">文件快捷方式</option><option value="unavailable">源文件不可用的快捷方式</option>
+        <option value="copy">文件库副本</option><option value="">全部文件记录</option>
+      </select></label>
+      <p class="muted-text" id="cleanupHelp"></p>
+      <div class="cleanup-nav"><label><input id="cleanupSelectPage" type="checkbox" />选择本页</label><span id="cleanupPageInfo" role="status"></span></div>
+      <div id="cleanupFiles" class="cleanup-files"></div>
+      <p id="cleanupError" class="error-text" role="alert"></p>
+      <div class="modal-actions">
+        <button id="cleanupPrev" type="button" class="button ghost small">上一页</button>
+        <button id="cleanupNext" type="button" class="button ghost small">下一页</button>
+        <button id="cleanupSubmit" type="button" class="button danger" disabled>移入回收站</button>
+      </div>
+    </div>
   </dialog>
   <dialog id="shortcutDialog" class="modal" aria-labelledby="shortcutTitle">
     <form id="shortcutForm" class="modal-card">

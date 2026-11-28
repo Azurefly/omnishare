@@ -23,7 +23,7 @@ function appWith(fetcher) {
     fetch:async(url,init={})=>{requests.push({url,method:init.method||'GET'});return fetcher?fetcher(url,init):Response.json({code:0,data:[]})}
   })
   vm.runInContext(source,context)
-  const app=vm.runInContext('({state,renderDevices,displayDevices,deviceRouteLabel,deviceAddresses,renderFiles,loadFiles,openDownload,playFile,updateUploadSummary,fileAvailability})',context)
+  const app=vm.runInContext('({state,renderDevices,displayDevices,deviceDisplayName,deviceRouteLabel,deviceAddresses,renderFiles,loadFiles,openDownload,playFile,updateUploadSummary,fileAvailability})',context)
   return {app,element,requests,details,downloads}
 }
 const local={id:'node-aaaaaaaaaaaaaaaaaaaa',hostname:'OmniShare',is_local:true,online:true,bound:true,
@@ -52,6 +52,17 @@ test('route classifications handle the complete Tailscale range, not all 100.* a
  assert.equal(app.deviceRouteLabel('http://100.128.1.2:8081'),'局域网')
  assert.equal(app.deviceRouteLabel('http://[fd7a:115c:a1e0::2]:8081'),'Tailscale')
  assert.equal(app.deviceRouteLabel('http://127.0.0.1:8081'),'本机')
+})
+test('an online alternate route keeps the saved alias and a single bound card',()=>{
+ const {app}=appWith()
+ const saved={...remote, online:false, bound:true, alias:'工作台式机'}
+ const wifi={...remote, url:'http://192.168.31.99:8081', online:true, bound:false, alias:''}
+ for(const rows of [[saved,wifi],[wifi,saved]]) {
+   const [device]=app.displayDevices(rows)
+   assert.equal(app.displayDevices(rows).length,1)
+   assert.equal(device.url,wifi.url);assert.equal(device.online,true)
+   assert.equal(device.bound,true);assert.equal(app.deviceDisplayName(device),'工作台式机')
+ }
 })
 test('expanded connection details survive periodic device refresh',()=>{
  const {app,details}=appWith();app.state.devices=[local,remote];app.renderDevices()

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ type tailPeer struct {
 	DNSName      string
 	Online       bool
 	TailscaleIPs []string
+	CurAddr      string
 }
 type boundedTailOutput struct{ bytes.Buffer }
 
@@ -84,6 +86,71 @@ func tailIPs(values []string) []string {
 		}
 	}
 	return out
+}
+
+// Corroborate the caller's addresses with the local Tailscale daemon. CurAddr
+// is a WireGuard transport endpoint; only its host can identify a Wi-Fi route.
+func (s *Server) cacheTailReturnIPs(status tailStatus, now time.Time) {
+	byIP := make(map[string][]string)
+	local := s.localNetwork()
+	for _, peer := range status.Peer {
+		if peer == nil || !peer.Online {
+			continue
+		}
+		tail := tailIPs(peer.TailscaleIPs)
+		hosts := append([]string(nil), tail...)
+		host, _, err := net.SplitHostPort(peer.CurAddr)
+		ip := net.ParseIP(host)
+		if err == nil && local != nil && ip.To4() != nil && ip.IsPrivate() {
+			_, self := local.addrs[ip.String()]
+			for _, subnet := range local.lanSubnets {
+				if !self && subnet.Contains(ip) {
+					hosts = append(hosts, ip.String())
+					break
+				}
+			}
+		}
+		for _, addr := range tail {
+			byIP[addr] = hosts
+		}
+	}
+	s.peers.tailMu.Lock()
+	s.peers.tailReturnIPs, s.peers.tailReturnAt = byIP, now
+	s.peers.tailMu.Unlock()
+}
+
+func (s *Server) tailReturnRoutes(ctx context.Context, source net.IP, caller peerIdentity, scheme string) []string {
+	if !tailRange.Contains(source) && !strings.HasPrefix(source.String(), "fd7a:115c:a1e0:") {
+		return nil
+	}
+	// The same-LAN endpoint can appear only after the incoming connection.
+	// Refresh status on demand, without scheduling a tailnet service scan.
+	s.peers.tailMu.RLock()
+	stale := time.Since(s.peers.tailReturnAt) > 5*time.Second
+	s.peers.tailMu.RUnlock()
+	if stale && s.peers.tailReturnMu.TryLock() {
+		probe, cancel := context.WithTimeout(ctx, time.Second)
+		status, err := readTailStatus(probe)
+		cancel()
+		if err == nil {
+			s.cacheTailReturnIPs(status, time.Now())
+		} else {
+			s.cacheTailReturnIPs(tailStatus{}, time.Now())
+		}
+		s.peers.tailReturnMu.Unlock()
+	}
+	s.peers.tailMu.RLock()
+	hosts := s.peers.tailReturnIPs[source.String()]
+	s.peers.tailMu.RUnlock()
+	advertised := mergePeerURLs(caller.Addresses)
+	var routes []string
+	for _, host := range hosts {
+		base := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(caller.Port))
+		if host != source.String() && slices.Contains(advertised, base) {
+			routes = append(routes, base)
+		}
+	}
+	return routes
 }
 
 const (
@@ -181,6 +248,7 @@ func (s *Server) refreshTailDevices(parent context.Context, force bool) {
 
 func (s *Server) refreshTailDevicesFromStatus(ctx context.Context, status tailStatus, now time.Time, force bool) {
 	cfg := s.cfg.Get()
+	s.cacheTailReturnIPs(status, now)
 	s.peers.tailMu.Lock()
 	if status.Self != nil {
 		s.peers.tailSelf = tailIPs(status.Self.TailscaleIPs)

@@ -302,6 +302,17 @@ func (s *Store) WithSnapshot(fn func(stateJSON []byte, files []model.FileAsset) 
 	return fn(data, files)
 }
 
+// FileStorageKind also classifies records created before storage_kind existed.
+func FileStorageKind(storagePath string) string {
+	if storagePath == "" {
+		return "record"
+	}
+	if strings.HasPrefix(strings.ReplaceAll(storagePath, `\`, "/"), "uploads/shortcuts/") {
+		return "shortcut"
+	}
+	return "copy"
+}
+
 // ValidateStoragePath accepts only slash-separated relative paths inside the
 // uploads directory. An empty path means "no blob" and is allowed for records
 // that never had one. This is the single gate used by download, state replace
@@ -902,7 +913,7 @@ func (s *Store) ListTrash(kind string) []model.TrashItem {
 	if kind == "" || kind == "file" {
 		for _, f := range s.state.Files {
 			if f.DeletedAt != nil {
-				out = append(out, model.TrashItem{ObjectType: "file", ID: f.ID, Name: f.FileName, Size: f.FileSize, DeletedAt: *f.DeletedAt, CreatedAt: f.CreatedAt})
+				out = append(out, model.TrashItem{ObjectType: "file", StorageKind: FileStorageKind(f.StoragePath), ID: f.ID, Name: f.FileName, Size: f.FileSize, DeletedAt: *f.DeletedAt, CreatedAt: f.CreatedAt})
 			}
 		}
 	}
@@ -1113,6 +1124,9 @@ func (s *Store) Stats() model.DashboardStats {
 		}
 	}
 	for _, f := range s.state.Files {
+		if FileStorageKind(f.StoragePath) == "copy" {
+			blobSizes[strings.ReplaceAll(f.StoragePath, `\`, "/")] = f.FileSize
+		}
 		switch {
 		case f.DeletedAt != nil:
 			st.TrashCount++
@@ -1123,7 +1137,6 @@ func (s *Store) Stats() model.DashboardStats {
 			continue
 		}
 		st.FilesCount++
-		blobSizes[f.StoragePath] = f.FileSize
 		index.files[f.ID] = "active"
 		if f.IsVideo {
 			st.VideosCount++

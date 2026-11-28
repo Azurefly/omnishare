@@ -108,10 +108,11 @@ type Server struct {
 // validHost and the device list read it, so a single refresh serves every
 // request that arrives inside the TTL.
 type localNetworkSnapshot struct {
-	addrs    map[string]struct{}
-	ips      []string
-	outbound string
-	until    time.Time
+	addrs      map[string]struct{}
+	ips        []string
+	lanSubnets []*net.IPNet
+	outbound   string
+	until      time.Time
 }
 
 // localNetworkTTL balances responsiveness to network changes (Wi-Fi switch,
@@ -195,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/peers/accept", s.protected(s.acceptPeer))
 	mux.HandleFunc("DELETE /api/v1/peers/{id}", s.protected(s.unbindPeer))
 	mux.HandleFunc("PUT /api/v1/peers/{id}/alias", s.protected(s.updatePeerAlias))
+	mux.HandleFunc("POST /api/v1/peers/self", s.refreshBoundPeer)
 	mux.HandleFunc("DELETE /api/v1/peers/self", s.revokeSelf)
 	mux.HandleFunc("GET /peer-media/{ticket}", s.servePeerMedia)
 	mux.HandleFunc("GET /api/v1/health", s.health)
@@ -422,6 +424,9 @@ func (s *Server) localNetwork() *localNetworkSnapshot {
 		}
 		refreshed.addrs[value] = struct{}{}
 		refreshed.ips = append(refreshed.ips, value)
+		if subnet, ok := addr.(*net.IPNet); ok && ip.To4() != nil && ip.IsPrivate() {
+			refreshed.lanSubnets = append(refreshed.lanSubnets, subnet)
+		}
 	}
 	refreshed.outbound = preferredOutboundIP()
 	ttl := localNetworkTTL
@@ -905,10 +910,23 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := s.store.ListFilesInFolder(r.URL.Query().Get("q"), r.URL.Query().Get("type"), folder, recursive)
-	for i, item := range items {
-		items[i] = s.presentFile(item)
+	filter := r.URL.Query().Get("storage")
+	if filter != "" && filter != "shortcut" && filter != "copy" && filter != "unavailable" && filter != "record" {
+		respond(w, 400, 400, "未知的文件存储类型", nil)
+		return
 	}
-	respondPage(w, r, items)
+	visible := items[:0]
+	for _, item := range items {
+		kind := storage.FileStorageKind(item.StoragePath)
+		if filter != "" && filter != kind && !(filter == "unavailable" && kind == "shortcut") {
+			continue
+		}
+		file := s.presentFile(item)
+		if filter != "unavailable" || file.SourceFileError != "" {
+			visible = append(visible, file)
+		}
+	}
+	respondPage(w, r, visible)
 }
 
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -1056,7 +1074,7 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil {
 		respond(w, 500, 500, err.Error(), nil)
 	} else {
-		respond(w, 201, 0, "uploaded", asset)
+		respond(w, 201, 0, "uploaded", s.presentFile(asset))
 	}
 }
 
@@ -1682,7 +1700,10 @@ func (s *Server) purgeTrashItem(kind, id string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
+		if err := storage.ValidateStoragePath(f.StoragePath); err != nil {
+			return "", err
+		}
+		if f.StoragePath != "" && !s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
 			stagedFrom = filepath.Join(s.dataDir, f.StoragePath)
 			stagedTo = filepath.Join(s.dataDir, "uploads", ".purging", f.ID)
 			if err := os.MkdirAll(filepath.Dir(stagedTo), 0o700); err != nil {
@@ -1721,7 +1742,11 @@ func (s *Server) PurgeExpiredFileTrash(days int) error {
 		return err
 	}
 	for _, f := range files {
-		if s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
+		if f.StoragePath == "" || s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
+			continue
+		}
+		if invalid := storage.ValidateStoragePath(f.StoragePath); invalid != nil {
+			err = errors.Join(err, invalid)
 			continue
 		}
 		if removeErr := os.Remove(filepath.Join(s.dataDir, f.StoragePath)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -1747,7 +1772,11 @@ func (s *Server) emptyTrash(w http.ResponseWriter, _ *http.Request) {
 	failed := []string{}
 	seen := map[string]bool{}
 	for _, f := range files {
-		if seen[f.StoragePath] || s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
+		if f.StoragePath == "" || seen[f.StoragePath] || s.store.StorageReferencedByOthers(f.StoragePath, f.ID) {
+			continue
+		}
+		if storage.ValidateStoragePath(f.StoragePath) != nil {
+			failed = append(failed, f.ID)
 			continue
 		}
 		seen[f.StoragePath] = true

@@ -189,7 +189,7 @@ func probe(pid: pid_t, file: URL, picked: URL, port: UInt16) throws {
     guard AXUIElementPerformAction(add, kAXPressAction as CFString) == .success else { throw fail("Cannot open Add File") }
     try testPicker(target, file: picked, port: port)
     app.activate(options: [.activateIgnoringOtherApps])
-    let reopen = try control(target, id: "openShortcutBtn", roles: ["AXButton"], labels: ["添加本机文件"])
+    let reopen = try control(target, id: "openShortcutBtn", roles: ["AXButton"], labels: ["添加快捷方式"])
     guard AXUIElementPerformAction(reopen, kAXPressAction as CFString) == .success else { throw fail("Cannot reopen Add File") }
     let path = try control(target, id: "shortcutPath", roles: ["AXTextArea", "AXTextField"],
                            labels: ["本机文件路径", "拖入文件或粘贴完整路径，每行一个文件"])

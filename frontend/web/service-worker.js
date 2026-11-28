@@ -1,4 +1,4 @@
-const CACHE='omnishare-v1.0.1-rc.6-file-workspace'
+const CACHE='omnishare-v1.0.1-rc.7-file-workspace'
 const STATIC_ASSETS=new Set(['/','/index.html','/style.css','/theme.css','/theme.js','/runtime-bridge.js','/app.js','/manifest.webmanifest','/icon.svg'])
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll([...STATIC_ASSETS])).then(()=>self.skipWaiting())))
 self.addEventListener('activate', event => event.waitUntil(

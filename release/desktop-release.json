@@ -1,7 +1,7 @@
 {
-  "tag": "v1.0.1-rc.6",
-  "name": "OmniShare v1.0.1-rc.6 · 跨设备传输、备份恢复与桌面稳定性",
-  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.6.md",
+  "tag": "v1.0.1-rc.7",
+  "name": "OmniShare v1.0.1-rc.7 · 双向绑定、文件清理与液态玻璃界面",
+  "notes": "docs/RELEASE_NOTES_v1.0.1-rc.7.md",
   "prerelease": true,
   "platforms": [
     "windows",
@@ -17,6 +17,6 @@
     "reason": "Candidate DMG uses ad-hoc signing. Apple notarization is pending.",
     "dmg_published": false
   },
-  "release_date": "2026-11-27",
+  "release_date": "2026-11-28",
   "publication_channel": "candidate"
 }

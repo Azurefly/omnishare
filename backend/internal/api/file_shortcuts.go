@@ -29,7 +29,7 @@ type localShortcut struct {
 }
 
 func shortcutBlob(path string) bool {
-	return strings.HasPrefix(filepath.ToSlash(strings.ReplaceAll(path, "\\", "/")), "uploads/shortcuts/")
+	return storage.FileStorageKind(path) == "shortcut"
 }
 
 func shortcutPayload(asset model.FileAsset, path string, modified time.Time) []byte {
@@ -220,6 +220,7 @@ func (s *Server) openAsset(asset model.FileAsset) (*os.File, error) {
 }
 
 func (s *Server) presentFile(asset model.FileAsset) model.FileAsset {
+	asset.StorageKind = storage.FileStorageKind(asset.StoragePath)
 	if !shortcutBlob(asset.StoragePath) {
 		return asset
 	}
