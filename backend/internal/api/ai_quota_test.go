@@ -14,7 +14,7 @@ func TestAIQuotaRequiresLocalManagementAndExplicitPeerSharing(t *testing.T) {
 	wsBind(t, a, b, "")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer example-quota-key" {
-			http.Error(w, "wrong key", 401)
+			http.Error(w, "wrong key", http.StatusUnauthorized)
 			return
 		}
 		fmt.Fprint(w, `{"balance":14.5,"unit":"CNY"}`)

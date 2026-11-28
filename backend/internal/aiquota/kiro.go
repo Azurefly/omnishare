@@ -40,7 +40,7 @@ func queryKiro(ctx context.Context) (Reading, error) {
 	buf.Reset()
 	c.Stdout = &buf
 	if c.Run() != nil {
-		return Reading{}, errors.New("Kiro CLI 未能返回额度，请确认已登录且 /usage 可用")
+		return Reading{}, errors.New("未能读取 Kiro CLI 额度，请确认已登录且 /usage 可用")
 	}
 	return parseKiroReport(buf.String())
 }
@@ -102,7 +102,7 @@ func parseKiroReport(s string) (Reading, error) {
 		r.value(prefix+label, "积分", n, 0)
 	}
 	if len(r.Meters) == 0 {
-		return Reading{}, errors.New("Kiro CLI 未返回可识别的积分明细，请在官方客户端查看 /usage")
+		return Reading{}, errors.New("未能识别 Kiro CLI 的积分明细，请在官方客户端查看 /usage")
 	}
 	return r, nil
 }

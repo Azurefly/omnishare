@@ -113,7 +113,7 @@ func queryCodex(ctx context.Context) (Reading, error) {
 		for {
 			var msg object
 			if dec.Decode(&msg) != nil {
-				return nil, errors.New("Codex 额度查询中断，请确认 CLI 版本和连接")
+				return nil, errors.New("无法完成 Codex 额度查询，请确认 CLI 版本和连接")
 			}
 			n, ok := num(msg["id"])
 			if !ok || n != float64(id) {
@@ -310,7 +310,7 @@ func agyOutput(ctx context.Context, path string, args ...string) ([]byte, error)
 	var out cappedBuffer
 	c.Stdout = &out
 	if c.Run() != nil {
-		return nil, errors.New("Antigravity 查询失败，请确认客户端已登录且支持额度报告")
+		return nil, errors.New("无法读取 Antigravity 额度，请确认客户端已登录且支持额度报告")
 	}
 	return out.Bytes(), nil
 }

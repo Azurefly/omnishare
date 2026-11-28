@@ -9,6 +9,7 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 - **随手记**支持目录、标签、置顶和 Markdown 写作、分栏与预览。
 - **文件**支持批量接收、从本机添加快捷方式、按需下载和视频播放。每个文件标明来源设备和存储方式。可清理失效的快捷方式，也可将文件转移到当前设备，在收到并校验后清理来源条目。
 - **协同文档**提供同一套 Markdown 编辑器，支持自动保存、版本冲突提示和草稿保留。
+- **AI 额度**可直接读取 13 项产品服务和 4 种网关接口的订阅余量、积分或余额。在「工作台 → AI 额度 → 查看额度 → 连接账号」选好来源即可。账号默认只在本机显示，开启共享后，已绑定设备可以查看上次读数和时间。[支持的服务与凭据](docs/RELEASE_NOTES_v1.0.1-rc.8.md)
 - **公开交付**可将随手记、协同文档或文件发送给未绑定设备的收件人。安装并配置可选的独立 HTTPS 领取服务后，即可创建有有效期、可选口令和可撤销的链接。
 - **本机数据**保存在每台设备选择的工作区文件夹中，随手记和协同文档以 Markdown 文件保存，并可引用其他已绑定设备的文件。工作区支持回收站和备份。
 
@@ -19,6 +20,10 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 ![工作台展示当前设备、已绑定设备和内容概况](docs/assets/screenshots/workspace.png)
 
 工作台显示已绑定设备以及统一工作区的内容概况。
+
+![AI 额度窗口显示开发订阅的五小时余量和项目网关的人民币余额](docs/assets/screenshots/ai-quota.png)
+
+演示工作区的 Codex 五小时额度还剩 60%，项目网关余额为 42.75 元。两项读数来自隔离测试数据，分别按供应商的单位显示。
 
 ![文件清理窗口中同时列出库内副本、可用和失效的快捷方式](docs/assets/screenshots/file-cleanup.png)
 
@@ -34,9 +39,9 @@ OmniShare 是一个自托管的跨设备工作区。设备绑定后，可以在�
 
 ## 下载
 
-v1.0.1-rc.7 在绑定前验证两台设备均能访问对方。同一设备通过 Wi-Fi 和 Tailscale 添加时会合并地址并保留别名。两端升级后，绑定失败会显示实际回连地址和原因。Mac 的系统选框、访达拖入和路径粘贴已在 Intel 与 Apple Silicon 上使用同一份通用安装包验证。此候选版采用临时签名，尚未经过 Apple 公证。[下载 macOS 安装包](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.7/OmniShare-v1.0.1-rc.7-macos-universal.dmg)
+v1.0.1-rc.8 新增多供应商 AI 额度。Mac 通用安装包适用于 Intel 和 Apple Silicon，支持系统文件选框、访达拖入和路径粘贴。设备绑定前会验证双向访问，同一设备的 Wi-Fi 和 Tailscale 地址会合并并保留别名。绑定失败时会显示实际回连地址和原因。此候选版采用临时签名，尚未经过 Apple 公证。[下载 macOS 安装包](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.8/OmniShare-v1.0.1-rc.8-macos-universal.dmg)
 
-Windows 可选 EXE 或 MSI，Linux 可选 DEB 或 AppImage。各平台安装包和 `SHA256SUMS.txt` 校验文件都在发布页的 **Assets** 中。[下载 Windows EXE](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.7/OmniShare-v1.0.1-rc.7-windows-x64-setup.exe) · [v1.0.1-rc.7 候选版](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.7) · [全部版本](https://github.com/Azurefly/omnishare/releases)
+Windows 可选 EXE 或 MSI，Linux 可选 DEB 或 AppImage。各平台安装包、验收记录和 `SHA256SUMS.txt` 校验文件都在发布页的 **Assets** 中。[下载 Windows EXE](https://github.com/Azurefly/omnishare/releases/download/v1.0.1-rc.8/OmniShare-v1.0.1-rc.8-windows-x64-setup.exe) · [v1.0.1-rc.8 候选版](https://github.com/Azurefly/omnishare/releases/tag/v1.0.1-rc.8) · [全部版本](https://github.com/Azurefly/omnishare/releases)
 
 ## 从源码运行
 
@@ -62,6 +67,7 @@ go run ./cmd/omnishare --listen localhost --port 8081 --data-dir ..\data --no-br
 - [系统架构](docs/ARCHITECTURE.md)
 - [工作区旧版分享与备份](docs/SECURE_SHARING.md)
 - [Mac 安装、设备绑定与诊断](docs/MACOS.md)
+- [v1.0.1-rc.8 变更说明](docs/RELEASE_NOTES_v1.0.1-rc.8.md)
 - [v1.0.1-rc.7 变更说明](docs/RELEASE_NOTES_v1.0.1-rc.7.md)
 - [v1.0.1-rc.6 变更说明](docs/RELEASE_NOTES_v1.0.1-rc.6.md)
 - [v1.0.1-rc.2 变更说明](docs/RELEASE_NOTES_v1.0.1-rc.2.md)

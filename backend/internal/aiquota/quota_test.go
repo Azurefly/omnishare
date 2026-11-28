@@ -116,7 +116,7 @@ func TestOfficialEndpointsAndPrivacy(t *testing.T) {
 	}
 	dst := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("redirect followed") }))
 	defer dst.Close()
-	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, dst.URL, 302) }))
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, dst.URL, http.StatusFound) }))
 	defer src.Close()
 	manager := Open(t.TempDir(), "node")
 	gw, _ := findProvider("balance")
@@ -139,12 +139,12 @@ func TestAccountLifecycleAndCredentialScope(t *testing.T) {
 	available.Store(true)
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/user/balance" || r.Header.Get("Authorization") != "Bearer test-private-value" {
-			http.Error(w, "unauthorized", 401)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		if !available.Load() {
 			w.Header().Set("Retry-After", "30")
-			http.Error(w, "sensitive body", 429)
+			http.Error(w, "sensitive body", http.StatusTooManyRequests)
 			return
 		}
 		fmt.Fprint(w, `{"balance":7,"unit":"CNY"}`)
