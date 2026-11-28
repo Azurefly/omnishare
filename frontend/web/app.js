@@ -1444,11 +1444,17 @@ function showNoteEditor(dialogSelector, editorSelector, errorSelector) {
 }
 
 function openShortcutModal() {
+  const dialog = $('#shortcutDialog')
+  const input = $('#shortcutPath')
+  if (dialog.open) {
+    if (!input.readOnly) input.focus({preventScroll:true})
+    return
+  }
   $('#shortcutForm').reset()
   $('#shortcutFolder').value = state.folders.files.selected === '__root__' ? '' : state.folders.files.selected || ''
   $('#shortcutError').textContent = ''
-  $('#shortcutDialog').showModal()
-  $('#shortcutPath').focus()
+  dialog.showModal()
+  input.focus({preventScroll:true})
 }
 
 let addingShortcut = false
@@ -1492,6 +1498,7 @@ async function submitFileShortcut(pick) {
   } finally {
     input.readOnly = false
     addingShortcut = false
+    if (pick && !added && $('#shortcutDialog').open) input.focus({preventScroll:true})
     if (added) await Promise.all([loadFiles(), loadFolders('files'), loadDashboard()])
   }
 }

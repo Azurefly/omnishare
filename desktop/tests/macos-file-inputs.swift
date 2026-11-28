@@ -46,12 +46,19 @@ func wait<T>(_ label: String, _ read: () -> T?) throws -> T {
                 let role = attribute(element, kAXRoleAttribute) as? String ?? ""
                 let title = attribute(element, kAXTitleAttribute) as? String ?? attribute(element, kAXDescriptionAttribute) as? String ?? attribute(element, kAXValueAttribute) as? String ?? ""
                 let pickerError = role == "AXStaticText" && ["选择器", "选择文件", "重连", "not allowed", "denied"].contains { title.contains($0) }
-                if pickerError || (["AXButton", "AXSheet", "AXTextField"].contains(role) && visible.count < 23) {
+                if pickerError || (["AXButton", "AXSheet", "AXTextField", "AXTextArea"].contains(role) && visible.count < 23) {
                     visible.append(role + " " + title)
                 }
                 return false
             }
         }
+    }
+    let system = AXUIElementCreateSystemWide()
+    if let focused = attribute(system, kAXFocusedUIElementAttribute) {
+        let field = focused as! AXUIElement
+        let role = attribute(field, kAXRoleAttribute) as? String ?? "?"
+        let id = attribute(field, "AXDOMIdentifier") as? String ?? attribute(field, kAXDescriptionAttribute) as? String ?? ""
+        visible.append("keyboard focus " + role + " " + id)
     }
     throw fail("Timed out waiting for " + label + ". Foreground: " + (front?.localizedName ?? "?") + " " + visible.joined(separator: " | "))
 }
@@ -90,6 +97,12 @@ func center(_ element: AXUIElement) throws -> CGPoint {
     return CGPoint(x: rect.midX, y: rect.midY)
 }
 
+func hasKeyboardFocus(_ field: AXUIElement) -> Bool {
+    if attribute(field, kAXFocusedAttribute) as? Bool == true { return true }
+    guard let focused = attribute(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) else { return false }
+    return CFEqual(focused, field)
+}
+
 func mouse(_ type: CGEventType, _ point: CGPoint) throws {
     guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else {
         throw fail("Could not construct a mouse event")
@@ -112,6 +125,18 @@ func key(_ code: CGKeyCode, command: Bool = false, shift: Bool = false) throws {
 func nativeOpenPanel(_ owner: AXUIElement) -> AXUIElement? {
     if let sheet = (attribute(owner, "AXSheets") as? [AXUIElement])?.first { return sheet }
     return find(owner) { attribute($0, kAXRoleAttribute) as? String == "AXSheet" }
+}
+
+func pasteFixture(_ file: URL, into field: AXUIElement) throws {
+    let _: Bool = try wait("keyboard focus in the shortcut path field") {
+        hasKeyboardFocus(field) ? true : nil
+    }
+    NSPasteboard.general.clearContents()
+    guard NSPasteboard.general.setString(file.absoluteString, forType: .string) else { throw fail("Cannot prepare fixture pasteboard") }
+    try key(9, command: true)
+    let _: Bool = try wait("Cmd+V to paste the file URL into OmniShare") {
+        attribute(field, kAXValueAttribute) as? String == file.absoluteString ? true : nil
+    }
 }
 
 func api(_ port: UInt16, _ path: String) throws -> [String: Any] {
@@ -143,6 +168,9 @@ func testPicker(_ target: AXUIElement, file: URL, port: UInt16) throws {
                 attribute(pick, kAXEnabledAttribute) as? Bool == true && nativeOpenPanel(target) == nil ? true : nil
             }
             guard try shortcuts(port) == before else { throw fail("Cancellation registered a file") }
+            let field = try control(target, id: "shortcutPath", roles: ["AXTextArea", "AXTextField"],
+                                    labels: ["本机文件路径", "拖入文件或粘贴完整路径，每行一个文件"])
+            try pasteFixture(file, into: field)
             continue
         }
         NSPasteboard.general.clearContents()
@@ -188,20 +216,26 @@ func probe(pid: pid_t, file: URL, picked: URL, port: UInt16) throws {
     let add = try control(target, id: "dashUploadFileBtn", roles: ["AXButton"], labels: ["添加文件"])
     guard AXUIElementPerformAction(add, kAXPressAction as CFString) == .success else { throw fail("Cannot open Add File") }
     try testPicker(target, file: picked, port: port)
+    // Registration reaches the backend before WebKit finishes the successful
+    // submission. The form and its launcher both contain “添加快捷方式”.
+    let _: Bool = try wait("previous shortcut form and native sheet to close") {
+        guard nativeOpenPanel(target) == nil else { return nil }
+        let cancel = find(target) { element in
+            (attribute(element, "AXDOMIdentifier") as? String == "closeShortcutBtn") ||
+            (attribute(element, kAXRoleAttribute) as? String == "AXButton" && attribute(element, kAXTitleAttribute) as? String == "取消")
+        }
+        return cancel == nil ? true : nil
+    }
     app.activate(options: [.activateIgnoringOtherApps])
     let reopen = try control(target, id: "openShortcutBtn", roles: ["AXButton"], labels: ["添加快捷方式"])
     guard AXUIElementPerformAction(reopen, kAXPressAction as CFString) == .success else { throw fail("Cannot reopen Add File") }
     let path = try control(target, id: "shortcutPath", roles: ["AXTextArea", "AXTextField"],
                            labels: ["本机文件路径", "拖入文件或粘贴完整路径，每行一个文件"])
     let point = try center(path)
+    try mouse(.mouseMoved, point)
     try mouse(.leftMouseDown, point)
     try mouse(.leftMouseUp, point)
-    NSPasteboard.general.clearContents()
-    guard NSPasteboard.general.setString(file.absoluteString, forType: .string) else { throw fail("Cannot prepare fixture pasteboard") }
-    try key(9, command: true) // V
-    let _: Bool = try wait("Cmd+V to paste the file URL into OmniShare") {
-        attribute(path, kAXValueAttribute) as? String == file.absoluteString ? true : nil
-    }
+    try pasteFixture(file, into: path)
     try key(0, command: true) // A
     try key(51) // Backspace
     let _: Bool = try wait("empty path field before Finder drag") {

@@ -131,7 +131,7 @@ function createApp(options = {}) {
     setTimeout: () => 1, clearTimeout() {}, console
   })
   vm.runInContext(source, context, { filename: 'app.js' })
-  const app = vm.runInContext(`({ state, uploadFiles, pumpUploads, submitFileShortcut,
+  const app = vm.runInContext(`({ state, uploadFiles, pumpUploads, submitFileShortcut, openShortcutModal,
     cancelUpload: typeof cancelUpload === 'function' ? cancelUpload : undefined,
     retryUpload: typeof retryUpload === 'function' ? retryUpload : undefined,
     cancelAllUploads: typeof cancelAllUploads === 'function' ? cancelAllUploads : undefined,
@@ -162,14 +162,25 @@ test('macOS waits for its native picker, cancels without a write and registers t
       return Response.json({code: 0, data: url.includes('/shortcuts') ? {id:'chosen'} : []})
     }
   })
+  element('#shortcutDialog').showModal()
+  const input = element('#shortcutPath')
+  let focusCount = 0
+  input.focus = () => { focusCount++ }
+  input.value = '/Users/test/准备粘贴的路径.txt'
   element('#shortcutFolder').value = '资料'
   const cancelled = app.submitFileShortcut(true)
   assert.equal(element('#pickShortcutBtn').disabled, true)
+  app.openShortcutModal()
+  assert.equal(focusCount,0)
   await app.submitFileShortcut(true)
   assert.deepEqual(commands, ['pick_local_file'])
   assert.deepEqual(writes, [])
   finish(null)
   await cancelled
+  assert.equal(focusCount,1)
+  app.openShortcutModal()
+  assert.equal(focusCount,2)
+  assert.equal(input.value,'/Users/test/准备粘贴的路径.txt')
   assert.deepEqual(writes, [])
   assert.equal(element('#pickShortcutBtn').disabled, false)
   const chosen = app.submitFileShortcut(true)
